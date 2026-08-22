@@ -274,7 +274,7 @@ AgentWeave Dashboard 是主要控制界面。官方 Codex GUI 仅作为可选 co
 
 ## 7. 系统架构
 
-完整彩色 Mermaid 架构图保存在 docs/architecture.mmd。该图明确 Dashboard 是 Control Plane 的操作入口，Workstream 内的 Agent Hive / Weave 支持任意方向通信；扩容只能经过 Dashboard 的 Human approval。
+完整彩色 Mermaid 架构图保存在 docs/architecture.mmd。该图明确 Dashboard 是 Control Plane 的操作入口，Workstream 内的 Agent Hive / Weave 支持 Human、PM、PE、Coder、QA 之间的任意方向通信。Worker 是可扩展的 Runtime 进程池，不等于 Agent；Agent Runtime Actor 负责绑定 durable session、inbox、lease 和 Provider Adapter。Provider Adapter 可以连接 Mock、Codex、Claude、local model 或未来的其他 AI 工具。Workspace Boundary 负责把授权项目挂载给 Provider、收集 git diff、测试结果和 evidence，而不是由 AgentWeave 自己实现代码修改。扩容只能经过 Dashboard 的 Human approval。
 
 ```text
 ┌──────────────────────────────────────────┐

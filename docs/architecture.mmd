@@ -1,103 +1,86 @@
-flowchart TB
-    %% ── Actors ──────────────────────────────────────────────
+flowchart LR
     Human["👤 Human Operator"]
-    Dashboard["🖥️ React Dashboard<br/><small>chat · activity · tasks · approvals</small>"]
+    Dashboard["🖥️ React Dashboard<br/><small>Workstreams · Tasks · Hive · Activity · Controls · Summary</small>"]
 
-    %% ── Control Plane ───────────────────────────────────────
     subgraph Control["⚙️ Control Plane"]
-        direction TB
         API["Control API<br/><small>HTTP / WebSocket</small>"]
-        Orch["Orchestrator<br/><small>routing · retries · pause/resume</small>"]
-        Policy["Policy & Authority<br/><small>budgets · permissions · approvals</small>"]
-        Projector["Read Model Projector"]
+        Orch["Orchestrator<br/><small>routing · state transitions · retries · recovery</small>"]
+        Policy["Policy & Approval<br/><small>authority · budgets · human decisions</small>"]
+        Projector["Read Model / Event Projector"]
     end
-
-    %% ── Durable Backbone ────────────────────────────────────
     subgraph Durable["🗄️ Durable Backbone"]
-        direction LR
-        DB[("PostgreSQL<br/>durable state")]
-        NATS[("NATS JetStream<br/>event mesh")]
+        DB[("PostgreSQL<br/><small>workstreams · tasks · agents · sessions · inbox · evidence</small>")]
+        NATS[("NATS JetStream<br/><small>events · commands · inboxes · ACK · retry · DLQ</small>")]
     end
-
-    %% ── Execution Plane ─────────────────────────────────────
-    subgraph Execution["⚡ Execution Plane"]
-        direction TB
-        W1["Worker 1"]
-        W2["Worker 2"]
-        Provider["Provider Adapter<br/><small>Mock / Codex App Server</small>"]
-
-        subgraph Hive["🐝 Agent Hive / Weave"]
-            direction TB
-            PM["PM<br/><small>lead</small>"]
-            PE["PE<br/><small>reviewer / lead</small>"]
-            Coder1["Coder-1<br/><small>executor</small>"]
-            Coder2["Coder-2<br/><small>executor</small>"]
-            QA["QA Reviewer<br/><small>reviewer</small>"]
-
-            PM <--> PE
-            PM <--> Coder1
-            PM <--> Coder2
-            PM <--> QA
-            PE <--> Coder1
-            PE <--> Coder2
-            PE <--> QA
-            Coder1 <--> Coder2
-            Coder1 <--> QA
-            Coder2 <--> QA
-        end
+    subgraph Runtime["⚡ Execution Plane — one or more Worker processes"]
+        Worker["Worker Runtime Pool<br/><small>registration · heartbeat · task lease · consumer</small>"]
+        Actors["Agent Runtime Actors<br/><small>PM · PE · Coder(s) · QA · Human-facing sessions</small>"]
+        Session["Durable Session Manager<br/><small>provider session · checkpoint · lease · resume</small>"]
+        Adapter["Provider Adapter Registry<br/><small>Mock · Codex · Claude · local / future tools</small>"]
+        Workspace["Workspace Boundary & Evidence<br/><small>mounted project · git diff · tests · artifacts</small>"]
+        Worker --> Actors --> Session --> Adapter --> Workspace
     end
-
-    %% ── Human-Approved Scaling ──────────────────────────────
+    subgraph Hive["🐝 Agent Hive / Weave — any-direction collaboration"]
+        HiveHuman["Human"]
+        PM["PM<br/><small>lead</small>"]
+        PE["PE<br/><small>reviewer / lead</small>"]
+        Coder1["Coder-1<br/><small>executor</small>"]
+        Coder2["Coder-2<br/><small>executor</small>"]
+        QA["QA<br/><small>reviewer</small>"]
+        HiveHuman <--> PM
+        HiveHuman <--> PE
+        HiveHuman <--> Coder1
+        HiveHuman <--> Coder2
+        HiveHuman <--> QA
+        PM <--> PE
+        PM <--> Coder1
+        PM <--> Coder2
+        PM <--> QA
+        PE <--> Coder1
+        PE <--> Coder2
+        PE <--> QA
+        Coder1 <--> Coder2
+        Coder1 <--> QA
+        Coder2 <--> QA
+    end
     subgraph Scaling["📈 Human-Approved Scaling"]
-        direction LR
         Detect["Detect parallel work"]
-        Rec["Scaling recommendation"]
+        Recommend["Scaling recommendation"]
         Approve["Human approval"]
-        Create["Add Agent to Hive"]
+        Add["Add Agent Actor / Session"]
     end
 
-    %% ── Main Flows ──────────────────────────────────────────
     Human <--> Dashboard
     Dashboard <-->|"HTTP / WebSocket"| API
-    API -->|"live events"| Dashboard
     API --> Orch
-    Orch --> Policy
+    API --> Policy
+    API <--> DB
     Orch <--> DB
     Orch <--> NATS
-    NATS --> Projector
-    Projector --> DB
-    NATS <--> W1
-    NATS <--> W2
-    W1 <--> Provider
-    W2 <--> Provider
-    Provider <--> Hive
+    Policy <--> DB
+    NATS --> Projector --> DB
+    NATS <--> Worker
+    Actors <--> Hive
+    Orch --> Detect --> Recommend --> Dashboard
+    Dashboard --> Approve --> Add
+    Add --> DB
+    Add --> NATS
 
-    %% Scaling loop
-    Orch --> Detect
-    Detect --> Rec
-    Rec --> Dashboard
-    Dashboard --> Approve
-    Approve --> Create
-    Create --> DB
-    Create --> NATS
-
-    %% ── Styling ─────────────────────────────────────────────
     classDef human fill:#7c3aed,stroke:#5b21b6,color:#fff,stroke-width:2px,rx:8,ry:8
     classDef dashboard fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px,rx:8,ry:8
     classDef control fill:#2563eb,stroke:#1d4ed8,color:#fff,stroke-width:1.5px,rx:6,ry:6
     classDef durable fill:#0891b2,stroke:#0e7490,color:#fff,stroke-width:1.5px
-    classDef worker fill:#f59e0b,stroke:#b45309,color:#111,stroke-width:1.5px,rx:6,ry:6
+    classDef runtime fill:#f59e0b,stroke:#b45309,color:#111,stroke-width:1.5px,rx:6,ry:6
     classDef lead fill:#16a34a,stroke:#15803d,color:#fff,stroke-width:1.5px,rx:6,ry:6
     classDef reviewer fill:#22c55e,stroke:#15803d,color:#fff,stroke-width:1.5px,rx:6,ry:6
     classDef executor fill:#facc15,stroke:#ca8a04,color:#111,stroke-width:1.5px,rx:6,ry:6
     classDef scaling fill:#db2777,stroke:#9d174d,color:#fff,stroke-width:1.5px,rx:6,ry:6
-
-    class Human human
+    class Human,HiveHuman human
     class Dashboard dashboard
     class API,Orch,Policy,Projector control
     class DB,NATS durable
-    class W1,W2,Provider worker
+    class Worker,Actors,Session,Adapter,Workspace runtime
     class PM,PE lead
     class QA reviewer
     class Coder1,Coder2 executor
-    class Detect,Rec,Approve,Create scaling
+    class Detect,Recommend,Approve,Add scaling
