@@ -148,6 +148,15 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   const now = new Date().toISOString();
   const existing = requestedId ? workstream.messages.find((candidate) => candidate.id === requestedId) : undefined;
   if (existing) return existing;
+  if (requestedId) {
+    const persisted = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where id = ${requestedId} and workstream_id = ${workstream.id}`;
+    if (persisted.length) {
+      const row = persisted[0];
+      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
+      workstream.messages.push(restored);
+      return restored;
+    }
+  }
   const message: Message = { id: requestedId ?? randomUUID(), workstreamId: workstream.id, senderId, recipientIds, messageType, content, ...(extra.taskId ? { taskId: extra.taskId } : {}), correlationId: extra.correlationId ?? randomUUID(), ...(extra.causationId ? { causationId: extra.causationId } : {}), evidenceIds: extra.evidenceIds ?? [], createdAt: now, deliveryStatus: "pending" };
   await sql`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
     values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, ${message.deliveryStatus})`;
