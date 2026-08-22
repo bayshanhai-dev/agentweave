@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WorkstreamOrchestrator } from "./orchestrator.js";
+import { WorkstreamOrchestrator } from "../src/orchestrator.js";
 
 describe("WorkstreamOrchestrator", () => {
   it("routes the workflow through PM, PE, Coder, QA, then Human review", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentInstanceSchema, agentMessageSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "./index.js";
+import { agentInstanceSchema, agentMessageSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "../src/index.js";
 
 describe("scaling contracts", () => {
   it("models durable multi-recipient messages with correlation", () => {

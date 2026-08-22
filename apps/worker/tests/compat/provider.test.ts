@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MockProvider, type ProviderEvent } from "./provider.js";
+import { MockProvider, type ProviderEvent } from "../../src/provider.js";
 
 async function collect<T>(stream: AsyncGenerator<ProviderEvent, T>): Promise<{ events: ProviderEvent[]; result: T }> {
   const events: ProviderEvent[] = [];

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ProviderAdapter, ProviderRunEvent, ProviderSession } from "./providers/index.js";
-import type { AgentSessionRecord, AgentSessionRepository } from "./providers/session-repository.js";
+import type { ProviderAdapter, ProviderRunEvent, ProviderSession } from "../providers/index.js";
+import type { AgentSessionRecord, AgentSessionRepository } from "../providers/session-repository.js";
 import { ExecutionControl } from "./execution-control.js";
-import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "./workspace.js";
+import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 
 export type AgentTask = { taskId: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string };
 export type ExecutionSink = (event: ProviderRunEvent | { type: "task.completed" | "task.failed"; taskId: string; text?: string; error?: string }) => Promise<void>;

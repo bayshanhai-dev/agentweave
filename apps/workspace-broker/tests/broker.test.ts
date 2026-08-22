@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WorkspaceBroker } from "./broker.js";
+import { WorkspaceBroker } from "../src/broker.js";
 
 describe("WorkspaceBroker", () => {
   it("rejects a workspace outside the authorized root", async () => {

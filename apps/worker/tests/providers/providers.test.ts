@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter, type ProcessResult } from "./claude-code.js";
-import { CodexAppServerAdapter, type CodexTransport } from "./codex-app-server.js";
-import { providerError, redactSecrets } from "./errors.js";
-import { MockProviderAdapter } from "./mock.js";
-import { createProviderFromEnv } from "./registry.js";
-import type { ProviderRunEvent } from "./types.js";
+import { ClaudeCodeAdapter, type ProcessResult } from "../../src/providers/claude-code.js";
+import { CodexAppServerAdapter, type CodexTransport } from "../../src/providers/codex-app-server.js";
+import { providerError, redactSecrets } from "../../src/providers/errors.js";
+import { MockProviderAdapter } from "../../src/providers/mock.js";
+import { createProviderFromEnv } from "../../src/providers/registry.js";
+import type { ProviderRunEvent } from "../../src/providers/types.js";
 
 async function collect<T>(stream: AsyncGenerator<ProviderRunEvent, T>) {
   const events: ProviderRunEvent[] = [];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canTransition } from "./index.js";
+import { canTransition } from "../src/index.js";
 
 describe("workstream transitions", () => {
   it("allows active workstreams to pause", () => {
