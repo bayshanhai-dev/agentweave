@@ -1,4 +1,4 @@
-export type ProviderStatus = "active" | "completed" | "failed" | "cancelled";
+export type ProviderStatus = "active" | "completed" | "failed" | "cancelled" | (string & {});
 export type RetryClass = "retryable" | "non-retryable" | "user-action-required";
 
 export type ProviderCapabilities = {

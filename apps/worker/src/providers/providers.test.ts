@@ -60,7 +60,7 @@ describe("provider adapters", () => {
     const provider = new CodexAppServerAdapter(transport, { model: "gpt-test" });
     const run = await collect(provider.run({ input: "hello", correlationId: "corr-codex" }));
     expect(requests).toEqual([{ method: "session.create", correlationId: expect.any(String) }, { method: "turn.start", correlationId: "corr-codex" }]);
-    expect(run.events.map((event) => event.type)).toEqual(["turn.started", "turn.delta", "tool.started", "tool.completed", "turn.completed"]);
+    expect(run.events.map((event) => event.type)).toEqual(["turn.started", "turn.delta", "tool.started", "tool.completed", "turn.delta", "turn.completed"]);
     expect(run.events.every((event) => "correlationId" in event)).toBe(true);
     expect(run.result.text).toBe("hello world");
   });
