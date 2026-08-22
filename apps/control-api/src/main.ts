@@ -374,7 +374,7 @@ async function loadWorkstreams(): Promise<void> {
       loadedTasks.push(task); await persistTask(task);
     }
     workstreams.set(String(row.id), {
-      id: String(row.id), goal: String(row.goal), flavor: "software-development", status: normalizeLoadedStatus(String(row.status), events),
+      id: String(row.id), goal: String(row.goal), flavor: "software-development", status: normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type }))),
       provider: { tool: String(row.tool), model: String(row.model) }, workspaceRoot: String(row.workspace_root),
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
