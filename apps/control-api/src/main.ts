@@ -9,6 +9,7 @@ type Message = { id: string; workstreamId: string; senderId: string; recipientId
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "done" };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
+function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } } return []; }
 
 const app = Fastify({ logger: true });
 await app.register(websocket);
@@ -179,7 +180,7 @@ async function loadWorkstreams(): Promise<void> {
     const agents = await sql`select id, role, authority, status from agents where workstream_id = ${row.id} order by id`;
     const tasks = await sql`select id, workstream_id, title, status, owner_agent_id, acceptance_criteria, dependencies, evidence, created_at, updated_at from tasks where workstream_id = ${row.id} order by created_at asc`;
     const events = await sql`select id, type, message, role, from_node, to_node, occurred_at from workflow_events where workstream_id = ${row.id} order by occurred_at asc`;
-    const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), acceptanceCriteria: task.acceptance_criteria as string[], dependencies: task.dependencies as string[], evidence: task.evidence as string[], createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
+    const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
     if (!loadedTasks.length) {
       const task: Task = { id: `${row.id}:task-1`, workstreamId: String(row.id), title: "Review and continue the Workstream", status: "ready", acceptanceCriteria: ["Work remains scoped to the Workstream goal", "Relevant checks pass", "Evidence is attached before review"], dependencies: [], evidence: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       loadedTasks.push(task); await persistTask(task);
@@ -226,10 +227,10 @@ async function runHappyPath(workstream: Workstream): Promise<void> {
       emit(workstream, "run.started", `${fromRole.toUpperCase()} run started`, fromRole);
       await new Promise((resolve) => setTimeout(resolve, delay));
       if (sender) sender.status = "done";
-      await createMessage(workstream, agent(fromRole), [agent(toRole)], content, "request", { taskId: workstream.tasks[0]?.id });
+      await createMessage(workstream, agent(fromRole), [agent(toRole)], content, "request", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
       emit(workstream, `${fromRole}.completed`, title, fromRole);
     }
-    if (workstream.status === "active") await createMessage(workstream, agent("pm"), ["human"], "Human review requested before any high-impact action.", "decision", { taskId: workstream.tasks[0]?.id });
+    if (workstream.status === "active") await createMessage(workstream, agent("pm"), ["human"], "Human review requested before any high-impact action.", "decision", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
     workstream.status = "completed";
     emit(workstream, "workstream.completed", "Happy path completed");
   } catch (error) {
