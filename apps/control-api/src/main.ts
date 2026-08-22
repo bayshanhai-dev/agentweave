@@ -107,9 +107,17 @@ app.post("/api/workstreams", async (request, reply) => {
   void runHappyPath(workstream);
   return reply.code(201).send(workstream);
 });
-app.get("/events", { websocket: true }, (socket) => {
+app.get("/events", { websocket: true }, async (socket, request) => {
   sockets.add(socket);
   socket.send(JSON.stringify({ type: "system.connected", occurredAt: new Date().toISOString() }));
+  const after = (request.query as { after?: string } | undefined)?.after;
+  if (after) {
+    const rows = await sql`select m.* from messages m where m.created_at > ${after} order by m.created_at asc`;
+    for (const row of rows) {
+      const message: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
+      socket.send(JSON.stringify({ workstreamId: message.workstreamId, type: "message.created", message, occurredAt: message.createdAt }));
+    }
+  }
   socket.on("close", () => sockets.delete(socket));
 });
 
