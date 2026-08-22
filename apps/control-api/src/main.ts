@@ -6,7 +6,8 @@ import postgres from "postgres";
 type Role = "pm" | "pe" | "coder" | "qa";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "done" };
-type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; events: WorkflowEvent[] };
+type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
+type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[] };
 
 const app = Fastify({ logger: true });
 await app.register(websocket);
@@ -33,6 +34,17 @@ app.get("/api/workstreams/:id", async (request, reply) => {
   const workstream = workstreams.get(id);
   return workstream ?? reply.code(404).send({ error: "workstream_not_found" });
 });
+app.get("/api/workstreams/:id/tasks", async (request, reply) => {
+  const { id } = request.params as { id: string }; const workstream = workstreams.get(id);
+  return workstream ? workstream.tasks : reply.code(404).send({ error: "workstream_not_found" });
+});
+app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
+  const { id, taskId } = request.params as { id: string; taskId: string }; const workstream = workstreams.get(id);
+  const task = workstream?.tasks.find((candidate) => candidate.id === taskId); const body = request.body as { status?: Task["status"]; evidence?: string[] } | undefined;
+  if (!workstream || !task) return reply.code(404).send({ error: "task_not_found" });
+  if (body?.status) task.status = body.status; if (body?.evidence) task.evidence = body.evidence; task.updatedAt = new Date().toISOString();
+  await persistTask(task); emit(workstream, "task.updated", `${task.title} → ${task.status}`); return task;
+});
 app.post("/api/workstreams/:id/messages", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
@@ -49,7 +61,7 @@ app.post("/api/workstreams", async (request, reply) => {
   const workstream: Workstream = {
     id, goal: body.goal.trim(), flavor: "software-development", status: "starting",
     provider: { tool: body.tool ?? "mock", model: body.model ?? "deterministic" },
-    workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", events: [],
+    workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [],
     agents: [
       { id: `${id}:pm`, role: "pm", authority: "lead", status: "idle" },
       { id: `${id}:pe`, role: "pe", authority: "reviewer", status: "idle" },
@@ -57,8 +69,10 @@ app.post("/api/workstreams", async (request, reply) => {
       { id: `${id}:qa`, role: "qa", authority: "reviewer", status: "idle" },
     ],
   };
+  const task: Task = { id: `${id}:task-1`, workstreamId: id, title: "Implement the highest-impact improvement", status: "ready", acceptanceCriteria: ["Implementation is scoped to the Workstream goal", "Relevant checks and tests pass", "Evidence is attached for review"], dependencies: [], evidence: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  workstream.tasks.push(task);
   workstreams.set(id, workstream);
-  await persistWorkstream(workstream);
+  await persistWorkstream(workstream); await persistTask(task);
   metrics.workstreamsCreated += 1;
   app.log.info({ workstreamId: id, flavor: workstream.flavor, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
   emit(workstream, "workstream.created", "Software development hive created");
@@ -103,6 +117,12 @@ async function persistWorkstream(workstream: Workstream): Promise<void> {
   }
 }
 
+async function persistTask(task: Task): Promise<void> {
+  await sql`insert into tasks (id, workstream_id, title, status, owner_agent_id, acceptance_criteria, dependencies, evidence, created_at, updated_at)
+    values (${task.id}, ${task.workstreamId}, ${task.title}, ${task.status}, ${task.ownerAgentId ?? null}, ${JSON.stringify(task.acceptanceCriteria)}, ${JSON.stringify(task.dependencies)}, ${JSON.stringify(task.evidence)}, ${task.createdAt}, ${task.updatedAt})
+    on conflict (id) do update set status = excluded.status, owner_agent_id = excluded.owner_agent_id, evidence = excluded.evidence, updated_at = excluded.updated_at`;
+}
+
 async function persistWorkstreamStatus(workstream: Workstream): Promise<void> {
   await sql`update workstreams set status = ${workstream.status}, updated_at = now() where id = ${workstream.id}`;
   for (const agent of workstream.agents) {
@@ -119,10 +139,17 @@ async function loadWorkstreams(): Promise<void> {
   const rows = await sql`select id, goal, flavor, status, tool, model, workspace_root from workstreams order by created_at desc`;
   for (const row of rows) {
     const agents = await sql`select id, role, authority, status from agents where workstream_id = ${row.id} order by id`;
+    const tasks = await sql`select id, workstream_id, title, status, owner_agent_id, acceptance_criteria, dependencies, evidence, created_at, updated_at from tasks where workstream_id = ${row.id} order by created_at asc`;
     const events = await sql`select id, type, message, role, from_node, to_node, occurred_at from workflow_events where workstream_id = ${row.id} order by occurred_at asc`;
+    const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), acceptanceCriteria: task.acceptance_criteria as string[], dependencies: task.dependencies as string[], evidence: task.evidence as string[], createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
+    if (!loadedTasks.length) {
+      const task: Task = { id: `${row.id}:task-1`, workstreamId: String(row.id), title: "Review and continue the Workstream", status: "ready", acceptanceCriteria: ["Work remains scoped to the Workstream goal", "Relevant checks pass", "Evidence is attached before review"], dependencies: [], evidence: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      loadedTasks.push(task); await persistTask(task);
+    }
     workstreams.set(String(row.id), {
       id: String(row.id), goal: String(row.goal), flavor: "software-development", status: String(row.status),
       provider: { tool: String(row.tool), model: String(row.model) }, workspaceRoot: String(row.workspace_root),
+      tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
       events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role && ["pm", "pe", "coder", "qa"].includes(String(event.role)) ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
@@ -131,6 +158,7 @@ async function loadWorkstreams(): Promise<void> {
 }
 
 await sql`create table if not exists workstreams (id text primary key, goal text not null, flavor text not null, status text not null, tool text not null, model text not null, workspace_root text not null, created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
+await sql`create table if not exists tasks (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, title text not null, status text not null, owner_agent_id text, acceptance_criteria jsonb not null default '[]', dependencies jsonb not null default '[]', evidence jsonb not null default '[]', created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
 await sql`create table if not exists agents (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, role text not null, authority text not null, status text not null)`;
 await sql`create table if not exists workflow_events (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, type text not null, message text not null, role text, from_node text, to_node text, occurred_at timestamptz not null)`;
 await sql`alter table workflow_events add column if not exists from_node text`;
