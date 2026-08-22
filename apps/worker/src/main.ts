@@ -32,7 +32,8 @@ await bus.consumer(subjects.inbox, async (message) => {
       activeWorkstreams.add(envelope.workstreamId);
       const statusResponse = await fetch(`${controlApiUrl}/api/workstreams/${encodeURIComponent(envelope.workstreamId)}`).catch(() => undefined);
       if (!statusResponse?.ok) return "retry";
-      const status = (await statusResponse.json() as { status?: string }).status;
+      const workstream = await statusResponse.json() as { status?: string; workspaceRoot?: string; provider?: { model?: string } };
+      const status = workstream.status;
       if (["paused", "waiting_for_human", "completed", "completing", "emergency_stopped", "archived"].includes(status ?? "")) return "ack";
       const targetFromSubject = message.subject.split(".")[2];
       const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
@@ -42,7 +43,7 @@ await bus.consumer(subjects.inbox, async (message) => {
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
-      await runtime.dispatch({ taskId: payload.taskId ?? envelope.id, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model ? { model: payload.model } : {}), ...(payload.workspacePath ? { workspacePath: payload.workspacePath } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
+      await runtime.dispatch({ taskId: payload.taskId ?? envelope.id, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
       return "ack";
     } catch (error) {
       console.error(JSON.stringify({ event: "worker.message.failed", workerId, subject: message.subject, error: String(error), occurredAt: new Date().toISOString() }));

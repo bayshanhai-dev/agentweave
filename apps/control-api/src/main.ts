@@ -433,13 +433,13 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
 }
 
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
-  if (envelope.type !== "agent.turn.completed") return;
+  if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed") return;
   const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
   const payload = envelope.payload as { agentId?: string; text?: string; evidenceIds?: string[] }; const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId); if (!sender || !payload.text) return;
-  const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : sender.role === "coder" ? "design.completed" : /fail|missing|error/i.test(payload.text) ? "qa.failed" : "qa.passed";
+  const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(payload.text) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: payload.text, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { workstream.status = "completed"; emit(workstream, "workstream.completed", "Orchestrator completed the workflow"); return; }
-  const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id; if (!recipient) return;
+  const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role))?.id : undefined); if (!recipient) return;
   await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; emit(workstream, "workstream.waiting_for_human", "Human approval required before completion"); }
 }
