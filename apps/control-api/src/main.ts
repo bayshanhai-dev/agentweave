@@ -435,7 +435,9 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed") return;
   const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
-  const payload = envelope.payload as { agentId?: string; text?: string; evidenceIds?: string[] }; const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId); if (!sender || !payload.text) return;
+  const payload = envelope.payload as { agentId?: string; taskId?: string; text?: string; evidenceIds?: string[] }; const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId); if (!sender || !payload.text) return;
+  const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  if (task) { task.status = "done"; task.evidence = [...new Set([...task.evidence, ...(payload.evidenceIds ?? [])])]; task.updatedAt = new Date().toISOString(); await persistTask(task); emit(workstream, "task.completed", `${task.title} → done`, sender.role); }
   const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(payload.text) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: payload.text, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { workstream.status = "completed"; emit(workstream, "workstream.completed", "Orchestrator completed the workflow"); return; }
