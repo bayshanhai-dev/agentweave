@@ -3,13 +3,14 @@ import type { ProviderAdapter, ProviderRunEvent, ProviderSession } from "../prov
 import type { AgentSessionRecord, AgentSessionRepository } from "../providers/session-repository.js";
 import { ExecutionControl } from "./execution-control.js";
 import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
+import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
 
 export type AgentTask = { taskId: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string };
 export type ExecutionSink = (event: ProviderRunEvent | { type: "task.completed" | "task.failed"; taskId: string; agentId?: string; workstreamId?: string; text?: string; error?: string; evidenceIds?: string[] }) => Promise<void>;
 
 export class AgentTaskExecutor {
   private readonly controls = new Map<string, ExecutionControl>();
-  constructor(private readonly provider: ProviderAdapter, private readonly sessions: AgentSessionRepository, private readonly workerId: string, private readonly sink: ExecutionSink) {}
+  constructor(private readonly provider: ProviderAdapter, private readonly sessions: AgentSessionRepository, private readonly workerId: string, private readonly sink: ExecutionSink, private readonly evidence = new EvidenceCollectorRegistry()) {}
   async updateWorkstreamControl(workstreamId: string, state: import("./execution-control.js").ExecutionControlState): Promise<void> { await this.controls.get(workstreamId)?.update(state); }
   async execute(task: AgentTask, control = new ExecutionControl()): Promise<void> {
     if (task.workstreamId) { this.controls.set(task.workstreamId, control); }
@@ -36,7 +37,7 @@ export class AgentTaskExecutor {
       let step = await run.next();
       while (!step.done) { const event = step.value; await this.sink(event); if (event.type === "turn.started") { activeTurnId = event.turnId; record.currentTurnId = event.turnId; } record.lastEventSequence += 1; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); control.assertRunnable(); step = await run.next(); }
       result = step.value;
-      if (result) { control.assertRunnable(); record.status = "completed"; record.currentTurnId = result.turnId; record.lastCheckpoint = await this.provider.checkpoint(result.session); await this.sessions.save(record); let evidenceIds: string[] = []; if (workspacePath) { const evidence = await collectWorkspaceEvidence(task.taskId, workspacePath, process.env.TEST_COMMAND); await persistWorkspaceEvidence(evidence); evidenceIds = [`${task.taskId}:evidence`]; if (evidence.testExitCode !== undefined && evidence.testExitCode !== 0) throw new Error(`Workspace test command failed with exit code ${evidence.testExitCode}`); } await this.sink({ type: "task.completed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), text: result.text, ...(evidenceIds.length ? { evidenceIds } : {}) }); }
+      if (result) { control.assertRunnable(); record.status = "completed"; record.currentTurnId = result.turnId; record.lastCheckpoint = await this.provider.checkpoint(result.session); await this.sessions.save(record); let evidenceIds: string[] = []; if (workspacePath) { const collected = await this.evidence.collect({ taskId: task.taskId, workspacePath, ...(process.env.TEST_COMMAND ? { commands: [process.env.TEST_COMMAND] } : {}) }); for (const evidence of collected) await persistWorkspaceEvidence(evidence); evidenceIds = collected.map(() => `${task.taskId}:evidence`); } await this.sink({ type: "task.completed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), text: result.text, ...(evidenceIds.length ? { evidenceIds } : {}) }); }
     } catch (error) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); await this.sink({ type: "task.failed", taskId: task.taskId, error: error instanceof Error ? error.message : String(error) }); throw error; }
     finally { await this.sessions.releaseLease(id, this.workerId); if (task.workstreamId && this.controls.get(task.workstreamId) === control) this.controls.delete(task.workstreamId); }
   }
