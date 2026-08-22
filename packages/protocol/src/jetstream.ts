@@ -28,7 +28,7 @@ export class JetStreamEventBus {
       const configuredSubjects = new Set(info.config.subjects ?? []);
       const requiredSubjects = Object.values(subjects);
       if (requiredSubjects.some((subject) => !configuredSubjects.has(subject))) {
-        await this.manager.streams.update({ ...info.config, subjects: [...new Set([...configuredSubjects, ...requiredSubjects])] });
+        await this.manager.streams.update(this.stream, { ...info.config, subjects: [...new Set([...configuredSubjects, ...requiredSubjects])] });
       }
     } catch { await this.manager.streams.add({ name: this.stream, subjects: Object.values(subjects), storage: StorageType.File, retention: RetentionPolicy.Limits }); }
   }
@@ -42,7 +42,7 @@ export class JetStreamEventBus {
     if (!this.manager || !this.client) throw new Error("JetStreamEventBus is not connected");
     const durable = this.config.durableName ?? `worker-${filterSubject.replaceAll(".", "-").replaceAll("*", "all")}-v2`;
     const desired = { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(30_000), max_deliver: 5 } as const;
-    try { await this.manager.consumers.info(this.stream, durable); await this.manager.consumers.update(this.stream, desired); }
+    try { await this.manager.consumers.info(this.stream, durable); await this.manager.consumers.update(this.stream, durable, desired); }
     catch { await this.manager.consumers.add(this.stream, desired); }
     const consumer = await this.client.consumers.get(this.stream, durable);
     const subscription = await consumer.consume();
