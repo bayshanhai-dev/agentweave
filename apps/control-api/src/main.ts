@@ -9,7 +9,7 @@ import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 type Role = "pm" | "pe" | "coder" | "qa";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
-type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "done"; orchestrator?: boolean };
+type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } } return []; }
@@ -134,7 +134,10 @@ for (const [command, target] of Object.entries({ pause: "paused", resume: "activ
     } else {
       workstream.status = target;
     }
-    if (target === "active") workstream.agents.forEach((agent) => { if (agent.status !== "done") agent.status = "idle"; });
+    if (command === "pause" || command === "waiting-for-human") workstream.agents.forEach((agent) => { if (agent.status === "running" || agent.status === "idle") agent.status = "paused"; });
+    if (command === "emergency-stop") workstream.agents.forEach((agent) => { if (agent.status !== "done") agent.status = "stopped"; });
+    if (command === "complete") workstream.agents.forEach((agent) => { agent.status = "done"; });
+    if (target === "active") workstream.agents.forEach((agent) => { if (agent.status !== "done" && agent.status !== "stopped") agent.status = "idle"; });
     const eventType = command === "emergency-stop" ? "workstream.emergency_stopped" : `workstream.${command.replaceAll("-", "_")}`;
     emit(workstream, eventType, body.reason?.trim() || `Workstream ${command.replaceAll("-", " ")} requested`);
     await persistWorkstreamStatus(workstream);

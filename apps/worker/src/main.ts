@@ -12,6 +12,7 @@ const executor = new AgentTaskExecutor(provider, sessions, workerId, async (even
   if (currentEnvelope) await bus.publish(subjects.events.replace("*", currentEnvelope.workstreamId), { id: `${currentEnvelope.id}:${event.type}:${Date.now()}`, type: event.type, workstreamId: currentEnvelope.workstreamId, occurredAt: new Date().toISOString(), ...(currentEnvelope.correlationId ? { correlationId: currentEnvelope.correlationId } : {}), causationId: currentEnvelope.id, payload: event });
 });
 const runtimes = new Map<string, AgentRuntime>();
+const activeWorkstreams = new Set<string>();
 let currentEnvelope: ReturnType<typeof bus.decode> | undefined;
 const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox` });
 
@@ -27,6 +28,11 @@ await bus.consumer(subjects.inbox, async (message) => {
     try {
       const envelope = bus.decode(message);
       currentEnvelope = envelope;
+      activeWorkstreams.add(envelope.workstreamId);
+      const statusResponse = await fetch(`${controlApiUrl}/api/workstreams/${encodeURIComponent(envelope.workstreamId)}`).catch(() => undefined);
+      if (!statusResponse?.ok) return "retry";
+      const status = (await statusResponse.json() as { status?: string }).status;
+      if (["paused", "waiting_for_human", "completed", "completing", "emergency_stopped", "archived"].includes(status ?? "")) return "ack";
       const targetFromSubject = message.subject.split(".")[2];
       const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
@@ -48,6 +54,7 @@ await bus.consumer(subjects.inbox, async (message) => {
     } finally { currentEnvelope = undefined; }
   });
 setInterval(() => { void heartbeat(); console.log(JSON.stringify({ event: "worker.heartbeat", workerId, subscription: subjects.inbox, provider: provider.name, occurredAt: new Date().toISOString() })); }, 15_000);
+setInterval(() => { for (const workstreamId of activeWorkstreams) void fetch(`${controlApiUrl}/api/workstreams/${encodeURIComponent(workstreamId)}`).then(async (response) => { if (response.ok) await executor.updateWorkstreamControl(workstreamId, (await response.json() as { status?: "active" | "waiting_for_human" | "paused" | "emergency_stopped" | "completed" }).status ?? "active"); }).catch(() => undefined); }, 1000);
 
 async function collectRun<T>(stream: AsyncGenerator<ProviderRunEvent, T>): Promise<{ events: ProviderRunEvent[]; result: T }> {
   const events: ProviderRunEvent[] = [];
