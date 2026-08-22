@@ -2,6 +2,7 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
+import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
 
 type Role = "pm" | "pe" | "coder" | "qa";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
@@ -17,6 +18,7 @@ const workstreams = new Map<string, Workstream>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0 };
+type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
 
 app.addHook("onRequest", async (request, reply) => {
   metrics.requests += 1;
@@ -43,6 +45,72 @@ app.get("/api/workstreams/:id/tasks", async (request, reply) => {
 app.get("/api/workstreams/:id/messages", async (request, reply) => {
   const workstream = workstreams.get((request.params as { id: string }).id);
   return workstream ? workstream.messages : reply.code(404).send({ error: "workstream_not_found" });
+});
+for (const [command, target] of Object.entries({ pause: "paused", resume: "active", complete: "completed", "emergency-stop": "emergency_stopped", "waiting-for-human": "waiting_for_human" } as const)) {
+  app.post(`/api/workstreams/:id/${command}`, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const workstream = workstreams.get(id);
+    const body = (request.body ?? {}) as CommandBody;
+    if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+    const commandId = body.commandId?.trim() || randomUUID();
+    const existing = await sql`select response from workstream_commands where workstream_id = ${id} and command_id = ${commandId}`;
+    if (existing.length) return existing[0]!.response;
+    const current = workstream.status as WorkstreamStatus;
+    const transitionTarget: WorkstreamStatus = command === "pause" ? "pausing" : command === "resume" ? "resuming" : command === "complete" ? "completing" : target;
+    const emergencyStop = command === "emergency-stop" && current !== "archived";
+    if (!emergencyStop && !canTransition(current, transitionTarget)) return reply.code(409).send({ error: "invalid_workstream_transition", from: current, to: target });
+    if (command === "pause") {
+      workstream.status = "pausing";
+      emit(workstream, "workstream.pausing", body.reason?.trim() || "Pause requested");
+      workstream.status = "paused";
+    } else if (command === "resume") {
+      workstream.status = "resuming";
+      emit(workstream, "workstream.resuming", body.reason?.trim() || "Resume requested");
+      workstream.status = "active";
+    } else if (command === "complete") {
+      workstream.status = "completing";
+      emit(workstream, "workstream.completing", body.reason?.trim() || "Completion requested");
+      workstream.status = "completed";
+    } else {
+      workstream.status = target;
+    }
+    if (target === "active") workstream.agents.forEach((agent) => { if (agent.status !== "done") agent.status = "idle"; });
+    const eventType = command === "emergency-stop" ? "workstream.emergency_stopped" : `workstream.${command.replaceAll("-", "_")}`;
+    emit(workstream, eventType, body.reason?.trim() || `Workstream ${command.replaceAll("-", " ")} requested`);
+    await persistWorkstreamStatus(workstream);
+    const response = { commandId, workstreamId: id, command, status: workstream.status, accepted: true };
+    await sql`insert into workstream_commands (workstream_id, command_id, command, response) values (${id}, ${commandId}, ${command}, ${JSON.stringify(response)})`;
+    return response;
+  });
+}
+app.post("/api/workstreams/:id/approval", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const workstream = workstreams.get(id);
+  const body = (request.body ?? {}) as CommandBody;
+  if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+  if (body.decision !== "resume" && body.decision !== "complete" && body.decision !== "reject") return reply.code(400).send({ error: "decision_required" });
+  const commandId = body.commandId?.trim() || randomUUID();
+  const existing = await sql`select response from workstream_commands where workstream_id = ${id} and command_id = ${commandId}`;
+  if (existing.length) return existing[0]!.response;
+  const target: WorkstreamStatus = body.decision === "resume" ? "active" : body.decision === "complete" ? "completed" : "paused";
+  const validationTarget: WorkstreamStatus = body.decision === "complete" ? "completing" : body.decision === "reject" ? "pausing" : target;
+  if (!canTransition(workstream.status as WorkstreamStatus, validationTarget)) return reply.code(409).send({ error: "invalid_workstream_transition", from: workstream.status, to: target });
+  if (body.decision === "complete") {
+    workstream.status = "completing";
+    emit(workstream, "approval.complete", body.reason?.trim() || "Human approval: complete");
+    workstream.status = "completed";
+  } else if (body.decision === "reject") {
+    workstream.status = "pausing";
+    emit(workstream, "approval.reject", body.reason?.trim() || "Human approval rejected");
+    workstream.status = "paused";
+  } else {
+    workstream.status = target;
+    emit(workstream, `approval.${body.decision}`, body.reason?.trim() || `Human approval: ${body.decision}`);
+  }
+  await persistWorkstreamStatus(workstream);
+  const response = { commandId, workstreamId: id, command: "approval", decision: body.decision, status: target, accepted: true };
+  await sql`insert into workstream_commands (workstream_id, command_id, command, response) values (${id}, ${commandId}, ${JSON.stringify(body.decision)}, ${JSON.stringify(response)})`;
+  return response;
 });
 app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => {
   const { id, agentId } = request.params as { id: string; agentId: string };
@@ -151,7 +219,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   if (requestedId) {
     const persisted = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where id = ${requestedId} and workstream_id = ${workstream.id}`;
     if (persisted.length) {
-      const row = persisted[0];
+      const row = persisted[0]!;
       const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
       workstream.messages.push(restored);
       return restored;
@@ -251,6 +319,7 @@ await sql`create table if not exists agents (id text primary key, workstream_id 
 await sql`create table if not exists workflow_events (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, type text not null, message text not null, role text, from_node text, to_node text, occurred_at timestamptz not null)`;
 await sql`create table if not exists messages (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, sender_id text not null, recipient_ids text[] not null, message_type text not null, content text not null, task_id text, correlation_id text not null, causation_id text, evidence_ids jsonb not null default '[]', created_at timestamptz not null default now(), delivery_status text not null default 'pending')`;
 await sql`create table if not exists message_deliveries (message_id text not null references messages(id) on delete cascade, recipient_id text not null, delivery_status text not null default 'pending', delivered_at timestamptz, primary key (message_id, recipient_id))`;
+await sql`create table if not exists workstream_commands (workstream_id text not null references workstreams(id) on delete cascade, command_id text not null, command text not null, response jsonb not null, created_at timestamptz not null default now(), primary key (workstream_id, command_id))`;
 await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
 await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
 await sql`alter table workflow_events add column if not exists from_node text`;
@@ -269,17 +338,21 @@ async function runHappyPath(workstream: Workstream): Promise<void> {
     workstream.status = "active";
     emit(workstream, "workstream.active", "Workflow started");
     for (const [fromRole, toRole, title, content, delay] of stages) {
+      if (workstream.status !== "active") return;
       const sender = workstream.agents.find((candidate) => candidate.role === fromRole);
       if (sender) sender.status = "running";
       emit(workstream, "run.started", `${fromRole.toUpperCase()} run started`, fromRole);
       await new Promise((resolve) => setTimeout(resolve, delay));
+      if (workstream.status !== "active") return;
       if (sender) sender.status = "done";
       await createMessage(workstream, agent(fromRole), [agent(toRole)], content, "request", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
       emit(workstream, `${fromRole}.completed`, title, fromRole);
     }
-    if (workstream.status === "active") await createMessage(workstream, agent("pm"), ["human"], "Human review requested before any high-impact action.", "decision", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
-    workstream.status = "completed";
-    emit(workstream, "workstream.completed", "Happy path completed");
+    if (workstream.status === "active") {
+      await createMessage(workstream, agent("pm"), ["human"], "Human review requested before any high-impact action.", "decision", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
+      workstream.status = "waiting_for_human";
+      emit(workstream, "workstream.waiting_for_human", "Human approval required before completion");
+    }
   } catch (error) {
     metrics.workflowFailures += 1;
     workstream.status = "failed";

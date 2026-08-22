@@ -8,6 +8,7 @@ export const workstreamStatuses = [
   "resuming",
   "completing",
   "completed",
+  "emergency_stopped",
   "archived",
 ] as const;
 
@@ -23,6 +24,7 @@ const transitions: Record<WorkstreamStatus, readonly WorkstreamStatus[]> = {
   resuming: ["active", "waiting_for_human", "pausing"],
   completing: ["active", "completed"],
   completed: ["active", "archived"],
+  emergency_stopped: ["archived"],
   archived: [],
 };
 
