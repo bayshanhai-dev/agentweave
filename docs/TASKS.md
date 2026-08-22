@@ -15,7 +15,7 @@ This backlog converts the product specification into executable work. Each task 
 - [x] AW-043 — Initial Activity and Task views
 - [x] AW-044 — Initial realtime WebSocket event gateway
 - [x] AW-053 — Initial structured logs, Prometheus metrics, Grafana/Loki stack
-- [ ] AW-030 — Durable task model and evidence-backed task board
+- [x] AW-030 — Durable task model and evidence-backed task board
 - [ ] AW-042 — Full per-agent typed chat and message inboxes
 - [ ] AW-054 — Full Playwright/Testcontainers E2E workflow
 
