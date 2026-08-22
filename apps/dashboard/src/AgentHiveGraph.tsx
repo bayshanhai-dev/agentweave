@@ -13,7 +13,7 @@ const nodes: Node[] = [
 
 const edges: Edge[] = [
   ["human", "pm"], ["human", "pe"], ["human", "coder"], ["human", "qa"],
-  ["pm", "pe"], ["pm", "coder"], ["pm", "qa"], ["pe", "coder"], ["pe", "qa"], ["coder", "qa"],
+  ["pm", "pe"], ["pm", "coder"], ["pm", "qa"], ["pe", "coder"], ["pe", "qa"], ["coder", "qa"], ["qa", "pm"],
 ].map(([source, target]) => ({ id: `${source}-${target}`, source, target, animated: true, style: { stroke: "#91a176", strokeWidth: 1.5 } }));
 
 export function AgentHiveGraph({ selected, onSelect, onEdgeSelect }: Props) {
