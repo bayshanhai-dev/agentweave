@@ -1,8 +1,8 @@
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { createProviderFromEnv } from "./providers/registry.js";
 import type { ProviderRunEvent } from "./providers/types.js";
-import { AgentTaskExecutor } from "./execution.js";
-import { AgentRuntime } from "./agent-runtime.js";
+import { AgentTaskExecutor } from "./runtime/execution.js";
+import { AgentRuntime } from "./runtime/agent-runtime.js";
 import { PostgresAgentSessionRepository } from "./providers/postgres-session-repository.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";

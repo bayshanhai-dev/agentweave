@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExecutionControl } from "./execution-control.js";
+import { ExecutionControl } from "../../src/runtime/execution-control.js";
 
 describe("ExecutionControl", () => {
   it("checkpoints and cancels on pause", async () => {
