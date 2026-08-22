@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@agentweave/protocol": "workspace:*",
-    "nats": "^2.29.3"
+    "nats": "^2.29.3",
+    "postgres": "^3.4.7"
   },
   "devDependencies": {
     "tsx": "^4.20.5"
