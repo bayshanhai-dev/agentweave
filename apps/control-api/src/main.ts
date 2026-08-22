@@ -3,16 +3,21 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
-import { WorkstreamOrchestrator } from "./orchestrator.js";
+import { WorkstreamOrchestrator, type OrchestrationDecision } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 
 type Role = "pm" | "pe" | "coder" | "qa";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
-type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "done" };
+type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } } return []; }
+function normalizeLoadedStatus(status: string, events: Array<{ type: unknown }>): string {
+  if (status !== "completing") return status;
+  const last = [...events].reverse().find((event) => String(event.type).startsWith("workstream.waiting_for_human") || String(event.type).startsWith("approval."));
+  return last && String(last.type).startsWith("workstream.waiting_for_human") ? "waiting_for_human" : status;
+}
 
 const app = Fastify({ logger: true });
 await app.register(websocket);
@@ -27,7 +32,7 @@ type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | 
 app.addHook("onRequest", async (request, reply) => {
   metrics.requests += 1;
   reply.header("access-control-allow-origin", "*");
-  reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
+  reply.header("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
   reply.header("access-control-allow-headers", "content-type");
   if (request.method === "OPTIONS") return reply.code(204).send();
 });
@@ -61,12 +66,52 @@ app.get("/api/workstreams/:id/messages", async (request, reply) => {
   const workstream = workstreams.get((request.params as { id: string }).id);
   return workstream ? workstream.messages : reply.code(404).send({ error: "workstream_not_found" });
 });
+app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const workstream = workstreams.get(id);
+  const body = request.body as OrchestrationDecision & { actorId?: string } | undefined;
+  if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+  const pm = workstream.agents.find((agent) => agent.role === "pm");
+  if (!pm || body?.actorId !== pm.id) return reply.code(403).send({ error: "orchestration_decision_requires_pm_lead" });
+  if (["paused", "completed", "emergency_stopped", "archived"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_runnable", status: workstream.status });
+  const orchestrator = orchestrators.get(id);
+  if (!orchestrator || !body) return reply.code(400).send({ error: "decision_required" });
+  let decision: OrchestrationDecision;
+  try { decision = orchestrator.validateDecision(body); } catch (error) { return reply.code(400).send({ error: "invalid_orchestration_decision", detail: String(error).replace(/^Error: /, "") }); }
+  if (decision.action === "complete") {
+    workstream.status = "completing";
+    emit(workstream, "orchestration.complete.requested", decision.reason, "pm");
+    workstream.status = "waiting_for_human";
+    await persistWorkstreamStatus(workstream);
+  } else if (decision.action === "ask_human") {
+    workstream.status = "waiting_for_human";
+    emit(workstream, "orchestration.human_input_requested", decision.content ?? decision.reason, "pm");
+    await persistWorkstreamStatus(workstream);
+  } else if (decision.action === "wait") {
+    emit(workstream, "orchestration.waiting", decision.reason, "pm");
+  } else {
+    const target = workstream.agents.find((agent) => agent.role === decision.targetRole);
+    if (!target) return reply.code(404).send({ error: "target_agent_not_found", role: decision.targetRole });
+    let taskId: string | undefined;
+    if (decision.action === "create_task") {
+      const now = new Date().toISOString();
+      const task: Task = { id: `${workstream.id}:orchestration-${randomUUID()}`, workstreamId: id, title: decision.taskTitle!, status: "ready", acceptanceCriteria: ["Task is completed with evidence"], dependencies: [], evidence: [], createdAt: now, updatedAt: now };
+      workstream.tasks.push(task); taskId = task.id; await persistTask(task);
+      emit(workstream, "task.created", `PM Lead created task for ${target.role}: ${task.title}`, "pm");
+    }
+    await createMessage(workstream, pm.id, [target.id], decision.content ?? decision.taskTitle!, "request", { ...(taskId ? { taskId } : {}) });
+    emit(workstream, "orchestration.decision.applied", decision.reason, "pm");
+  }
+  return { accepted: true, workstreamId: id, decision };
+});
 for (const [command, target] of Object.entries({ pause: "paused", resume: "active", complete: "completed", "emergency-stop": "emergency_stopped", "waiting-for-human": "waiting_for_human" } as const)) {
   app.post(`/api/workstreams/:id/${command}`, async (request, reply) => {
     const { id } = request.params as { id: string };
     const workstream = workstreams.get(id);
     const body = (request.body ?? {}) as CommandBody;
     if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+    if (["completing", "completed", "archived", "emergency_stopped"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_actionable", status: workstream.status });
+    if (["completing", "completed", "archived", "emergency_stopped"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_actionable", status: workstream.status });
     const commandId = body.commandId?.trim() || randomUUID();
     const existing = await sql`select response from workstream_commands where workstream_id = ${id} and command_id = ${commandId}`;
     if (existing.length) return existing[0]!.response;
@@ -185,7 +230,7 @@ app.post("/api/workstreams", async (request, reply) => {
     provider: { tool: body.tool ?? "mock", model: body.model ?? "deterministic" },
     workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [], messages: [],
     agents: [
-      { id: `${id}:pm`, role: "pm", authority: "lead", status: "idle" },
+      { id: `${id}:pm`, role: "pm", authority: "lead", status: "idle", orchestrator: true },
       { id: `${id}:pe`, role: "pe", authority: "reviewer", status: "idle" },
       { id: `${id}:coder-1`, role: "coder", authority: "executor", status: "idle" },
       { id: `${id}:qa`, role: "qa", authority: "reviewer", status: "idle" },
@@ -329,7 +374,7 @@ async function loadWorkstreams(): Promise<void> {
       loadedTasks.push(task); await persistTask(task);
     }
     workstreams.set(String(row.id), {
-      id: String(row.id), goal: String(row.goal), flavor: "software-development", status: String(row.status),
+      id: String(row.id), goal: String(row.goal), flavor: "software-development", status: normalizeLoadedStatus(String(row.status), events),
       provider: { tool: String(row.tool), model: String(row.model) }, workspaceRoot: String(row.workspace_root),
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),

@@ -1,11 +1,33 @@
 export type OrchestratorStage = "pm" | "pe" | "coder" | "qa" | "waiting_for_human" | "completed";
 export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected"; content: string; evidenceIds?: string[] };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: "pm" | "pe" | "coder" | "qa" | "human"; messageType: "request" | "decision"; content: string; attempt: number };
+export type OrchestrationDecision = {
+  action: "create_task" | "message_agent" | "wait" | "ask_human" | "complete";
+  targetRole?: "pm" | "pe" | "coder" | "qa" | "human";
+  content?: string;
+  taskTitle?: string;
+  reason: string;
+};
 
 export class WorkstreamOrchestrator {
   stage: OrchestratorStage = "pm";
   attempt = 0;
   constructor(readonly workstreamId: string, readonly goal: string) {}
+
+  /**
+   * The PM Lead is the intelligent workflow orchestrator. This class remains
+   * the deterministic safety layer: it validates the decision and exposes a
+   * normalized action for the Control API to execute.
+   */
+  validateDecision(decision: OrchestrationDecision): OrchestrationDecision {
+    if (!decision.reason.trim()) throw new Error("Orchestration decisions require a reason");
+    if ((decision.action === "create_task" || decision.action === "message_agent" || decision.action === "ask_human") && !decision.targetRole) {
+      throw new Error(`${decision.action} requires a targetRole`);
+    }
+    if (decision.action === "create_task" && !decision.taskTitle?.trim()) throw new Error("create_task requires taskTitle");
+    if (decision.action === "message_agent" && !decision.content?.trim()) throw new Error("message_agent requires content");
+    return decision;
+  }
 
   start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: this.goal, attempt: this.attempt }; }
 
