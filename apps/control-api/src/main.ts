@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
+import { WorkstreamOrchestrator } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 
 type Role = "pm" | "pe" | "coder" | "qa";
@@ -336,6 +337,7 @@ await loadWorkstreams();
 
 async function runHappyPath(workstream: Workstream): Promise<void> {
   const agent = (role: Role) => workstream.agents.find((candidate) => candidate.role === role)!.id;
+  const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal);
   const stages: Array<[Role, Role, string, string, number]> = [
     ["pm", "pe", "Task decomposition", `Decompose goal into an implementation task: ${workstream.goal}`, 300],
     ["pe", "coder", "Implementation design", "Implementation design is ready; build the smallest testable change.", 500],
@@ -345,6 +347,7 @@ async function runHappyPath(workstream: Workstream): Promise<void> {
   try {
     workstream.status = "active";
     emit(workstream, "workstream.active", "Workflow started");
+    orchestrator.start();
     for (const [fromRole, toRole, title, content, delay] of stages) {
       if (workstream.status !== "active") return;
       const sender = workstream.agents.find((candidate) => candidate.role === fromRole);
@@ -353,7 +356,10 @@ async function runHappyPath(workstream: Workstream): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, delay));
       if (workstream.status !== "active") return;
       if (sender) sender.status = "done";
-      await createMessage(workstream, agent(fromRole), [agent(toRole)], content, "request", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
+      const eventType = fromRole === "pm" ? "goal.received" : fromRole === "pe" ? "task.decomposed" : fromRole === "coder" ? "design.completed" : "qa.passed";
+      const action = orchestrator.apply({ type: eventType, content });
+      const recipient = action?.recipientRole === "human" ? "human" : agent(action?.recipientRole ?? toRole);
+      await createMessage(workstream, agent(fromRole), [recipient], action?.content ?? content, action?.messageType ?? "request", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
       emit(workstream, `${fromRole}.completed`, title, fromRole);
     }
     if (workstream.status === "active") {
