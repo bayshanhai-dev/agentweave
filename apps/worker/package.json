@@ -1,0 +1,21 @@
+{
+  "name": "@agentweave/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@agentweave/protocol": "workspace:*",
+    "nats": "^2.29.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5"
+  }
+}
