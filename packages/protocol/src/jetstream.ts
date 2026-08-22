@@ -23,7 +23,14 @@ export class JetStreamEventBus {
     this.connection = await connect({ servers: this.config.url });
     this.manager = await this.connection.jetstreamManager();
     this.client = this.connection.jetstream();
-    try { await this.manager.streams.info(this.stream); } catch { await this.manager.streams.add({ name: this.stream, subjects: Object.values(subjects), storage: StorageType.File, retention: RetentionPolicy.Limits }); }
+    try {
+      const info = await this.manager.streams.info(this.stream);
+      const configuredSubjects = new Set(info.config.subjects ?? []);
+      const requiredSubjects = Object.values(subjects);
+      if (requiredSubjects.some((subject) => !configuredSubjects.has(subject))) {
+        await this.manager.streams.update({ ...info.config, subjects: [...new Set([...configuredSubjects, ...requiredSubjects])] });
+      }
+    } catch { await this.manager.streams.add({ name: this.stream, subjects: Object.values(subjects), storage: StorageType.File, retention: RetentionPolicy.Limits }); }
   }
 
   async publish(subject: string, envelope: JetStreamEnvelope): Promise<void> {
@@ -33,8 +40,10 @@ export class JetStreamEventBus {
 
   async consumer(filterSubject: string, handler: (message: JsMsg) => Promise<"ack" | "retry" | "dead-letter">): Promise<Consumer> {
     if (!this.manager || !this.client) throw new Error("JetStreamEventBus is not connected");
-    const durable = this.config.durableName ?? `worker-${filterSubject.replaceAll(".", "-").replaceAll("*", "all")}`;
-    await this.manager.consumers.add(this.stream, { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(30_000), max_deliver: 5 });
+    const durable = this.config.durableName ?? `worker-${filterSubject.replaceAll(".", "-").replaceAll("*", "all")}-v2`;
+    const desired = { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(30_000), max_deliver: 5 } as const;
+    try { await this.manager.consumers.info(this.stream, durable); await this.manager.consumers.update(this.stream, desired); }
+    catch { await this.manager.consumers.add(this.stream, desired); }
     const consumer = await this.client.consumers.get(this.stream, durable);
     const subscription = await consumer.consume();
     void (async () => { for await (const message of subscription) { const outcome = await handler(message); if (outcome === "ack") message.ack(); else if (outcome === "retry") message.nak(); else { await this.publish(subjects.deadLetters.replace("*", this.stream), { id: message.info.streamSequence.toString(), type: "dead-letter", workstreamId: "unknown", occurredAt: new Date().toISOString(), payload: this.codec.decode(message.data) }); message.term(); } } })();

@@ -14,7 +14,7 @@ const executor = new AgentTaskExecutor(provider, sessions, workerId, async (even
 const runtimes = new Map<string, AgentRuntime>();
 const activeWorkstreams = new Set<string>();
 let currentEnvelope: ReturnType<typeof bus.decode> | undefined;
-const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox` });
+const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox-v2` });
 
 const controlApiUrl = process.env.CONTROL_API_URL ?? "http://control-api:3000";
 async function registerWorker(): Promise<void> { const payload = JSON.stringify({ workerId, provider: provider.name, roles: (process.env.WORKER_ROLES ?? "pm,pe,coder,qa").split(","), capabilities: ["streaming", "checkpoint", "resume", "cancellation"] }); for (;;) { try { const response = await fetch(`${controlApiUrl}/api/runtime/workers/register`, { method: "POST", headers: { "content-type": "application/json" }, body: payload }); if (response.ok) return; } catch { /* Control Plane may still be starting. */ } await new Promise((resolve) => setTimeout(resolve, 1000)); } }
@@ -49,6 +49,7 @@ await bus.consumer(subjects.inbox, async (message) => {
       return "retry";
     } finally { currentEnvelope = undefined; }
   });
+console.log(JSON.stringify({ event: "worker.inbox.ready", workerId, subject: subjects.inbox, durable: `${workerId}-inbox-v2`, occurredAt: new Date().toISOString() }));
 setInterval(() => { void heartbeat(); console.log(JSON.stringify({ event: "worker.heartbeat", workerId, subscription: subjects.inbox, provider: provider.name, occurredAt: new Date().toISOString() })); }, 15_000);
 setInterval(() => { for (const workstreamId of activeWorkstreams) void fetch(`${controlApiUrl}/api/workstreams/${encodeURIComponent(workstreamId)}`).then(async (response) => { if (response.ok) await executor.updateWorkstreamControl(workstreamId, (await response.json() as { status?: "active" | "waiting_for_human" | "paused" | "emergency_stopped" | "completed" }).status ?? "active"); }).catch(() => undefined); }, 1000);
 
