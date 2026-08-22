@@ -1,27 +1,36 @@
-import { connect, StringCodec } from "nats";
-import { createProviderFromEnv, PostgresAgentSessionRepository } from "./providers/index.js";
-import { AgentTaskExecutor, type AgentTask } from "./execution.js";
+import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
+import { createProviderFromEnv } from "./providers/registry.js";
+import type { ProviderRunEvent } from "./providers/types.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
-const roles = (process.env.WORKER_ROLES ?? "pm,pe,coder,qa").split(",");
-
-console.log(JSON.stringify({
-  event: "worker.started",
-  workerId,
-  roles,
-  occurredAt: new Date().toISOString(),
-}));
-
+const agentId = process.env.AGENT_ID;
 const provider = createProviderFromEnv();
-const repository = new PostgresAgentSessionRepository();
-const nc = await connect({ servers: process.env.NATS_URL ?? "nats://localhost:4222", name: workerId });
-const codec = StringCodec();
-const executor = new AgentTaskExecutor(provider, repository, workerId, async (event) => {
-  nc.publish("agentweave.runs", codec.encode(JSON.stringify({ workerId, occurredAt: new Date().toISOString(), ...event })));
-});
-const subscription = nc.subscribe(process.env.WORKER_TASK_SUBJECT ?? "agentweave.tasks", { queue: process.env.WORKER_QUEUE ?? "agentweave-workers" });
-void (async () => { for await (const message of subscription) { try { await executor.execute(JSON.parse(codec.decode(message.data)) as AgentTask); } catch (error) { console.error(JSON.stringify({ event: "worker.task_failed", workerId, error: error instanceof Error ? error.message : String(error) })); } } })();
+const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox` });
 
-setInterval(() => {
-  console.log(JSON.stringify({ event: "worker.heartbeat", workerId, occurredAt: new Date().toISOString() }));
-}, 15_000);
+console.log(JSON.stringify({ event: "worker.started", workerId, agentId, provider: provider.name, occurredAt: new Date().toISOString() }));
+await bus.connect();
+
+if (agentId) {
+  await bus.consumer(subjects.inbox.replace("*", agentId), async (message) => {
+    try {
+      const envelope = bus.decode(message);
+      const payload = envelope.payload as { senderId?: string; content?: string };
+      if (!payload.content) return "ack";
+      const session = await provider.createSession();
+      const result = await collectRun(provider.run({ session, input: payload.content, correlationId: envelope.correlationId, idempotencyKey: envelope.id }));
+      await bus.publish(subjects.events.replace("*", envelope.workstreamId), { id: `${envelope.id}:result`, type: "agent.turn.completed", workstreamId: envelope.workstreamId, occurredAt: new Date().toISOString(), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), causationId: envelope.id, payload: { agentId, senderId: payload.senderId, turnId: result.result.turnId, text: result.result.text, events: result.events } });
+      return "ack";
+    } catch (error) {
+      console.error(JSON.stringify({ event: "worker.message.failed", workerId, agentId, error: String(error), occurredAt: new Date().toISOString() }));
+      return "retry";
+    }
+  });
+}
+setInterval(() => console.log(JSON.stringify({ event: "worker.heartbeat", workerId, agentId, occurredAt: new Date().toISOString() })), 15_000);
+
+async function collectRun<T>(stream: AsyncGenerator<ProviderRunEvent, T>): Promise<{ events: ProviderRunEvent[]; result: T }> {
+  const events: ProviderRunEvent[] = [];
+  let step = await stream.next();
+  while (!step.done) { events.push(step.value); step = await stream.next(); }
+  return { events, result: step.value };
+}

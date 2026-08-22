@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
+import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 
 type Role = "pm" | "pe" | "coder" | "qa";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
@@ -16,6 +17,7 @@ const app = Fastify({ logger: true });
 await app.register(websocket);
 const workstreams = new Map<string, Workstream>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
+const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events" });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0 };
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
@@ -199,6 +201,7 @@ function emit(workstream: Workstream, type: string, message: string, role?: Role
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: type, role }, "workflow.event");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
+  void eventBus.publish(subjects.events.replace("*", workstream.id), { id: event.id, type, workstreamId: workstream.id, occurredAt: event.occurredAt, payload: event });
 }
 
 async function createMessageEvent(workstream: Workstream, from: string, to: string, content: string, intent: string): Promise<WorkflowEvent> {
@@ -241,6 +244,8 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
 function emitMessage(workstream: Workstream, type: string, message: Message): void {
   const payload = JSON.stringify({ workstreamId: workstream.id, type, message, occurredAt: new Date().toISOString() });
   for (const socket of sockets) socket.send(payload);
+  void eventBus.publish(subjects.events.replace("*", workstream.id), { id: `${message.id}:${type}`, type, workstreamId: workstream.id, occurredAt: message.createdAt, correlationId: message.correlationId, ...(message.causationId ? { causationId: message.causationId } : {}), payload: message });
+  for (const recipientId of message.recipientIds) void eventBus.publish(subjects.inbox.replace("*", recipientId), { id: `${message.id}:${recipientId}`, type, workstreamId: workstream.id, occurredAt: message.createdAt, correlationId: message.correlationId, ...(message.causationId ? { causationId: message.causationId } : {}), payload: message });
   metrics.eventsEmitted += 1;
 }
 
@@ -320,10 +325,13 @@ await sql`create table if not exists workflow_events (id text primary key, works
 await sql`create table if not exists messages (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, sender_id text not null, recipient_ids text[] not null, message_type text not null, content text not null, task_id text, correlation_id text not null, causation_id text, evidence_ids jsonb not null default '[]', created_at timestamptz not null default now(), delivery_status text not null default 'pending')`;
 await sql`create table if not exists message_deliveries (message_id text not null references messages(id) on delete cascade, recipient_id text not null, delivery_status text not null default 'pending', delivered_at timestamptz, primary key (message_id, recipient_id))`;
 await sql`create table if not exists workstream_commands (workstream_id text not null references workstreams(id) on delete cascade, command_id text not null, command text not null, response jsonb not null, created_at timestamptz not null default now(), primary key (workstream_id, command_id))`;
+await sql`create table if not exists agent_sessions (id text primary key, agent_id text not null, provider text not null, provider_session_id text not null, status text not null, current_turn_id text, last_checkpoint jsonb, last_event_sequence integer not null default 0, worker_id text, lease_expires_at timestamptz, updated_at timestamptz not null default now())`;
+await sql`create index if not exists agent_sessions_lease_idx on agent_sessions(status, lease_expires_at)`;
 await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
 await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
 await sql`alter table workflow_events add column if not exists from_node text`;
 await sql`alter table workflow_events add column if not exists to_node text`;
+await eventBus.connect();
 await loadWorkstreams();
 
 async function runHappyPath(workstream: Workstream): Promise<void> {
