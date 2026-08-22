@@ -5,9 +5,10 @@ import postgres from "postgres";
 
 type Role = "pm" | "pe" | "coder" | "qa";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
+type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "done" };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
-type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[] };
+type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 
 const app = Fastify({ logger: true });
 await app.register(websocket);
@@ -38,6 +39,10 @@ app.get("/api/workstreams/:id/tasks", async (request, reply) => {
   const { id } = request.params as { id: string }; const workstream = workstreams.get(id);
   return workstream ? workstream.tasks : reply.code(404).send({ error: "workstream_not_found" });
 });
+app.get("/api/workstreams/:id/messages", async (request, reply) => {
+  const workstream = workstreams.get((request.params as { id: string }).id);
+  return workstream ? workstream.messages : reply.code(404).send({ error: "workstream_not_found" });
+});
 app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
   const { id, taskId } = request.params as { id: string; taskId: string }; const workstream = workstreams.get(id);
   const task = workstream?.tasks.find((candidate) => candidate.id === taskId); const body = request.body as { status?: Task["status"]; evidence?: string[] } | undefined;
@@ -48,11 +53,23 @@ app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
 app.post("/api/workstreams/:id/messages", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
-  const body = request.body as { from?: string; to?: string; content?: string; intent?: string } | undefined;
+  const body = request.body as { id?: string; from?: string; to?: string; recipients?: string[]; content?: string; intent?: string; taskId?: string; correlationId?: string; causationId?: string; evidenceIds?: string[] } | undefined;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  if (!body?.content?.trim() || !body.to?.trim()) return reply.code(400).send({ error: "recipient_and_content_required" });
-  const event = await createMessageEvent(workstream, body.from?.trim() || "human", body.to.trim(), body.content.trim(), body.intent || "question");
-  return reply.code(201).send(event);
+  const recipients = [...new Set([...(body?.recipients ?? []), ...(body?.to ? [body.to] : [])].map((id) => id.trim()).filter(Boolean))];
+  if (!body?.content?.trim() || !recipients.length) return reply.code(400).send({ error: "recipient_and_content_required" });
+  const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : workstream.agents.find((candidate) => candidate.id === recipient || candidate.role === recipient)?.id ?? recipient);
+  const slashType = body.content.trim().match(/^\/(question|request|directive|command|decision)\b/i)?.[1]?.toLowerCase();
+  const content = body.content.trim().replace(/^\/(question|request|directive|command|decision)\b\s*/i, "");
+  const message = await createMessage(workstream, body.from?.trim() || "human", resolvedRecipients, content, slashType || body.intent || "question", body, body.id);
+  return reply.code(201).send(message);
+});
+app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply) => {
+  const { id, messageId } = request.params as { id: string; messageId: string };
+  const workstream = workstreams.get(id); const original = workstream?.messages.find((message) => message.id === messageId);
+  const body = request.body as { from?: string; content?: string } | undefined;
+  if (!workstream || !original) return reply.code(404).send({ error: "message_not_found" });
+  if (!body?.content?.trim() || !body.from?.trim()) return reply.code(400).send({ error: "sender_and_content_required" });
+  return reply.code(201).send(await createMessage(workstream, body.from.trim(), [original.senderId], body.content.trim(), "reply", { correlationId: original.correlationId, causationId: original.id }));
 });
 app.post("/api/workstreams", async (request, reply) => {
   const body = request.body as { goal?: string; tool?: string; model?: string; workspaceRoot?: string } | undefined;
@@ -61,7 +78,7 @@ app.post("/api/workstreams", async (request, reply) => {
   const workstream: Workstream = {
     id, goal: body.goal.trim(), flavor: "software-development", status: "starting",
     provider: { tool: body.tool ?? "mock", model: body.model ?? "deterministic" },
-    workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [],
+    workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [], messages: [],
     agents: [
       { id: `${id}:pm`, role: "pm", authority: "lead", status: "idle" },
       { id: `${id}:pe`, role: "pe", authority: "reviewer", status: "idle" },
@@ -108,6 +125,27 @@ async function createMessageEvent(workstream: Workstream, from: string, to: stri
   return event;
 }
 
+async function createMessage(workstream: Workstream, senderId: string, recipientIds: string[], content: string, messageType: string, extra: { taskId?: string; correlationId?: string; causationId?: string; evidenceIds?: string[] }, requestedId?: string): Promise<Message> {
+  const now = new Date().toISOString();
+  const existing = requestedId ? workstream.messages.find((candidate) => candidate.id === requestedId) : undefined;
+  if (existing) return existing;
+  const message: Message = { id: requestedId ?? randomUUID(), workstreamId: workstream.id, senderId, recipientIds, messageType, content, ...(extra.taskId ? { taskId: extra.taskId } : {}), correlationId: extra.correlationId ?? randomUUID(), ...(extra.causationId ? { causationId: extra.causationId } : {}), evidenceIds: extra.evidenceIds ?? [], createdAt: now, deliveryStatus: "pending" };
+  await sql`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
+    values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, ${message.deliveryStatus})`;
+  workstream.messages.push(message);
+  emitMessage(workstream, "message.created", message);
+  message.deliveryStatus = "delivered";
+  await sql`update messages set delivery_status = ${message.deliveryStatus} where id = ${message.id}`;
+  emitMessage(workstream, "message.delivered", message);
+  return message;
+}
+
+function emitMessage(workstream: Workstream, type: string, message: Message): void {
+  const payload = JSON.stringify({ workstreamId: workstream.id, type, message, occurredAt: new Date().toISOString() });
+  for (const socket of sockets) socket.send(payload);
+  metrics.eventsEmitted += 1;
+}
+
 async function persistWorkstream(workstream: Workstream): Promise<void> {
   await sql`insert into workstreams (id, goal, flavor, status, tool, model, workspace_root)
     values (${workstream.id}, ${workstream.goal}, ${workstream.flavor}, ${workstream.status}, ${workstream.provider.tool}, ${workstream.provider.model}, ${workstream.workspaceRoot})`;
@@ -151,8 +189,11 @@ async function loadWorkstreams(): Promise<void> {
       provider: { tool: String(row.tool), model: String(row.model) }, workspaceRoot: String(row.workspace_root),
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
+      messages: [],
       events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role && ["pm", "pe", "coder", "qa"].includes(String(event.role)) ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
+    const messages = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where workstream_id = ${row.id} order by created_at asc`;
+    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"] }));
   }
   app.log.info({ workstreamCount: workstreams.size }, "workstreams.loaded");
 }
@@ -161,28 +202,34 @@ await sql`create table if not exists workstreams (id text primary key, goal text
 await sql`create table if not exists tasks (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, title text not null, status text not null, owner_agent_id text, acceptance_criteria jsonb not null default '[]', dependencies jsonb not null default '[]', evidence jsonb not null default '[]', created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
 await sql`create table if not exists agents (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, role text not null, authority text not null, status text not null)`;
 await sql`create table if not exists workflow_events (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, type text not null, message text not null, role text, from_node text, to_node text, occurred_at timestamptz not null)`;
+await sql`create table if not exists messages (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, sender_id text not null, recipient_ids text[] not null, message_type text not null, content text not null, task_id text, correlation_id text not null, causation_id text, evidence_ids jsonb not null default '[]', created_at timestamptz not null default now(), delivery_status text not null default 'pending')`;
+await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
+await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
 await sql`alter table workflow_events add column if not exists from_node text`;
 await sql`alter table workflow_events add column if not exists to_node text`;
 await loadWorkstreams();
 
 async function runHappyPath(workstream: Workstream): Promise<void> {
-  const stages: Array<[Role, string, number]> = [
-    ["pm", "PM decomposed the goal into an implementation task", 300],
-    ["pe", "PE produced an implementation design", 500],
-    ["coder", "Coder completed the implementation and attached evidence", 700],
-    ["qa", "QA passed the implementation and attached review evidence", 500],
+  const agent = (role: Role) => workstream.agents.find((candidate) => candidate.role === role)!.id;
+  const stages: Array<[Role, Role, string, string, number]> = [
+    ["pm", "pe", "Task decomposition", `Decompose goal into an implementation task: ${workstream.goal}`, 300],
+    ["pe", "coder", "Implementation design", "Implementation design is ready; build the smallest testable change.", 500],
+    ["coder", "qa", "Implementation evidence", "Implementation completed; evidence and checks are attached for review.", 700],
+    ["qa", "pm", "Review result", "QA review: pass; acceptance evidence attached.", 500],
   ];
   try {
     workstream.status = "active";
     emit(workstream, "workstream.active", "Workflow started");
-    for (const [role, message, delay] of stages) {
-      const agent = workstream.agents.find((candidate) => candidate.role === role);
-      if (agent) agent.status = "running";
-      emit(workstream, "run.started", `${role.toUpperCase()} run started`, role);
+    for (const [fromRole, toRole, title, content, delay] of stages) {
+      const sender = workstream.agents.find((candidate) => candidate.role === fromRole);
+      if (sender) sender.status = "running";
+      emit(workstream, "run.started", `${fromRole.toUpperCase()} run started`, fromRole);
       await new Promise((resolve) => setTimeout(resolve, delay));
-      if (agent) agent.status = "done";
-      emit(workstream, `${role}.completed`, message, role);
+      if (sender) sender.status = "done";
+      await createMessage(workstream, agent(fromRole), [agent(toRole)], content, "request", { taskId: workstream.tasks[0]?.id });
+      emit(workstream, `${fromRole}.completed`, title, fromRole);
     }
+    if (workstream.status === "active") await createMessage(workstream, agent("pm"), ["human"], "Human review requested before any high-impact action.", "decision", { taskId: workstream.tasks[0]?.id });
     workstream.status = "completed";
     emit(workstream, "workstream.completed", "Happy path completed");
   } catch (error) {

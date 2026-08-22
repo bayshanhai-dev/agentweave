@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { agentInstanceSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "./index.js";
+import { agentInstanceSchema, agentMessageSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "./index.js";
 
 describe("scaling contracts", () => {
+  it("models durable multi-recipient messages with correlation", () => {
+    const message = agentMessageSchema.parse({ id: "m-1", workstreamId: "ws-1", senderId: "human", recipientIds: ["ws-1:pm", "ws-1:pe"], messageType: "directive", content: "Review this", correlationId: "c-1", createdAt: new Date().toISOString(), deliveryStatus: "delivered" });
+    expect(message.recipientIds).toHaveLength(2);
+    expect(message.evidenceIds).toEqual([]);
+  });
   it("defaults a role to one instance and one concurrent task", () => {
     expect(roleTemplateSchema.parse({ roleTemplateId: "coder", role: "coder" })).toMatchObject({
       maxInstances: 1,

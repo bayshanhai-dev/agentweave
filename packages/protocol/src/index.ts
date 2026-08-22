@@ -85,3 +85,14 @@ export const humanInputSchema = z.object({
 });
 
 export type HumanInput = z.infer<typeof humanInputSchema>;
+
+export const messageTypeSchema = z.enum(["question", "request", "directive", "command", "decision", "reply"]);
+export const deliveryStatusSchema = z.enum(["pending", "delivered", "acknowledged", "failed"]);
+export const agentMessageSchema = z.object({
+  id: z.string().min(1), workstreamId: z.string().min(1), senderId: z.string().min(1),
+  recipientIds: z.array(z.string().min(1)).min(1), messageType: messageTypeSchema,
+  content: z.string().min(1), taskId: z.string().min(1).optional(), correlationId: z.string().min(1),
+  causationId: z.string().min(1).optional(), evidenceIds: z.array(z.string().min(1)).default([]),
+  createdAt: z.string().datetime(), deliveryStatus: deliveryStatusSchema,
+});
+export type AgentMessage = z.infer<typeof agentMessageSchema>;

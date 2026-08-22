@@ -20,11 +20,14 @@ export type ProviderTurn = {
   metadata: { nextRole?: AgentRole; outcome?: "pass" | "fail" | "review" };
 };
 
+export type CollaborationMessage = { from: AgentRole; to: AgentRole | "human"; type: "question" | "request" | "directive" | "command" | "decision" | "reply"; content: string; evidenceIds?: string[] };
+
 export interface AiToolAdapter {
   create(role: AgentRole, sessionId: string): Promise<ProviderSession>;
   resume(session: ProviderSession): Promise<ProviderSession>;
   send(session: ProviderSession, input: string): AsyncGenerator<ProviderEvent, ProviderTurn>;
   cancel(session: ProviderSession, turnId: string): AsyncGenerator<ProviderEvent>;
+  collaborate(session: ProviderSession, input: string): AsyncGenerator<ProviderEvent, CollaborationMessage>;
 }
 
 const nextRole: Partial<Record<AgentRole, AgentRole>> = {
@@ -63,6 +66,12 @@ export class MockProvider implements AiToolAdapter {
 
   async *cancel(_session: ProviderSession, turnId: string): AsyncGenerator<ProviderEvent> {
     yield { type: "turn.cancelled", turnId };
+  }
+
+  async *collaborate(session: ProviderSession, input: string): AsyncGenerator<ProviderEvent, CollaborationMessage> {
+    const run = yield* this.send(session, input);
+    const next = nextRole[session.role] ?? "human";
+    return { from: session.role, to: next, type: session.role === "qa" ? "decision" : "request", content: run.text, ...(session.role === "coder" ? { evidenceIds: [`${run.turnId}:evidence`] } : {}) };
   }
 
   private response(role: AgentRole, input: string, outcome?: "pass" | "fail"): string {
