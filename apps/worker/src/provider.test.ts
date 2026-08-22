@@ -17,7 +17,7 @@ describe("MockProvider", () => {
     const session = await provider.create("pm", "session-1");
     expect(await provider.resume(session)).toEqual(session);
     const run = await collect(provider.send(session, "ship it"));
-    expect(run.events.map((event) => event.type)).toEqual(["turn.started", "turn.delta", "turn.delta", "turn.completed"]);
+    expect(run.events.map((event) => event.type)).toEqual(["turn.started", "turn.delta", "turn.delta", "turn.delta", "turn.completed"]);
     expect(run.result.metadata.nextRole).toBe("pe");
   });
 
