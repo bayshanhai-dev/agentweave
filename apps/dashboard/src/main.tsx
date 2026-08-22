@@ -12,7 +12,8 @@ function runtimeEndpoint(configured: string | undefined, fallbackPort: string, p
   return `${protocol}://${host}:${fallbackPort}`;
 }
 const api = runtimeEndpoint(import.meta.env.VITE_CONTROL_API_URL, "3000", "http");
-const wsUrl = runtimeEndpoint(import.meta.env.VITE_CONTROL_WS_URL, "3000", "ws") + "/events";
+const configuredWs = runtimeEndpoint(import.meta.env.VITE_CONTROL_WS_URL, "3000", "ws");
+const wsUrl = configuredWs.endsWith("/events") ? configuredWs : `${configuredWs}/events`;
 type Event = { id?: string; type?: string; message?: string; content?: string; senderId?: string; recipientIds?: string[]; role?: string; from?: string; to?: string; occurredAt?: string; createdAt?: string };
 type Agent = { id: string; role: string; authority: string; status: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: Event[]; messages?: Event[] };
