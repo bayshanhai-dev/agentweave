@@ -6,17 +6,26 @@ import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
 import { WorkstreamOrchestrator, type OrchestrationDecision } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 
-type Role = "pm" | "pe" | "coder" | "qa";
+type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
-type Workstream = { id: string; goal: string; flavor: "software-development"; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
+type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
+const flavorTemplates = {
+  "software-development": [
+    { role: "pm", authority: "lead" }, { role: "pe", authority: "lead" },
+    { role: "backend", authority: "executor" }, { role: "frontend", authority: "executor" },
+    { role: "qa", authority: "reviewer" }, { role: "devops", authority: "executor" },
+  ],
+} as const;
 function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } } return []; }
 function normalizeLoadedStatus(status: string, events: Array<{ type: unknown }>): string {
   if (status !== "completing") return status;
-  const last = [...events].reverse().find((event) => String(event.type).startsWith("workstream.waiting_for_human") || String(event.type).startsWith("approval."));
-  return last && String(last.type).startsWith("workstream.waiting_for_human") ? "waiting_for_human" : status;
+  const last = [...events].reverse().find((event) => String(event.type).startsWith("workstream.") || String(event.type).startsWith("approval."));
+  if (!last) return "waiting_for_human";
+  const type = String(last.type);
+  return type.includes("completed") || type.includes("complete") ? "completed" : "waiting_for_human";
 }
 
 const app = Fastify({ logger: true });
@@ -224,20 +233,24 @@ app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply
 });
 app.post("/api/workstreams/:id/messages/:messageId/ack", async (request, reply) => updateDelivery(request, reply, "acknowledged"));
 app.post("/api/workstreams/:id/messages/:messageId/fail", async (request, reply) => updateDelivery(request, reply, "failed"));
+app.post("/api/workstreams/:id/start", async (request, reply) => {
+  const id = (request.params as { id: string }).id; const workstream = workstreams.get(id);
+  if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+  if (workstream.status !== "draft") return reply.code(409).send({ error: "workstream_not_draft", status: workstream.status });
+  workstream.status = "starting"; await persistWorkstreamStatus(workstream); emit(workstream, "workstream.starting", "Human started the Workstream");
+  await startOrchestration(workstream); return workstream;
+});
 app.post("/api/workstreams", async (request, reply) => {
-  const body = request.body as { goal?: string; tool?: string; model?: string; workspaceRoot?: string } | undefined;
+  const body = request.body as { goal?: string; flavor?: keyof typeof flavorTemplates; tool?: string; model?: string; workspaceRoot?: string } | undefined;
   if (!body?.goal?.trim()) return reply.code(400).send({ error: "goal_required" });
+  const flavor = body.flavor ?? "software-development";
+  if (!flavorTemplates[flavor]) return reply.code(400).send({ error: "unsupported_flavor", availableFlavors: Object.keys(flavorTemplates) });
   const id = randomUUID();
   const workstream: Workstream = {
-    id, goal: body.goal.trim(), flavor: "software-development", status: "starting",
+    id, goal: body.goal.trim(), flavor, status: "draft",
     provider: { tool: body.tool ?? "mock", model: body.model ?? "deterministic" },
     workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [], messages: [],
-    agents: [
-      { id: `${id}:pm`, role: "pm", authority: "lead", status: "idle", orchestrator: true },
-      { id: `${id}:pe`, role: "pe", authority: "reviewer", status: "idle" },
-      { id: `${id}:coder-1`, role: "coder", authority: "executor", status: "idle" },
-      { id: `${id}:qa`, role: "qa", authority: "reviewer", status: "idle" },
-    ],
+    agents: flavorTemplates[flavor].map((template, index) => ({ id: `${id}:${template.role}-${index + 1}`, role: template.role, authority: template.authority, status: "idle", ...(template.role === "pm" ? { orchestrator: true } : {}) })),
   };
   const task: Task = { id: `${id}:task-1`, workstreamId: id, title: "Implement the highest-impact improvement", status: "ready", acceptanceCriteria: ["Implementation is scoped to the Workstream goal", "Relevant checks and tests pass", "Evidence is attached for review"], dependencies: [], evidence: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   workstream.tasks.push(task);
@@ -246,7 +259,6 @@ app.post("/api/workstreams", async (request, reply) => {
   metrics.workstreamsCreated += 1;
   app.log.info({ workstreamId: id, flavor: workstream.flavor, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
   emit(workstream, "workstream.created", "Software development hive created");
-  await startOrchestration(workstream);
   return reply.code(201).send(workstream);
 });
 app.get("/events", { websocket: true }, async (socket, request) => {
@@ -376,14 +388,16 @@ async function loadWorkstreams(): Promise<void> {
       const task: Task = { id: `${row.id}:task-1`, workstreamId: String(row.id), title: "Review and continue the Workstream", status: "ready", acceptanceCriteria: ["Work remains scoped to the Workstream goal", "Relevant checks pass", "Evidence is attached before review"], dependencies: [], evidence: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       loadedTasks.push(task); await persistTask(task);
     }
+    const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
-      id: String(row.id), goal: String(row.goal), flavor: "software-development", status: normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type }))),
+      id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus,
       provider: { tool: String(row.tool), model: String(row.model) }, workspaceRoot: String(row.workspace_root),
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
       messages: [],
       events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role && ["pm", "pe", "coder", "qa"].includes(String(event.role)) ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
+    if (normalizedStatus !== String(row.status)) await sql`update workstreams set status = ${normalizedStatus}, updated_at = now() where id = ${row.id}`;
     const messages = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where workstream_id = ${row.id} order by created_at asc`;
     workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"] }));
   }
