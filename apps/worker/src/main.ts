@@ -28,10 +28,16 @@ await bus.consumer(subjects.inbox, async (message) => {
       const envelope = bus.decode(message);
       currentEnvelope = envelope;
       const targetFromSubject = message.subject.split(".")[2];
-      const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
+      const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
       if (!targetAgentId) return "dead-letter";
       if (!payload.content) return "ack";
+      // Every message is durable in the Agent Inbox, but only executable
+      // requests (or messages already bound to a task) enter the provider.
+      // Questions, directives, decisions, and replies are handled by the
+      // agent conversation layer and must never mutate the workspace merely
+      // because they arrived on the inbox subject.
+      if (!payload.taskId && payload.messageType !== "request") return "ack";
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
       await runtime.dispatch({ taskId: payload.taskId ?? envelope.id, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model ? { model: payload.model } : {}), ...(payload.workspacePath ? { workspacePath: payload.workspacePath } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });

@@ -1397,7 +1397,9 @@ Human 的 Review 回复必须同时成为 PM Chat Message、`human.decision.reco
 
 ### 26.8 Typed Human Input
 
-Human Input 不能只保存为无类型 Chat String。AgentWeave 必须区分 Human 是在提问、请求一次行动、创建任务、设置长期行为、控制 Runtime、作出决策，还是提供反馈。
+Human Input 不能只保存为无类型 Chat String。AgentWeave 必须区分 Human 是在提问、请求一次行动、设置长期行为，还是作出决策。Workstream 的 Pause、Resume、Complete、Emergency Stop 等全局控制不属于 Chat Message，必须通过 Workstream Control API 执行。
+
+所有 Human 消息都会先持久化到 Agent durable Inbox，并通过事件流投递给收件人。只有 `request`（或已经绑定 `taskId` 的内部执行消息）可以进入 Task Queue 并触发 Worker/provider 执行；`question`、`directive`、`decision` 和 `reply` 由 Agent conversation layer 处理，不得因为进入 Inbox 就直接修改 Workspace 或启动 Provider turn。Inbox 表示“收到了什么”，Task Queue 表示“需要执行什么”。
 
 同一句自然语言可能具有不同语义：
 
@@ -1430,11 +1432,9 @@ interface HumanInput {
   intent:
     | "question"
     | "request"
-    | "task"
     | "directive"
-    | "command"
     | "decision"
-    | "feedback";
+    | "reply";
   scope:
     | "message"
     | "current_run"
