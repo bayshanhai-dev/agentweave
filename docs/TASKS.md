@@ -16,7 +16,9 @@ This backlog converts the product specification into executable work. Each task 
 - [x] AW-044 — Initial realtime WebSocket event gateway
 - [x] AW-053 — Initial structured logs, Prometheus metrics, Grafana/Loki stack
 - [x] AW-030 — Durable task model and evidence-backed task board
-- [ ] AW-042 — Full per-agent typed chat and message inboxes
+- [x] AW-042 — Durable multi-agent messages and initial message events
+- [ ] AW-045 — HTTP Inbox API, delivery acknowledgements, and WebSocket replay
+- [ ] AW-046 — Dashboard streaming message timeline and Agent/Edge filters
 - [ ] AW-054 — Full Playwright/Testcontainers E2E workflow
 
 模块 breakdown 已覆盖 foundation/docker、protocol/domain、PostgreSQL、NATS、projector、Control API/WebSocket、orchestrator、worker、provider、workspace、dashboard、human-input、summary/tokens、observability 和 E2E/performance。完整架构图保存在 docs/architecture.mmd，并嵌入 PRODUCT_SPEC.md。
@@ -379,6 +381,34 @@ This backlog converts the product specification into executable work. Each task 
   - Optional narrative receives only the fixed summary snapshot and evidence references.
 
 ## Milestone D5: dashboard P0
+
+### AW-045 — Implement HTTP Inbox API and realtime message replay
+
+- Category: `category:api`
+- Component: `component:control-api`
+- Priority: `priority:P0`
+- Depends on: AW-010, AW-014, AW-042
+- Deliverable: per-agent inbox query, acknowledgement/failure commands, reply events, and reconnect catch-up.
+- Acceptance:
+  - Inbox results are isolated by concrete Agent ID and survive Control API restart.
+  - Multiple recipients do not share or overwrite delivery state.
+  - ACK, failure, and reply each persist before their WebSocket event is published.
+  - Repeating a delivery or ACK is idempotent.
+  - A reconnecting client can fetch messages after a cursor without polling the entire Workstream.
+
+### AW-046 — Implement Dashboard streaming message experience
+
+- Category: `category:frontend`
+- Component: `component:dashboard`
+- Priority: `priority:P0`
+- Depends on: AW-045, AW-044
+- Deliverable: HTTP initial hydration plus WebSocket incremental message timeline.
+- Acceptance:
+  - New messages appear without refresh.
+  - Clicking an Agent filters input/output messages; clicking an Edge filters both directions.
+  - Human is a graph node, while the sidecar contains only Human ↔ Agent chat.
+  - Event Bus activity remains separate from the chat sidecar.
+  - Reconnect catch-up does not duplicate messages.
 
 ### AW-040 — Build the dashboard application shell
 
