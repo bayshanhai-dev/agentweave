@@ -51,9 +51,9 @@ app.get("/metrics", async (_request, reply) => {
   return Object.entries(metrics).map(([name, value]) => `agentweave_${name} ${value}`).join("\n") + "\n";
 });
 app.post("/api/runtime/workers/register", async (request, reply) => {
-  const body = request.body as { workerId?: string; provider?: string; roles?: string[]; capabilities?: string[] } | undefined;
+  const body = request.body as { workerId?: string; provider?: string; providerModel?: string; endpoint?: string | null; roles?: string[]; capabilities?: string[] } | undefined;
   if (!body?.workerId?.trim()) return reply.code(400).send({ error: "worker_id_required" });
-  await sql`insert into runtime_workers (id, provider, roles, capabilities, status, last_heartbeat_at) values (${body.workerId.trim()}, ${body.provider ?? "unknown"}, ${body.roles ?? []}, ${body.capabilities ?? []}, 'online', now()) on conflict (id) do update set provider=excluded.provider, roles=excluded.roles, capabilities=excluded.capabilities, status='online', last_heartbeat_at=now()`;
+  await sql`insert into runtime_workers (id, provider, provider_model, endpoint, roles, capabilities, status, last_heartbeat_at) values (${body.workerId.trim()}, ${body.provider ?? "unknown"}, ${body.providerModel ?? "default"}, ${body.endpoint ?? null}, ${body.roles ?? []}, ${body.capabilities ?? []}, 'online', now()) on conflict (id) do update set provider=excluded.provider, provider_model=excluded.provider_model, endpoint=excluded.endpoint, roles=excluded.roles, capabilities=excluded.capabilities, status='online', last_heartbeat_at=now()`;
   return { workerId: body.workerId.trim(), status: "online" };
 });
 app.post("/api/runtime/workers/:workerId/heartbeat", async (request, reply) => {
@@ -413,7 +413,11 @@ await sql`create table if not exists message_deliveries (message_id text not nul
 await sql`create table if not exists workstream_commands (workstream_id text not null references workstreams(id) on delete cascade, command_id text not null, command text not null, response jsonb not null, created_at timestamptz not null default now(), primary key (workstream_id, command_id))`;
 await sql`create table if not exists agent_sessions (id text primary key, agent_id text not null, provider text not null, provider_session_id text not null, status text not null, current_turn_id text, last_checkpoint jsonb, last_event_sequence integer not null default 0, worker_id text, lease_expires_at timestamptz, updated_at timestamptz not null default now())`;
 await sql`create table if not exists workspace_evidence (id bigserial primary key, task_id text not null references tasks(id) on delete cascade, workspace_path text not null, git_diff text not null, test_command text, test_output text, test_exit_code integer, created_at timestamptz not null default now())`;
+await sql`alter table workspace_evidence add column if not exists kind text not null default 'workspace'`;
+await sql`alter table workspace_evidence add column if not exists warnings jsonb not null default '[]'`;
 await sql`create table if not exists runtime_workers (id text primary key, provider text not null, roles text[] not null default '{}', capabilities text[] not null default '{}', status text not null default 'offline', current_task_id text, last_heartbeat_at timestamptz, registered_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
+await sql`alter table runtime_workers add column if not exists provider_model text not null default 'default'`;
+await sql`alter table runtime_workers add column if not exists endpoint text`;
 await sql`create index if not exists runtime_workers_heartbeat_idx on runtime_workers(status, last_heartbeat_at)`;
 await sql`create index if not exists agent_sessions_lease_idx on agent_sessions(status, lease_expires_at)`;
 await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
@@ -434,13 +438,34 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
 
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed") return;
+  app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
-  const payload = envelope.payload as { agentId?: string; taskId?: string; text?: string; evidenceIds?: string[] }; const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId); if (!sender || !payload.text) return;
+  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; evidenceIds?: string[]; result?: { agentId?: string; taskId?: string; text?: string; evidenceIds?: string[] } };
+  const payload = raw.result ?? raw;
+  const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
+  if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
+  const resultText = payload.text?.trim() ?? "";
+  if (!resultText) {
+    const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
+    emit(workstream, "task.failed", `${task?.title ?? sender.role} → provider returned no text summary`, sender.role);
+    app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
+    return;
+  }
   const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
-  if (task) { task.status = "done"; task.evidence = [...new Set([...task.evidence, ...(payload.evidenceIds ?? [])])]; task.updatedAt = new Date().toISOString(); await persistTask(task); emit(workstream, "task.completed", `${task.title} → done`, sender.role); }
-  const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(payload.text) ? "qa.failed" : "qa.passed";
-  const action = orchestrator.apply({ type: eventType, content: payload.text, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
-  if (!action) { workstream.status = "completed"; emit(workstream, "workstream.completed", "Orchestrator completed the workflow"); return; }
+  if (task) {
+    const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
+    const evidenceRows = evidenceIds.length ? await sql`select id from workspace_evidence where task_id = ${task.id} and id = any(${evidenceIds}::bigint[])` : [];
+    if (workstream.workspaceRoot && (!evidenceIds.length || evidenceRows.length !== evidenceIds.length)) {
+      task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task);
+      emit(workstream, "task.failed", `${task.title} → evidence persistence incomplete`, sender.role);
+      return;
+    }
+    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await persistTask(task); emit(workstream, "task.completed", `${task.title} → done`, sender.role);
+  }
+  const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
+  const action = orchestrator.apply({ type: eventType, content: resultText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+  if (!action) { workstream.status = "completed"; emit(workstream, "workstream.completed", "Orchestrator completed the workflow"); await persistWorkstreamStatus(workstream); return; }
   const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role))?.id : undefined); if (!recipient) return;
   await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; emit(workstream, "workstream.waiting_for_human", "Human approval required before completion"); }
