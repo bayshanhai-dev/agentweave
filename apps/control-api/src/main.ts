@@ -165,7 +165,7 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   const existing = await sql`select response from workstream_commands where workstream_id = ${id} and command_id = ${commandId}`;
   if (existing.length) return existing[0]!.response;
   const target: WorkstreamStatus = body.decision === "resume" ? "active" : body.decision === "complete" ? "completed" : "paused";
-  const validationTarget: WorkstreamStatus = body.decision === "complete" ? "completing" : body.decision === "reject" ? "pausing" : target;
+  const validationTarget: WorkstreamStatus = body.decision === "complete" ? (workstream.status === "completing" ? "waiting_for_human" : "completing") : body.decision === "reject" ? "pausing" : target;
   if (!canTransition(workstream.status as WorkstreamStatus, validationTarget)) return reply.code(409).send({ error: "invalid_workstream_transition", from: workstream.status, to: target });
   if (body.decision === "complete") {
     workstream.status = "completing";
