@@ -17,6 +17,7 @@ function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return 
 const app = Fastify({ logger: true });
 await app.register(websocket);
 const workstreams = new Map<string, Workstream>();
+const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events" });
 const sockets = new Set<{ send: (data: string) => void }>();
@@ -186,7 +187,7 @@ app.post("/api/workstreams", async (request, reply) => {
   metrics.workstreamsCreated += 1;
   app.log.info({ workstreamId: id, flavor: workstream.flavor, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
   emit(workstream, "workstream.created", "Software development hive created");
-  void runHappyPath(workstream);
+  await startOrchestration(workstream);
   return reply.code(201).send(workstream);
 });
 app.get("/events", { websocket: true }, async (socket, request) => {
@@ -348,46 +349,26 @@ await sql`alter table workflow_events add column if not exists from_node text`;
 await sql`alter table workflow_events add column if not exists to_node text`;
 await eventBus.connect();
 await loadWorkstreams();
+await eventBus.consumer(subjects.events, async (message) => { await handleWorkerResult(eventBus.decode(message)); return "ack"; });
 setInterval(() => { void sql`update runtime_workers set status='offline', updated_at=now() where status='online' and last_heartbeat_at < now() - interval '45 seconds'`; }, 15_000);
 
-async function runHappyPath(workstream: Workstream): Promise<void> {
-  const agent = (role: Role) => workstream.agents.find((candidate) => candidate.role === role)!.id;
-  const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal);
-  const stages: Array<[Role, Role, string, string, number]> = [
-    ["pm", "pe", "Task decomposition", `Decompose goal into an implementation task: ${workstream.goal}`, 300],
-    ["pe", "coder", "Implementation design", "Implementation design is ready; build the smallest testable change.", 500],
-    ["coder", "qa", "Implementation evidence", "Implementation completed; evidence and checks are attached for review.", 700],
-    ["qa", "pm", "Review result", "QA review: pass; acceptance evidence attached.", 500],
-  ];
-  try {
-    workstream.status = "active";
-    emit(workstream, "workstream.active", "Workflow started");
-    orchestrator.start();
-    for (const [fromRole, toRole, title, content, delay] of stages) {
-      if (workstream.status !== "active") return;
-      const sender = workstream.agents.find((candidate) => candidate.role === fromRole);
-      if (sender) sender.status = "running";
-      emit(workstream, "run.started", `${fromRole.toUpperCase()} run started`, fromRole);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      if (workstream.status !== "active") return;
-      if (sender) sender.status = "done";
-      const eventType = fromRole === "pm" ? "goal.received" : fromRole === "pe" ? "task.decomposed" : fromRole === "coder" ? "design.completed" : "qa.passed";
-      const action = orchestrator.apply({ type: eventType, content });
-      const recipient = action?.recipientRole === "human" ? "human" : agent(action?.recipientRole ?? toRole);
-      await createMessage(workstream, agent(fromRole), [recipient], action?.content ?? content, action?.messageType ?? "request", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
-      emit(workstream, `${fromRole}.completed`, title, fromRole);
-    }
-    if (workstream.status === "active") {
-      await createMessage(workstream, agent("pm"), ["human"], "Human review requested before any high-impact action.", "decision", workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
-      workstream.status = "waiting_for_human";
-      emit(workstream, "workstream.waiting_for_human", "Human approval required before completion");
-    }
-  } catch (error) {
-    metrics.workflowFailures += 1;
-    workstream.status = "failed";
-    app.log.error({ err: error, workstreamId: workstream.id }, "workflow.failed");
-    emit(workstream, "workstream.failed", "Workflow failed");
-  }
+async function startOrchestration(workstream: Workstream): Promise<void> {
+  const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal); orchestrators.set(workstream.id, orchestrator);
+  workstream.status = "active"; emit(workstream, "workstream.active", "Workflow started");
+  const action = orchestrator.start(); const pm = workstream.agents.find((candidate) => candidate.role === "pm")!;
+  await createMessage(workstream, "human", [pm.id], action.content, action.messageType, workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
+}
+
+async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
+  if (envelope.type !== "agent.turn.completed") return;
+  const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
+  const payload = envelope.payload as { agentId?: string; text?: string; evidenceIds?: string[] }; const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId); if (!sender || !payload.text) return;
+  const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : sender.role === "coder" ? "design.completed" : /fail|missing|error/i.test(payload.text) ? "qa.failed" : "qa.passed";
+  const action = orchestrator.apply({ type: eventType, content: payload.text, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+  if (!action) { workstream.status = "completed"; emit(workstream, "workstream.completed", "Orchestrator completed the workflow"); return; }
+  const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id; if (!recipient) return;
+  await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+  if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; emit(workstream, "workstream.waiting_for_human", "Human approval required before completion"); }
 }
 
 await app.listen({ host: "0.0.0.0", port: Number(process.env.CONTROL_API_PORT ?? 3000) });
