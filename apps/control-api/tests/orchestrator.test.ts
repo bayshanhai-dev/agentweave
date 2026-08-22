@@ -21,4 +21,11 @@ describe("WorkstreamOrchestrator", () => {
     expect(flow.attempt).toBe(1);
     expect(flow.stage).toBe("coder");
   });
+
+  it("validates intelligent PM orchestration decisions without hardcoding the next role", () => {
+    const flow = new WorkstreamOrchestrator("ws-1", "goal");
+    expect(flow.validateDecision({ action: "create_task", targetRole: "qa", taskTitle: "Run API integration checks", reason: "The implementation changed materially" }).targetRole).toBe("qa");
+    expect(() => flow.validateDecision({ action: "create_task", targetRole: "qa", reason: "missing title" })).toThrow("taskTitle");
+    expect(() => flow.validateDecision({ action: "message_agent", targetRole: "coder", reason: "missing content" })).toThrow("content");
+  });
 });
