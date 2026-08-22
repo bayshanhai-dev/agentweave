@@ -800,6 +800,24 @@ GET  /workstreams/:id/events
 
 所有命令必须生成 Event，支持幂等，并在 API 重启后保留状态。
 
+#### Message API 与实时 Dashboard 通道
+
+HTTP API 是可靠的命令与查询入口，WebSocket 是低延迟的实时通知入口；两者不互相替代。
+
+```text
+POST /api/workstreams/:id/messages                         发送消息
+GET  /api/workstreams/:id/messages                         查询 Workstream 消息历史
+GET  /api/workstreams/:id/agents/:agentId/inbox            查询 Agent Inbox
+POST /api/workstreams/:id/messages/:messageId/ack         确认投递
+POST /api/workstreams/:id/messages/:messageId/fail        报告投递失败
+POST /api/workstreams/:id/messages/:messageId/reply       创建回复
+GET  /events                                               WebSocket 实时事件
+```
+
+消息先写入 PostgreSQL，再通过 WebSocket 发布 `message.created`、`message.delivered`、`message.acknowledged`、`message.failed` 和 `message.reply.created`。Dashboard 首次加载通过 HTTP 获取历史，保持 WebSocket 接收增量；断线重连后使用最后一个消息 ID 或时间游标通过 HTTP 补齐，不能把 WebSocket 当作唯一事实来源。
+
+Inbox 按具体 `agentId` 隔离。多收件人消息在逻辑上只有一个 Message，但每个收件人拥有独立投递状态；重复投递必须通过 Message ID / consumer key 幂等处理，不能重复产生领域副作用。
+
 ### Phase 5：Worker Runtime
 
 - Worker Registration 和 Heartbeat；
@@ -836,6 +854,7 @@ GET  /workstreams/:id/events
 - Activity Feed；
 - Pause、Resume、Complete；
 - WebSocket Live Events 和 Reconnect Catch-up。
+- HTTP 历史消息 + WebSocket 增量消息的双通道体验；Agent 节点、边和 Human Chat 使用不同过滤视图。
 
 ### Phase 9：Tasks 与 Graph
 

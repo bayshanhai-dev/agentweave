@@ -44,6 +44,12 @@ app.get("/api/workstreams/:id/messages", async (request, reply) => {
   const workstream = workstreams.get((request.params as { id: string }).id);
   return workstream ? workstream.messages : reply.code(404).send({ error: "workstream_not_found" });
 });
+app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => {
+  const { id, agentId } = request.params as { id: string; agentId: string };
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  const rows = await sql`select m.*, d.delivery_status as recipient_delivery_status from messages m join message_deliveries d on d.message_id = m.id where m.workstream_id = ${id} and d.recipient_id = ${agentId} order by m.created_at asc`;
+  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status) }));
+});
 app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
   const { id, taskId } = request.params as { id: string; taskId: string }; const workstream = workstreams.get(id);
   const task = workstream?.tasks.find((candidate) => candidate.id === taskId); const body = request.body as { status?: Task["status"]; evidence?: string[] } | undefined;
@@ -70,8 +76,12 @@ app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply
   const body = request.body as { from?: string; content?: string } | undefined;
   if (!workstream || !original) return reply.code(404).send({ error: "message_not_found" });
   if (!body?.content?.trim() || !body.from?.trim()) return reply.code(400).send({ error: "sender_and_content_required" });
-  return reply.code(201).send(await createMessage(workstream, body.from.trim(), [original.senderId], body.content.trim(), "reply", { correlationId: original.correlationId, causationId: original.id }));
+  const created = await createMessage(workstream, body.from.trim(), [original.senderId], body.content.trim(), "reply", { correlationId: original.correlationId, causationId: original.id });
+  emitMessage(workstream, "message.reply.created", created);
+  return reply.code(201).send(created);
 });
+app.post("/api/workstreams/:id/messages/:messageId/ack", async (request, reply) => updateDelivery(request, reply, "acknowledged"));
+app.post("/api/workstreams/:id/messages/:messageId/fail", async (request, reply) => updateDelivery(request, reply, "failed"));
 app.post("/api/workstreams", async (request, reply) => {
   const body = request.body as { goal?: string; tool?: string; model?: string; workspaceRoot?: string } | undefined;
   if (!body?.goal?.trim()) return reply.code(400).send({ error: "goal_required" });
@@ -134,8 +144,10 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   await sql`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
     values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, ${message.deliveryStatus})`;
   workstream.messages.push(message);
+  await sql`insert into message_deliveries ${sql(message.recipientIds.map((recipientId) => ({ message_id: message.id, recipient_id: recipientId, delivery_status: "pending" })))} on conflict do nothing`;
   emitMessage(workstream, "message.created", message);
   message.deliveryStatus = "delivered";
+  await sql`update message_deliveries set delivery_status = 'delivered', delivered_at = now() where message_id = ${message.id}`;
   await sql`update messages set delivery_status = ${message.deliveryStatus} where id = ${message.id}`;
   emitMessage(workstream, "message.delivered", message);
   return message;
@@ -145,6 +157,23 @@ function emitMessage(workstream: Workstream, type: string, message: Message): vo
   const payload = JSON.stringify({ workstreamId: workstream.id, type, message, occurredAt: new Date().toISOString() });
   for (const socket of sockets) socket.send(payload);
   metrics.eventsEmitted += 1;
+}
+
+async function updateDelivery(request: { params: unknown; body?: unknown }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }, status: "acknowledged" | "failed") {
+  const { id, messageId } = request.params as { id: string; messageId: string };
+  const workstream = workstreams.get(id); const body = request.body as { recipientId?: string } | undefined;
+  if (!workstream || !workstream.messages.some((message) => message.id === messageId)) return reply.code(404).send({ error: "message_not_found" });
+  if (!body?.recipientId) return reply.code(400).send({ error: "recipient_id_required" });
+  await sql`update message_deliveries set delivery_status = ${status}, delivered_at = coalesce(delivered_at, now()) where message_id = ${messageId} and recipient_id = ${body.recipientId}`;
+  const message = workstream.messages.find((candidate) => candidate.id === messageId)!;
+  if (status === "failed") message.deliveryStatus = "failed";
+  else {
+    const pending = await sql`select 1 from message_deliveries where message_id = ${messageId} and delivery_status <> 'acknowledged' limit 1`;
+    if (!pending.length) message.deliveryStatus = "acknowledged";
+  }
+  await sql`update messages set delivery_status = ${message.deliveryStatus} where id = ${messageId}`;
+  emitMessage(workstream, status === "acknowledged" ? "message.acknowledged" : "message.failed", message);
+  return { ...message, recipientId: body.recipientId };
 }
 
 async function persistWorkstream(workstream: Workstream): Promise<void> {
@@ -204,6 +233,7 @@ await sql`create table if not exists tasks (id text primary key, workstream_id t
 await sql`create table if not exists agents (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, role text not null, authority text not null, status text not null)`;
 await sql`create table if not exists workflow_events (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, type text not null, message text not null, role text, from_node text, to_node text, occurred_at timestamptz not null)`;
 await sql`create table if not exists messages (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, sender_id text not null, recipient_ids text[] not null, message_type text not null, content text not null, task_id text, correlation_id text not null, causation_id text, evidence_ids jsonb not null default '[]', created_at timestamptz not null default now(), delivery_status text not null default 'pending')`;
+await sql`create table if not exists message_deliveries (message_id text not null references messages(id) on delete cascade, recipient_id text not null, delivery_status text not null default 'pending', delivered_at timestamptz, primary key (message_id, recipient_id))`;
 await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
 await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
 await sql`alter table workflow_events add column if not exists from_node text`;
