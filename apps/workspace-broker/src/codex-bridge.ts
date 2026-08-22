@@ -14,6 +14,6 @@ export class CodexBridge {
     const relativePath = relative(this.roots.find((root) => workspacePath === root || (!relative(root, workspacePath).startsWith(`..${sep}`) && !isAbsolute(relative(root, workspacePath)))) ?? this.roots[0]!, workspacePath);
     if (relativePath.startsWith("..") || isAbsolute(relativePath)) throw new Error("workspace_path_not_allowed");
     const args = ["exec", "--json", "--cd", workspacePath, "--sandbox", "workspace-write", "--ask-for-approval", "never", ...(input.model ? ["--model", input.model] : []), input.prompt];
-    return new Promise((resolve, reject) => { const child = spawn(this.options.command ?? process.env.CODEX_CODEX_COMMAND ?? "codex", args, { shell: false, cwd: workspacePath }); let stdout = ""; let stderr = ""; child.stdout.on("data", (chunk) => { stdout += String(chunk); }); child.stderr.on("data", (chunk) => { stderr += String(chunk); }); child.on("error", reject); child.on("close", (exitCode) => resolve({ text: stdout, stderr, exitCode })); });
+    return new Promise((resolve, reject) => { const child = spawn(this.options.command ?? process.env.CODEX_COMMAND ?? "codex", args, { shell: false, cwd: workspacePath }); let stdout = ""; let stderr = ""; child.stdout.on("data", (chunk) => { stdout += String(chunk); }); child.stderr.on("data", (chunk) => { stderr += String(chunk); }); child.on("error", reject); child.on("close", (exitCode) => resolve({ text: stdout, stderr, exitCode })); });
   }
 }
