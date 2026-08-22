@@ -59,10 +59,20 @@ describe("provider adapters", () => {
     const transport = fakeCodexTransport(requests);
     const provider = new CodexAppServerAdapter(transport, { model: "gpt-test" });
     const run = await collect(provider.run({ input: "hello", correlationId: "corr-codex" }));
-    expect(requests).toEqual([{ method: "session.create", correlationId: expect.any(String) }, { method: "turn.start", correlationId: "corr-codex" }]);
+    expect(requests).toEqual([{ method: "thread/start", correlationId: expect.any(String) }, { method: "turn/start", correlationId: "corr-codex" }]);
     expect(run.events.map((event) => event.type)).toEqual(["turn.started", "turn.delta", "tool.started", "tool.completed", "turn.delta", "turn.completed"]);
     expect(run.events.every((event) => "correlationId" in event)).toBe(true);
     expect(run.result.text).toBe("hello world");
+  });
+
+  it("keeps final App Server item text when no delta was emitted", async () => {
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-1" } } } : { result: { turnId: "turn-1" } }; },
+      async *events() { yield { type: "item.completed", item: { type: "agent_message", content: [{ type: "text", text: "Final inspection summary" }] } }; },
+    };
+    const run = await collect(new CodexAppServerAdapter(transport).run({ input: "inspect" }));
+    expect(run.result.text).toBe("Final inspection summary");
+    expect(run.events.at(-1)).toMatchObject({ type: "turn.completed", text: "Final inspection summary" });
   });
 
   it("streams Claude stdout, exposes stderr, and uses argv safely", async () => {
@@ -85,7 +95,7 @@ describe("provider adapters", () => {
 
 function fakeCodexTransport(requests: Array<{ method: string; correlationId: string }> = []): CodexTransport {
   return {
-    async request(method, _params, correlationId) { requests.push({ method, correlationId }); return method === "session.create" ? { result: { sessionId: "codex-session-1" } } : { result: { turnId: "codex-turn-1" } }; },
+    async request(method, _params, correlationId) { requests.push({ method, correlationId }); return method === "thread/start" ? { result: { thread: { id: "codex-session-1" } } } : { result: { turnId: "codex-turn-1" } }; },
     async *events() { yield { type: "turn.delta", text: "hello " }; yield { type: "tool.started", toolName: "search" }; yield { type: "tool.completed", toolName: "search", output: "ok" }; yield { type: "turn.delta", text: "world" }; },
     async cancel() { return undefined; },
   };
