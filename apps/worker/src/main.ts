@@ -27,6 +27,7 @@ await registerWorker();
 await bus.consumer(subjects.inbox, async (message) => {
     try {
       const envelope = bus.decode(message);
+      console.log(JSON.stringify({ event: "worker.message.received", workerId, subject: message.subject, streamSequence: message.info.streamSequence, occurredAt: new Date().toISOString() }));
       currentEnvelope = envelope;
       activeWorkstreams.add(envelope.workstreamId);
       const statusResponse = await fetch(`${controlApiUrl}/api/workstreams/${encodeURIComponent(envelope.workstreamId)}`).catch(() => undefined);
@@ -38,14 +39,9 @@ await bus.consumer(subjects.inbox, async (message) => {
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
       if (!targetAgentId) return "dead-letter";
       if (!payload.content) return "ack";
-      // Every message is durable in the Agent Inbox, but only executable
-      // requests (or messages already bound to a task) enter the provider.
-      // Questions, directives, decisions, and replies are handled by the
-      // agent conversation layer and must never mutate the workspace merely
-      // because they arrived on the inbox subject.
-      if (!payload.taskId && payload.messageType !== "request") return "ack";
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
+      console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
       await runtime.dispatch({ taskId: payload.taskId ?? envelope.id, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model ? { model: payload.model } : {}), ...(payload.workspacePath ? { workspacePath: payload.workspacePath } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
       return "ack";
     } catch (error) {
