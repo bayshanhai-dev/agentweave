@@ -3,18 +3,19 @@ import { createRoot } from "react-dom/client";
 import { AgentHiveGraph } from "./AgentHiveGraph";
 import { TaskBoard, type Task } from "./TaskBoard";
 import { WorkstreamControls } from "./WorkstreamControls";
+import { CreateWorkstream } from "./CreateWorkstream";
 import { SummaryReport } from "./SummaryReport";
 import "./styles.css";
 
 const api = import.meta.env.VITE_CONTROL_API_URL ?? "http://localhost:3000";
 const wsUrl = import.meta.env.VITE_CONTROL_WS_URL ?? "ws://localhost:3000/events";
-type Event = { id?: string; type: string; message: string; role?: string; from?: string; to?: string; occurredAt: string };
+type Event = { id?: string; type: string; message: string; content?: string; role?: string; from?: string; to?: string; occurredAt: string; createdAt?: string };
 type Agent = { id: string; role: string; authority: string; status: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: Event[]; messages?: Event[] };
 const pages = ["Overview", "Agent hive", "Tasks", "Activity"];
 const labels: Record<string, string> = { human: "Human", pm: "PM", pe: "PE", coder: "Coder", qa: "QA" };
 
-function MessageList({ events }: { events: Event[] }) { return <div className="events">{events.slice().reverse().map((event, index) => <div className="event" key={`${event.id ?? event.type}-${index}`}><span className="event-mark" /><div><strong>{event.from ? `${event.from.toUpperCase()} → ${event.to?.toUpperCase()}` : event.role?.toUpperCase() ?? "SYSTEM"}</strong><p>{event.message}</p></div><time>{new Date(event.occurredAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>)}</div>; }
+function MessageList({ events }: { events: Event[] }) { return <div className="events">{events.slice().reverse().map((event, index) => { const text = event.message ?? event.content ?? ""; const timestamp = event.occurredAt ?? event.createdAt; const date = timestamp ? new Date(timestamp) : undefined; return <div className="event" key={`${event.id ?? event.type}-${index}`}><span className="event-mark" /><div><strong>{event.from ? `${event.from.toUpperCase()} → ${event.to?.toUpperCase()}` : event.role?.toUpperCase() ?? "SYSTEM"}</strong><p>{text}</p></div><time>{date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</time></div>; })}</div>; }
 
 function App() {
   const [items, setItems] = useState<Workstream[]>([]); const [selected, setSelected] = useState<Workstream | null>(null); const [page, setPage] = useState("Overview"); const [theme, setTheme] = useState<"light" | "dark">("light"); const [focus, setFocus] = useState<string | null>(null); const [edgeFocus, setEdgeFocus] = useState<[string, string] | null>(null); const [draft, setDraft] = useState("");
