@@ -56,4 +56,10 @@ specific event payloads. On worker restart, the worker acquires an unexpired lea
 calls `resumeSession`, loads the checkpoint, and continues or safely retries using
 the turn idempotency key.
 
+PostgreSQL session state is defined in `db/migrations/001_agent_sessions.sql` and
+implemented by `PostgresAgentSessionRepository`. A fresh Docker PostgreSQL volume
+initializes this table automatically. Existing volumes need the migration applied
+once before enabling runtime recovery. Lease acquisition is atomic, expired leases
+can be taken over, and only the owning worker can release its lease.
+
 The initial source files are intentionally thin. The implementation sequence is defined in `docs/TASKS.md`.

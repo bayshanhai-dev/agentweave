@@ -5,3 +5,4 @@ export * from "./codex-app-server.js";
 export * from "./claude-code.js";
 export * from "./registry.js";
 export * from "./session-repository.js";
+export * from "./postgres-session-repository.js";
