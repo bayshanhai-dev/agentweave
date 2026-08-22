@@ -35,6 +35,17 @@ app.get("/metrics", async (_request, reply) => {
   reply.type("text/plain; version=0.0.4");
   return Object.entries(metrics).map(([name, value]) => `agentweave_${name} ${value}`).join("\n") + "\n";
 });
+app.post("/api/runtime/workers/register", async (request, reply) => {
+  const body = request.body as { workerId?: string; provider?: string; roles?: string[]; capabilities?: string[] } | undefined;
+  if (!body?.workerId?.trim()) return reply.code(400).send({ error: "worker_id_required" });
+  await sql`insert into runtime_workers (id, provider, roles, capabilities, status, last_heartbeat_at) values (${body.workerId.trim()}, ${body.provider ?? "unknown"}, ${body.roles ?? []}, ${body.capabilities ?? []}, 'online', now()) on conflict (id) do update set provider=excluded.provider, roles=excluded.roles, capabilities=excluded.capabilities, status='online', last_heartbeat_at=now()`;
+  return { workerId: body.workerId.trim(), status: "online" };
+});
+app.post("/api/runtime/workers/:workerId/heartbeat", async (request, reply) => {
+  const workerId = (request.params as { workerId: string }).workerId;
+  const result = await sql`update runtime_workers set status='online', last_heartbeat_at=now(), current_task_id=${(request.body as { taskId?: string } | undefined)?.taskId ?? null} where id=${workerId} returning id`;
+  return result.length ? { workerId, status: "online" } : reply.code(404).send({ error: "worker_not_registered" });
+});
 app.get("/api/workstreams", async () => [...workstreams.values()]);
 app.get("/api/workstreams/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
@@ -328,6 +339,8 @@ await sql`create table if not exists message_deliveries (message_id text not nul
 await sql`create table if not exists workstream_commands (workstream_id text not null references workstreams(id) on delete cascade, command_id text not null, command text not null, response jsonb not null, created_at timestamptz not null default now(), primary key (workstream_id, command_id))`;
 await sql`create table if not exists agent_sessions (id text primary key, agent_id text not null, provider text not null, provider_session_id text not null, status text not null, current_turn_id text, last_checkpoint jsonb, last_event_sequence integer not null default 0, worker_id text, lease_expires_at timestamptz, updated_at timestamptz not null default now())`;
 await sql`create table if not exists workspace_evidence (id bigserial primary key, task_id text not null references tasks(id) on delete cascade, workspace_path text not null, git_diff text not null, test_command text, test_output text, test_exit_code integer, created_at timestamptz not null default now())`;
+await sql`create table if not exists runtime_workers (id text primary key, provider text not null, roles text[] not null default '{}', capabilities text[] not null default '{}', status text not null default 'offline', current_task_id text, last_heartbeat_at timestamptz, registered_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
+await sql`create index if not exists runtime_workers_heartbeat_idx on runtime_workers(status, last_heartbeat_at)`;
 await sql`create index if not exists agent_sessions_lease_idx on agent_sessions(status, lease_expires_at)`;
 await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
 await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
@@ -335,6 +348,7 @@ await sql`alter table workflow_events add column if not exists from_node text`;
 await sql`alter table workflow_events add column if not exists to_node text`;
 await eventBus.connect();
 await loadWorkstreams();
+setInterval(() => { void sql`update runtime_workers set status='offline', updated_at=now() where status='online' and last_heartbeat_at < now() - interval '45 seconds'`; }, 15_000);
 
 async function runHappyPath(workstream: Workstream): Promise<void> {
   const agent = (role: Role) => workstream.agents.find((candidate) => candidate.role === role)!.id;
