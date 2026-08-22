@@ -148,9 +148,20 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   const recipients = [...new Set([...(body?.recipients ?? []), ...(body?.to ? [body.to] : [])].map((id) => id.trim()).filter(Boolean))];
   if (!body?.content?.trim() || !recipients.length) return reply.code(400).send({ error: "recipient_and_content_required" });
   const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : workstream.agents.find((candidate) => candidate.id === recipient || candidate.role === recipient)?.id ?? recipient);
-  const slashType = body.content.trim().match(/^\/(question|request|directive|command|decision)\b/i)?.[1]?.toLowerCase();
-  const content = body.content.trim().replace(/^\/(question|request|directive|command|decision)\b\s*/i, "");
-  const message = await createMessage(workstream, body.from?.trim() || "human", resolvedRecipients, content, slashType || body.intent || "question", body, body.id);
+  const slashType = body.content.trim().match(/^\/(question|request|directive|decision)\b/i)?.[1]?.toLowerCase();
+  const content = body.content.trim().replace(/^\/(question|request|directive|decision)\b\s*/i, "");
+  const messageType = slashType || body.intent || "question";
+  if (!["question", "request", "directive", "decision"].includes(messageType)) return reply.code(400).send({ error: "invalid_human_message_type", hint: "Use the Workstream control API for pause, resume, complete, or emergency stop." });
+  let taskId = body.taskId;
+  if (messageType === "request" && !taskId) {
+    const now = new Date().toISOString();
+    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: "ready", acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], createdAt: now, updatedAt: now };
+    workstream.tasks.push(task);
+    await persistTask(task);
+    emit(workstream, "task.created", `Human request queued: ${task.title}`);
+    taskId = task.id;
+  }
+  const message = await createMessage(workstream, body.from?.trim() || "human", resolvedRecipients, content, messageType, { ...body, ...(taskId ? { taskId } : {}) }, body.id);
   return reply.code(201).send(message);
 });
 app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply) => {

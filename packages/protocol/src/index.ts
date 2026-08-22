@@ -86,7 +86,9 @@ export const humanInputSchema = z.object({
 
 export type HumanInput = z.infer<typeof humanInputSchema>;
 
-export const messageTypeSchema = z.enum(["question", "request", "directive", "command", "decision", "reply"]);
+// Workstream controls (pause/resume/complete/emergency-stop) are not chat
+// messages. They use the global Control API instead.
+export const messageTypeSchema = z.enum(["question", "request", "directive", "decision", "reply"]);
 export const deliveryStatusSchema = z.enum(["pending", "delivered", "acknowledged", "failed"]);
 export const agentMessageSchema = z.object({
   id: z.string().min(1), workstreamId: z.string().min(1), senderId: z.string().min(1),
