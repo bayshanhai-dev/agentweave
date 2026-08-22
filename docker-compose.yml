@@ -101,6 +101,10 @@ services:
       WORKER_ID: worker-local-1
       WORKER_ROLES: pm,pe,coder,qa
       WORKSPACE_ROOT: /workspaces
+      CODEX_APP_SERVER_URL: ${CODEX_APP_SERVER_URL:-http://host.docker.internal:3010}
+      CODEX_BRIDGE_TOKEN: ${CODEX_BRIDGE_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./workspaces:/workspaces
       - /Users/tong/Documents/ChatGPT/AcademicPaperBuddy:/workspaces/academic-paper-buddy
