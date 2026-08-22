@@ -1,0 +1,11 @@
+node_modules/
+.pnpm-store/
+dist/
+.turbo/
+.env
+coverage/
+*.log
+.DS_Store
+postgres-data/
+nats-data/
+workspaces/

@@ -1,0 +1,80 @@
+flowchart TB
+    Human["Human Operator"]
+    Dashboard["React Dashboard<br/>chat · activity · tasks · approvals"]
+    subgraph Control["Control Plane"]
+        API["Control API<br/>HTTP / WebSocket"]
+        Orch["Orchestrator<br/>routing · retries · pause/resume"]
+        Policy["Policy & Authority<br/>budgets · permissions · approvals"]
+        Projector["Read Model Projector"]
+    end
+    subgraph Durable["Durable Backbone"]
+        DB[("PostgreSQL<br/>durable state")]
+        NATS[("NATS JetStream<br/>event mesh")]
+    end
+    subgraph Execution["Execution Plane"]
+        W1["Worker 1"]
+        W2["Worker 2"]
+        Provider["Provider Adapter<br/>Mock / Codex App Server"]
+        subgraph Hive["Agent Hive / Weave"]
+            PM["PM<br/>lead"]
+            PE["PE<br/>reviewer / lead"]
+            Coder1["Coder-1<br/>executor"]
+            Coder2["Coder-2<br/>executor"]
+            QA["QA Reviewer<br/>reviewer"]
+            PM <--> PE
+            PM <--> Coder1
+            PM <--> Coder2
+            PM <--> QA
+            PE <--> Coder1
+            PE <--> Coder2
+            PE <--> QA
+            Coder1 <--> Coder2
+            Coder1 <--> QA
+            Coder2 <--> QA
+        end
+    end
+    subgraph Scaling["Human-Approved Scaling"]
+        Detect["Detect parallel work"]
+        Rec["Scaling recommendation"]
+        Approve["Human approval"]
+        Create["Add Agent to Hive"]
+    end
+    Human <--> Dashboard
+    Dashboard <-->|HTTP / WebSocket| API
+    API --> Orch
+    API -->|live events| Dashboard
+    Orch --> Policy
+    Orch <--> DB
+    Orch <--> NATS
+    NATS --> Projector
+    Projector --> DB
+    NATS <--> W1
+    NATS <--> W2
+    W1 <--> Provider
+    W2 <--> Provider
+    Provider <--> Hive
+    Orch --> Detect
+    Detect --> Rec
+    Rec --> Dashboard
+    Dashboard --> Approve
+    Approve --> Create
+    Create --> DB
+    Create --> NATS
+    classDef human fill:#7c3aed,stroke:#5b21b6,color:#fff,stroke-width:2px;
+    classDef dashboard fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px;
+    classDef control fill:#2563eb,stroke:#1d4ed8,color:#fff;
+    classDef durable fill:#0891b2,stroke:#0e7490,color:#fff;
+    classDef worker fill:#f59e0b,stroke:#b45309,color:#111;
+    classDef lead fill:#16a34a,stroke:#15803d,color:#fff;
+    classDef reviewer fill:#22c55e,stroke:#15803d,color:#fff;
+    classDef executor fill:#facc15,stroke:#ca8a04,color:#111;
+    classDef scaling fill:#db2777,stroke:#9d174d,color:#fff;
+    class Human human;
+    class Dashboard dashboard;
+    class API,Orch,Policy,Projector control;
+    class DB,NATS durable;
+    class W1,W2,Provider worker;
+    class PM,PE lead;
+    class QA reviewer;
+    class Coder1,Coder2 executor;
+    class Detect,Rec,Approve,Create scaling;
