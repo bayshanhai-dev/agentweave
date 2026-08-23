@@ -34,7 +34,7 @@ await app.register(websocket);
 const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
-const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v3", deliverPolicy: DeliverPolicy.New });
+const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0 };
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
@@ -288,15 +288,19 @@ app.get("/events", { websocket: true }, async (socket, request) => {
 
 function emit(workstream: Workstream, type: string, message: string, role?: Role): void {
   const event: WorkflowEvent = { id: randomUUID(), type, message, occurredAt: new Date().toISOString(), ...(role ? { role } : {}) };
+  recordWorkflowEvent(workstream, event);
+  void eventBus.publish(subjects.events.replace("*", workstream.id), { id: event.id, type, workstreamId: workstream.id, occurredAt: event.occurredAt, payload: event });
+}
+
+function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void {
   workstream.events.push(event);
   void persistEvent(workstream.id, event);
   void persistWorkstreamStatus(workstream);
   metrics.eventsEmitted += 1;
-  if (type === "run.started") metrics.runsStarted += 1;
-  app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: type, role }, "workflow.event");
+  if (event.type === "run.started") metrics.runsStarted += 1;
+  app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, role: event.role }, "workflow.event");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
-  void eventBus.publish(subjects.events.replace("*", workstream.id), { id: event.id, type, workstreamId: workstream.id, occurredAt: event.occurredAt, payload: event });
 }
 
 async function createMessageEvent(workstream: Workstream, from: string, to: string, content: string, intent: string): Promise<WorkflowEvent> {
@@ -454,7 +458,7 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
     const payload = envelope.payload as { agentId?: string; taskId?: string; elapsedMs?: number };
     const role = payload.agentId ? workstream.agents.find((agent) => agent.id === payload.agentId)?.role : undefined;
-    emit(workstream, envelope.type, `${role ?? payload.agentId ?? "agent"} ${envelope.type === "run.heartbeat" ? `running (${Math.round((payload.elapsedMs ?? 0) / 1000)}s)` : "started"}`, role);
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message: `${role ?? payload.agentId ?? "agent"} ${envelope.type === "run.heartbeat" ? `running (${Math.round((payload.elapsedMs ?? 0) / 1000)}s)` : "started"}`, occurredAt: new Date().toISOString(), ...(role ? { role } : {}) });
     return;
   }
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed") return;
@@ -469,8 +473,8 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     const reason = payload.error?.trim() || "provider execution failed";
     workstream.status = "waiting_for_human";
-    emit(workstream, "task.failed", `${task?.title ?? sender.role} → ${reason}`, sender.role);
-    emit(workstream, "workstream.waiting_for_human", "Provider execution failed; Human decision required");
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() });
     await persistWorkstreamStatus(workstream);
     return;
   }
@@ -479,14 +483,14 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     const clarification = resultText.replace(/^\[CLARIFICATION_REQUEST\]\s*/i, "").trim();
     await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     workstream.status = "waiting_for_human";
-    emit(workstream, "workstream.clarification_requested", clarification, sender.role);
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.clarification_requested", message: clarification, occurredAt: new Date().toISOString(), role: sender.role });
     await persistWorkstreamStatus(workstream);
     return;
   }
   if (!resultText) {
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
-    emit(workstream, "task.failed", `${task?.title ?? sender.role} → provider returned no text summary`, sender.role);
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role });
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
     return;
   }
@@ -496,17 +500,17 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     const evidenceRows = evidenceIds.length ? await sql`select id from workspace_evidence where task_id = ${task.id} and id = any(${evidenceIds}::bigint[])` : [];
     if (workstream.workspaceRoot && (!evidenceIds.length || evidenceRows.length !== evidenceIds.length)) {
       task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task);
-      emit(workstream, "task.failed", `${task.title} → evidence persistence incomplete`, sender.role);
+      recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → evidence persistence incomplete`, occurredAt: new Date().toISOString(), role: sender.role });
       return;
     }
-    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await persistTask(task); emit(workstream, "task.completed", `${task.title} → done`, sender.role);
+    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role });
   }
   const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: resultText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
-  if (!action) { workstream.status = "completed"; emit(workstream, "workstream.completed", "Orchestrator completed the workflow"); await persistWorkstreamStatus(workstream); return; }
+  if (!action) { workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
   const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role))?.id : undefined); if (!recipient) return;
   await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
-  if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; emit(workstream, "workstream.waiting_for_human", "Human approval required before completion"); }
+  if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Human approval required before completion", occurredAt: new Date().toISOString() }); }
 }
 
 await app.listen({ host: "0.0.0.0", port: Number(process.env.CONTROL_API_PORT ?? 3000) });
