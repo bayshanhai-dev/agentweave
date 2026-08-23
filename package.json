@@ -16,7 +16,8 @@
     "infra:up": "docker compose up -d postgres nats",
     "infra:down": "docker compose down",
     "docker:up": "docker compose up --build",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "doctor": "make doctor"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -2,6 +2,10 @@
 
 AgentWeave is an open-source runtime and control plane for collaborative AI agent networks.
 
+This repository is pre-1.0 and currently focused on a single-host, Docker-first
+MVP for software-development workstreams. It is not production-hardened for
+untrusted multi-tenant deployment.
+
 ## Day 1 scope
 
 - Create one durable workstream.
@@ -34,6 +38,19 @@ docker compose up --build
 Dashboard: http://localhost:5173  
 Control API: http://localhost:3000/health  
 NATS monitoring: http://localhost:8222
+
+For a prerequisite check, run `make doctor`. For the full development and
+configuration guide, see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) and
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+## Community and security
+
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Changelog](CHANGELOG.md)
+
+AgentWeave is released under the [Apache License 2.0](LICENSE).
 
 ## Provider adapters
 
