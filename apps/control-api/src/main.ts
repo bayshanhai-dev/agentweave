@@ -447,13 +447,23 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
 }
 
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
-  if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed") return;
+  if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
-  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; evidenceIds?: string[]; result?: { agentId?: string; taskId?: string; text?: string; evidenceIds?: string[] } };
+  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[] } };
   const payload = raw.result ?? raw;
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
+  if (envelope.type === "task.failed") {
+    const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
+    const reason = payload.error?.trim() || "provider execution failed";
+    workstream.status = "waiting_for_human";
+    emit(workstream, "task.failed", `${task?.title ?? sender.role} → ${reason}`, sender.role);
+    emit(workstream, "workstream.waiting_for_human", "Provider execution failed; Human decision required");
+    await persistWorkstreamStatus(workstream);
+    return;
+  }
   const resultText = payload.text?.trim() ?? "";
   if (sender.role === "pm" && resultText.startsWith("[CLARIFICATION_REQUEST]")) {
     const clarification = resultText.replace(/^\[CLARIFICATION_REQUEST\]\s*/i, "").trim();
