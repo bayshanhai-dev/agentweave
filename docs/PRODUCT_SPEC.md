@@ -1379,6 +1379,8 @@ paused
 
 Human Review Request 应包含 Summary、Questions、Options、Recommendation、Evidence 和建议 Pause Scope。
 
+PM clarification is a first-class Human conversation loop. During kickoff, if the PM determines that the goal, scope, constraints, acceptance criteria, or workspace context is insufficient, it must send a `clarification` Message addressed to Human and enter `waiting_for_human`; it must not silently invent requirements or continue the workflow. The clarification is persisted in the Workstream message ledger, published through the Event Bus, and shown in the Dashboard Human conversation sidecar. A Human reply is persisted with the original correlation and causation references, delivered to the PM, and resumes orchestration with the clarified context.
+
 ### 26.6 PM Pause Policy
 
 ```yaml
