@@ -13,6 +13,10 @@ const executor = new AgentTaskExecutor(provider, sessions, workerId, async (even
 });
 const runtimes = new Map<string, AgentRuntime>();
 const activeWorkstreams = new Set<string>();
+// JetStream redelivers a message when the provider turn outlives ack_wait.
+// Keep a process-local execution gate so a redelivery cannot start a second
+// provider turn for the same durable task while the first one is still live.
+const inFlightTasks = new Set<string>();
 let currentEnvelope: ReturnType<typeof bus.decode> | undefined;
 const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox-v2` });
 
@@ -25,6 +29,7 @@ await bus.connect();
 await registerWorker();
 
 await bus.consumer(subjects.inbox, async (message) => {
+    let executionKeyForCleanup: string | undefined;
     try {
       const envelope = bus.decode(message);
       console.log(JSON.stringify({ event: "worker.message.received", workerId, subject: message.subject, streamSequence: message.info.streamSequence, occurredAt: new Date().toISOString() }));
@@ -40,10 +45,17 @@ await bus.consumer(subjects.inbox, async (message) => {
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
       if (!targetAgentId) return "dead-letter";
       if (!payload.content) return "ack";
+      const executionKey = payload.taskId ?? envelope.id;
+      executionKeyForCleanup = executionKey;
+      if (inFlightTasks.has(executionKey)) {
+        console.warn(JSON.stringify({ event: "worker.task.duplicate_suppressed", workerId, taskId: executionKey, messageId: envelope.id, occurredAt: new Date().toISOString() }));
+        return "ack";
+      }
+      inFlightTasks.add(executionKey);
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
-      await runtime.dispatch({ taskId: payload.taskId ?? envelope.id, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
+      await runtime.dispatch({ taskId: executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
       return "ack";
     } catch (error) {
       // Execution failures are already durable (AgentTaskExecutor emits task.failed).
@@ -53,7 +65,7 @@ await bus.consumer(subjects.inbox, async (message) => {
       // and attempted the task, so terminate this delivery.
       console.error(JSON.stringify({ event: "worker.message.failed_terminal", workerId, subject: message.subject, error: String(error), occurredAt: new Date().toISOString() }));
       return "ack";
-    } finally { currentEnvelope = undefined; }
+      } finally { if (executionKeyForCleanup) inFlightTasks.delete(executionKeyForCleanup); currentEnvelope = undefined; }
   });
 console.log(JSON.stringify({ event: "worker.inbox.ready", workerId, subject: subjects.inbox, durable: `${workerId}-inbox-v2`, occurredAt: new Date().toISOString() }));
 setInterval(() => { void heartbeat(); console.log(JSON.stringify({ event: "worker.heartbeat", workerId, subscription: subjects.inbox, provider: provider.name, occurredAt: new Date().toISOString() })); }, 15_000);
