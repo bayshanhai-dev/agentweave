@@ -1,4 +1,4 @@
-import { AckPolicy, connect, RetentionPolicy, StorageType, type Consumer, type JetStreamClient, type JetStreamManager, type JsMsg, nanos, StringCodec } from "nats";
+import { AckPolicy, connect, DeliverPolicy, RetentionPolicy, StorageType, type Consumer, type JetStreamClient, type JetStreamManager, type JsMsg, nanos, StringCodec } from "nats";
 
 export const streamName = "AGENTWEAVE_EVENTS";
 export const subjects = {
@@ -9,7 +9,7 @@ export const subjects = {
 } as const;
 
 export type JetStreamEnvelope = { id: string; type: string; workstreamId: string; occurredAt: string; payload: unknown; correlationId?: string; causationId?: string };
-export type JetStreamConfig = { url: string; stream?: string; durableName?: string };
+export type JetStreamConfig = { url: string; stream?: string; durableName?: string; deliverPolicy?: DeliverPolicy };
 
 export class JetStreamEventBus {
   private connection?: Awaited<ReturnType<typeof connect>>;
@@ -41,12 +41,12 @@ export class JetStreamEventBus {
   async consumer(filterSubject: string, handler: (message: JsMsg) => Promise<"ack" | "retry" | "dead-letter">): Promise<Consumer> {
     if (!this.manager || !this.client) throw new Error("JetStreamEventBus is not connected");
     const durable = this.config.durableName ?? `worker-${filterSubject.replaceAll(".", "-").replaceAll("*", "all")}-v2`;
-    const desired = { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(30_000), max_deliver: 5 } as const;
+    const desired = { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(30_000), max_deliver: 5, ...(this.config.deliverPolicy ? { deliver_policy: this.config.deliverPolicy } : {}) } as const;
     try { await this.manager.consumers.info(this.stream, durable); await this.manager.consumers.update(this.stream, durable, desired); }
     catch { await this.manager.consumers.add(this.stream, desired); }
     const consumer = await this.client.consumers.get(this.stream, durable);
     const subscription = await consumer.consume();
-    void (async () => { for await (const message of subscription) { const outcome = await handler(message); if (outcome === "ack") message.ack(); else if (outcome === "retry") message.nak(); else { await this.publish(subjects.deadLetters.replace("*", this.stream), { id: message.info.streamSequence.toString(), type: "dead-letter", workstreamId: "unknown", occurredAt: new Date().toISOString(), payload: this.codec.decode(message.data) }); message.term(); } } })();
+    void (async () => { for await (const message of subscription) { try { const outcome = await handler(message); if (outcome === "ack") message.ack(); else if (outcome === "retry") message.nak(); else { await this.publish(subjects.deadLetters.replace("*", this.stream), { id: message.info.streamSequence.toString(), type: "dead-letter", workstreamId: "unknown", occurredAt: new Date().toISOString(), payload: this.codec.decode(message.data) }); message.term(); } } catch (error) { console.error(JSON.stringify({ event: "jetstream.handler.failed", subject: message.subject, streamSequence: message.info.streamSequence, error: String(error), occurredAt: new Date().toISOString() })); message.nak(); } } })();
     return consumer;
   }
 
