@@ -3,6 +3,7 @@ import type { CodexTransport } from "./codex-app-server.js";
 export class CodexHttpTransport implements CodexTransport {
   private readonly sessions = new Map<string, { workspacePath?: string; model?: string }>();
   private readonly eventsBySession = new Map<string, Record<string, unknown>[]>();
+  private readonly timeoutMs = Number(process.env.PROVIDER_REQUEST_TIMEOUT_MS ?? 45_000);
   constructor(private readonly baseUrl: string, private readonly token = process.env.CODEX_BRIDGE_TOKEN) {}
   private async parseResponse(response: Response): Promise<{ body: { id?: string; result?: Record<string, unknown>; error?: { message: string; code?: string }; text?: string; stderr?: string; exitCode?: number | null; threadId?: string; events?: Record<string, unknown>[]; errorText?: string }; status: number }> {
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -18,7 +19,7 @@ export class CodexHttpTransport implements CodexTransport {
     if (method !== "turn/start") return { error: { message: `Unsupported bridge method: ${method}`, code: "BRIDGE_METHOD_UNSUPPORTED" } };
     const sessionId = String(params.threadId); const session = this.sessions.get(sessionId); if (!session) return { error: { message: "Bridge session not found", code: "BRIDGE_SESSION_NOT_FOUND" } };
     const input = Array.isArray(params.input) ? String((params.input[0] as { text?: string } | undefined)?.text ?? "") : String(params.input ?? "");
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/codex/execute`, { method: "POST", headers: { "content-type": "application/json", "x-correlation-id": correlationId, ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) }, body: JSON.stringify({ prompt: input, workspacePath: session.workspacePath, ...(session.model ? { model: session.model } : {}), ...(sessionId.startsWith("bridge-") ? {} : { threadId: sessionId }) }) });
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/codex/execute`, { method: "POST", signal: AbortSignal.timeout(this.timeoutMs), headers: { "content-type": "application/json", "x-correlation-id": correlationId, ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) }, body: JSON.stringify({ prompt: input, workspacePath: session.workspacePath, ...(session.model ? { model: session.model } : {}), ...(sessionId.startsWith("bridge-") ? {} : { threadId: sessionId }) }) });
     const parsed = await this.parseResponse(response); const body = parsed.body as { text?: string; stderr?: string; exitCode?: number | null; threadId?: string; error?: string | { message?: string; code?: string } }; const error = typeof body.error === "string" ? { message: body.error, code: "CODEX_BRIDGE_EXECUTION_FAILED" } : body.error; if (!response.ok || body.error || body.exitCode !== 0) return { error: { message: error?.message ?? body.stderr ?? "Codex bridge execution failed", code: error?.code ?? "CODEX_BRIDGE_EXECUTION_FAILED" } };
     if (body.threadId) this.sessions.set(body.threadId, session);
     this.eventsBySession.set(sessionId, [{ type: "turn.delta", text: body.text ?? "" }, { type: "turn.completed" }]); return { result: { turnId: `turn-${correlationId}`, ...(body.threadId ? { threadId: body.threadId } : {}) } };
