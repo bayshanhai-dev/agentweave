@@ -447,6 +447,13 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
 }
 
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
+  if (envelope.type === "run.started" || envelope.type === "run.heartbeat") {
+    const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
+    const payload = envelope.payload as { agentId?: string; taskId?: string; elapsedMs?: number };
+    const role = payload.agentId ? workstream.agents.find((agent) => agent.id === payload.agentId)?.role : undefined;
+    emit(workstream, envelope.type, `${role ?? payload.agentId ?? "agent"} ${envelope.type === "run.heartbeat" ? `running (${Math.round((payload.elapsedMs ?? 0) / 1000)}s)` : "started"}`, role);
+    return;
+  }
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
