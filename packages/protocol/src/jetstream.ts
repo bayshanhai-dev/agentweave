@@ -41,7 +41,9 @@ export class JetStreamEventBus {
   async consumer(filterSubject: string, handler: (message: JsMsg) => Promise<"ack" | "retry" | "dead-letter">): Promise<Consumer> {
     if (!this.manager || !this.client) throw new Error("JetStreamEventBus is not connected");
     const durable = this.config.durableName ?? `worker-${filterSubject.replaceAll(".", "-").replaceAll("*", "all")}-v2`;
-    const desired = { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(30_000), max_deliver: 5, ...(this.config.deliverPolicy ? { deliver_policy: this.config.deliverPolicy } : {}) } as const;
+    const ackWaitMs = Number(process.env.AGENTWEAVE_JETSTREAM_ACK_WAIT_MS ?? 300_000);
+    const maxDeliver = Number(process.env.AGENTWEAVE_JETSTREAM_MAX_DELIVER ?? 5);
+    const desired = { durable_name: durable, filter_subject: filterSubject, ack_policy: AckPolicy.Explicit, ack_wait: nanos(ackWaitMs), max_deliver: maxDeliver, ...(this.config.deliverPolicy ? { deliver_policy: this.config.deliverPolicy } : {}) } as const;
     try { await this.manager.consumers.info(this.stream, durable); await this.manager.consumers.update(this.stream, durable, desired); }
     catch { await this.manager.consumers.add(this.stream, desired); }
     const consumer = await this.client.consumers.get(this.stream, durable);
