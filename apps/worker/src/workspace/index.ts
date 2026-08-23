@@ -6,8 +6,13 @@ import postgres from "postgres";
 
 const exec = promisify(execFile);
 export type WorkspaceEvidence = { taskId: string; workspacePath: string; gitDiff: string; kind?: string; warnings?: string[]; testCommand?: string; testOutput?: string; testExitCode?: number; createdAt: string };
+function canonicalWorkspacePath(workspacePath: string): string {
+  if (workspacePath === "/workspaces/AcademicPaperBuddy") return "/workspaces/academic-paper-buddy";
+  if (workspacePath === "/Users/tong/Documents/ChatGPT/AcademicPaperBuddy") return "/workspaces/academic-paper-buddy";
+  return workspacePath;
+}
 export function validateWorkspacePath(workspacePath: string, root = process.env.WORKSPACE_ROOT ?? "/workspaces"): string {
-  const resolved = resolve(workspacePath); const rootResolved = resolve(root); const rel = relative(rootResolved, resolved);
+  const resolved = resolve(canonicalWorkspacePath(workspacePath)); const rootResolved = resolve(root); const rel = relative(rootResolved, resolved);
   if (!isAbsolute(resolved) || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Workspace path is outside WORKSPACE_ROOT: ${workspacePath}`);
   return resolved;
 }
