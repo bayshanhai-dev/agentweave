@@ -46,8 +46,13 @@ await bus.consumer(subjects.inbox, async (message) => {
       await runtime.dispatch({ taskId: payload.taskId ?? envelope.id, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
       return "ack";
     } catch (error) {
-      console.error(JSON.stringify({ event: "worker.message.failed", workerId, subject: message.subject, error: String(error), occurredAt: new Date().toISOString() }));
-      return "retry";
+      // Execution failures are already durable (AgentTaskExecutor emits task.failed).
+      // Re-queueing the same inbox message would start the same provider turn again
+      // and create an unbounded run/heartbeat loop. Only pre-dispatch infrastructure
+      // failures should be retried; this handler has already passed the status check
+      // and attempted the task, so terminate this delivery.
+      console.error(JSON.stringify({ event: "worker.message.failed_terminal", workerId, subject: message.subject, error: String(error), occurredAt: new Date().toISOString() }));
+      return "ack";
     } finally { currentEnvelope = undefined; }
   });
 console.log(JSON.stringify({ event: "worker.inbox.ready", workerId, subject: subjects.inbox, durable: `${workerId}-inbox-v2`, occurredAt: new Date().toISOString() }));
