@@ -162,9 +162,14 @@ Role Template 与 Agent Instance 必须分离。Role Template 定义角色契约
 
 默认 Workstream 仍然创建一个 PM、PE、Coder 和 QA Reviewer。运行时可以在同一角色下创建多个 Agent Instance，例如 `Coder-1` 和 `Coder-2`，用于处理彼此独立的 Ready Tasks。扩容不是简单复制一个进程，也不会共享同一个 Session。
 
+AgentWeave 的主要协作机制是角色互补：不同角色拥有不同职责，但围绕同一个 Workstream 目标，通过计划、观察、挑战、反馈、Artifact 和 Evidence 进行迭代对话。质量提升来自跨角色协作形成的持续反馈闭环，而不是由某一个 QA Agent 或多数投票单独决定。QA Reviewer 在 Software Development Flavor 中负责测试和验证，不代表整个 Workstream 的最终质量结论。
+
+同角色复制是容量机制，不是质量投票机制。创建 `Coder-2` 或其他同角色实例的理由必须是该角色的 Ready Tasks 已经超过当前实例在目标时间或吞吐要求内能够处理的容量，并且任务之间可以安全并行；不能仅仅为了制造更多相同意见而扩容。
+
 Orchestrator 在调度前必须检查：
 
-- 是否存在两个或以上互不依赖的 Ready Tasks；
+- 是否存在两个或以上互不依赖、且确实需要并行处理的 Ready Tasks；
+- 当前角色实例是否已出现持续的任务堆积或吞吐不足；
 - 是否有可用的 Token Budget、Worker 容量和模型容量；
 - 是否需要 Workspace、文件或资源隔离；
 - 是否可能产生重复工作、写入冲突或不可合并的副作用；
