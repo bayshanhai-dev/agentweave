@@ -1,5 +1,5 @@
 export type OrchestratorStage = "pm" | "pe" | "coder" | "qa" | "waiting_for_human" | "completed";
-export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected"; content: string; evidenceIds?: string[] };
+export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected" | "human.clarification.replied"; content: string; evidenceIds?: string[] };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: "pm" | "pe" | "coder" | "qa" | "human"; messageType: "request" | "decision"; content: string; attempt: number };
 export type OrchestrationDecision = {
   action: "create_task" | "message_agent" | "wait" | "ask_human" | "complete";
@@ -29,7 +29,7 @@ export class WorkstreamOrchestrator {
     return decision;
   }
 
-  start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: this.goal, attempt: this.attempt }; }
+  start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: `Workstream goal:\n${this.goal}\n\nIf the goal or acceptance criteria are ambiguous, do not guess. Reply with a message beginning exactly with [CLARIFICATION_REQUEST] followed by your questions for the Human. Otherwise produce your decomposition.`, attempt: this.attempt }; }
 
   apply(event: OrchestratorEvent): OrchestratorAction | undefined {
     if (event.type === "goal.received" && this.stage === "pm") { this.stage = "pe"; return this.action("pe", "PM decomposition:\n" + event.content); }
@@ -40,6 +40,7 @@ export class WorkstreamOrchestrator {
     if (event.type === "qa.passed" && this.stage === "qa") { this.stage = "waiting_for_human"; return this.action("human", "QA passed. Human review is required before completion."); }
     if (event.type === "human.approved" && this.stage === "waiting_for_human") { this.stage = "completed"; return undefined; }
     if (event.type === "human.rejected" && this.stage === "waiting_for_human") { this.attempt += 1; this.stage = "pm"; return this.action("pm", "Human requested another review:\n" + event.content); }
+    if (event.type === "human.clarification.replied" && this.stage === "waiting_for_human") { this.stage = "pm"; return this.action("pm", "Human clarification received:\n" + event.content); }
     throw new Error(`Invalid orchestrator event ${event.type} at ${this.stage}`);
   }
 

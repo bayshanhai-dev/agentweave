@@ -10,7 +10,7 @@ type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "done"; orchestrator?: boolean };
-type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
+type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 const flavorTemplates = {
   "software-development": [
@@ -219,6 +219,16 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
     taskId = task.id;
   }
   const message = await createMessage(workstream, body.from?.trim() || "human", resolvedRecipients, content, messageType, { ...body, ...(taskId ? { taskId } : {}) }, body.id);
+  if (body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === "pm")) {
+    const orchestrator = orchestrators.get(workstream.id);
+    if (orchestrator?.stage === "waiting_for_human") {
+      const action = orchestrator.apply({ type: "human.clarification.replied", content });
+      workstream.status = "active";
+      emit(workstream, "workstream.clarification_received", "Human clarification received by PM");
+      if (action) { const pm = workstream.agents.find((agent) => agent.role === "pm"); if (pm) await createMessage(workstream, "human", [pm.id], action.content, action.messageType, { correlationId: message.correlationId, causationId: message.id }); }
+      await persistWorkstreamStatus(workstream);
+    }
+  }
   return reply.code(201).send(message);
 });
 app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply) => {
@@ -445,6 +455,14 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
   const resultText = payload.text?.trim() ?? "";
+  if (sender.role === "pm" && resultText.startsWith("[CLARIFICATION_REQUEST]")) {
+    const clarification = resultText.replace(/^\[CLARIFICATION_REQUEST\]\s*/i, "").trim();
+    await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
+    workstream.status = "waiting_for_human";
+    emit(workstream, "workstream.clarification_requested", clarification, sender.role);
+    await persistWorkstreamStatus(workstream);
+    return;
+  }
   if (!resultText) {
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
