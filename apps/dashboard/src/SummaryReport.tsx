@@ -1,6 +1,6 @@
 type Task = { title: string; status: string; evidence: string[]; acceptanceCriteria: string[] };
 type Agent = { role: string; authority: string; status: string };
-type Event = { type: string; message: string };
+type Event = { type?: string; message?: string; content?: string };
 type Props = { status: string; tasks: Task[]; agents: Agent[]; messages: Event[]; events: Event[] };
 
 export function SummaryReport({ status, tasks, agents, messages, events }: Props) {
