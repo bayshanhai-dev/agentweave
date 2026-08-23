@@ -51,11 +51,21 @@ await bus.consumer(subjects.inbox, async (message) => {
         console.warn(JSON.stringify({ event: "worker.task.duplicate_suppressed", workerId, taskId: executionKey, messageId: envelope.id, occurredAt: new Date().toISOString() }));
         return "ack";
       }
+      if (!(await executor.claimTask(executionKey, envelope.workstreamId, envelope.id))) {
+        console.warn(JSON.stringify({ event: "worker.task.persistent_duplicate_suppressed", workerId, taskId: executionKey, messageId: envelope.id, occurredAt: new Date().toISOString() }));
+        return "ack";
+      }
       inFlightTasks.add(executionKey);
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
-      await runtime.dispatch({ taskId: executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
+      try {
+        await runtime.dispatch({ taskId: executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
+        await executor.finishTask(executionKey, "completed");
+      } catch (error) {
+        await executor.finishTask(executionKey, "failed");
+        throw error;
+      }
       return "ack";
     } catch (error) {
       // Execution failures are already durable (AgentTaskExecutor emits task.failed).

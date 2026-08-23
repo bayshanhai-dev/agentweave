@@ -13,4 +13,6 @@ export interface AgentSessionRepository {
   save(record: AgentSessionRecord): Promise<void>;
   acquireLease(id: string, workerId: string, leaseExpiresAt: string): Promise<boolean>;
   releaseLease(id: string, workerId: string): Promise<void>;
+  claimTask(taskId: string, workstreamId: string | undefined, workerId: string, messageId: string, leaseExpiresAt: string): Promise<boolean>;
+  finishTask(taskId: string, status: "completed" | "failed"): Promise<void>;
 }

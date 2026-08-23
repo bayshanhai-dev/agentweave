@@ -12,6 +12,8 @@ export class AgentTaskExecutor {
   private readonly controls = new Map<string, ExecutionControl>();
   constructor(private readonly provider: ProviderAdapter, private readonly sessions: AgentSessionRepository, private readonly workerId: string, private readonly sink: ExecutionSink, private readonly evidence = new EvidenceCollectorRegistry()) {}
   async updateWorkstreamControl(workstreamId: string, state: import("./execution-control.js").ExecutionControlState): Promise<void> { await this.controls.get(workstreamId)?.update(state); }
+  async claimTask(taskId: string, workstreamId: string | undefined, messageId: string): Promise<boolean> { return this.sessions.claimTask(taskId, workstreamId, this.workerId, messageId, new Date(Date.now() + Number(process.env.TASK_EXECUTION_LEASE_MS ?? 900_000)).toISOString()); }
+  async finishTask(taskId: string, status: "completed" | "failed"): Promise<void> { await this.sessions.finishTask(taskId, status); }
   async execute(task: AgentTask, control = new ExecutionControl()): Promise<void> {
     if (task.workstreamId) { this.controls.set(task.workstreamId, control); }
     const workspacePath = task.workspacePath ? validateWorkspacePath(task.workspacePath) : undefined;

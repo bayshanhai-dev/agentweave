@@ -15,4 +15,16 @@ export class PostgresAgentSessionRepository implements AgentSessionRepository {
     return rows.length === 1;
   }
   async releaseLease(id: string, workerId: string): Promise<void> { await this.sql`update agent_sessions set worker_id=null, lease_expires_at=null, updated_at=now() where id=${id} and worker_id=${workerId}`; }
+  async claimTask(taskId: string, workstreamId: string | undefined, workerId: string, messageId: string, leaseExpiresAt: string): Promise<boolean> {
+    const rows = await this.sql`
+      insert into task_execution_claims (task_id, workstream_id, worker_id, message_id, status, lease_expires_at)
+      values (${taskId}, ${workstreamId ?? null}, ${workerId}, ${messageId}, 'active', ${leaseExpiresAt})
+      on conflict (task_id) do update set worker_id=excluded.worker_id, message_id=excluded.message_id, status='active', lease_expires_at=excluded.lease_expires_at, started_at=now(), finished_at=null
+      where task_execution_claims.status = 'active' and task_execution_claims.lease_expires_at < now()
+      returning task_id`;
+    return rows.length === 1;
+  }
+  async finishTask(taskId: string, status: "completed" | "failed"): Promise<void> {
+    await this.sql`update task_execution_claims set status=${status}, finished_at=now(), lease_expires_at=null where task_id=${taskId} and status='active'`;
+  }
 }
