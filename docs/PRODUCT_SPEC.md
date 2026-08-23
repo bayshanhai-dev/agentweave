@@ -18,6 +18,14 @@ MVP 在单台主机上通过 Docker Compose 运行，但 Worker、Provider、消
 
 > AgentWeave is an open-source runtime and control plane for collaborative AI agent networks.
 
+### 1.1 设计范围与公开参考
+
+AgentWeave 是领域中立的 Agent Workflow Runtime，不是只面向软件开发的 Coding Agent 平台。软件开发是第一个重点 Flavor，因为它天然具备 Workspace、Artifact、Test、QA 和 Evidence 等可验证边界；同一套 Runtime、Task、Message、Session、Policy、Approval 和 Evidence 协议也必须能够支持研究、学术写作、数据分析、内容生产和运营等 Workstream。
+
+本规格参考了公开资料《2026 Working Note on GrokBot Systems Engineering Practice》，尤其是其中关于 workflow-first 设计、Manager/Specialist/Verifier 分工、durable task ledger、typed handoff、evidence-before-completion、bounded retry、human approval 和 recovery 的讨论。该资料作为设计参考，不是 AgentWeave 的实现规格；AgentWeave 使用自己的术语、协议、数据模型和代码实现，不复制其原文、图表、伪代码、产品名称或专有实现。
+
+从该参考资料吸收的原则是：系统的设计单位应是完整 Workflow，而不是 Agent 数量；每个任务必须有明确 owner、状态、artifact、evidence、重试边界和审批边界；Manager/Orchestrator 负责路由和状态，不应替代 Specialist；Verifier 必须用独立证据判断完成。AgentWeave 在此基础上增加 PostgreSQL 持久化、NATS JetStream、Provider Adapter、Docker Worker、WebSocket Dashboard、durable Inbox 和跨重启恢复。
+
 ## 2. 要解决的问题
 
 ### 2.1 当前 Coding Agent 的局限
@@ -1922,3 +1930,9 @@ PM → Human
 4. 在 Mock Provider 上验证 Workstream 状态机；
 5. 接入 Codex App Server；
 6. 使用 AgentWeave 自身开发并验证后续功能。
+
+## 31. 参考资料
+
+1. 《2026 Working Note on GrokBot Systems Engineering Practice》，2026-08-22，用户提供的公开 PDF：<https://drive.google.com/file/d/1ek73IrUN6wIwGkx70FuewOTEIVFPw3l4/view>。
+
+该参考资料用于说明通用的 Agent Workflow、Manager、Specialist、Verifier、Evidence、Approval 和 Recovery 设计原则；AgentWeave 的具体实现、代码、协议和产品命名均独立维护。
