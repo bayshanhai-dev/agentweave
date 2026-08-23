@@ -4,6 +4,7 @@ import type { ProviderRunEvent } from "./providers/types.js";
 import { AgentTaskExecutor } from "./runtime/execution.js";
 import { AgentRuntime } from "./runtime/agent-runtime.js";
 import { PostgresAgentSessionRepository } from "./providers/postgres-session-repository.js";
+import { createHash } from "node:crypto";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
 const provider = createProviderFromEnv();
@@ -45,7 +46,11 @@ await bus.consumer(subjects.inbox, async (message) => {
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
       if (!targetAgentId) return "dead-letter";
       if (!payload.content) return "ack";
-      const executionKey = payload.taskId ?? envelope.id;
+      // A missing taskId must not turn every duplicate message into a new run.
+      // Correlation is the stable identity for a handoff; envelope.id is only the
+      // delivery identity and therefore cannot be used as the execution key.
+      const handoffKey = envelope.correlationId ?? createHash("sha256").update(`${targetAgentId}|${payload.messageType ?? ""}|${payload.content}`).digest("hex").slice(0, 24);
+      const executionKey = payload.taskId ?? `${targetAgentId}:${handoffKey}`;
       executionKeyForCleanup = executionKey;
       if (inFlightTasks.has(executionKey)) {
         console.warn(JSON.stringify({ event: "worker.task.duplicate_suppressed", workerId, taskId: executionKey, messageId: envelope.id, occurredAt: new Date().toISOString() }));
