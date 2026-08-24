@@ -14,6 +14,17 @@ export class WorkstreamOrchestrator {
   attempt = 0;
   constructor(readonly workstreamId: string, readonly goal: string) {}
 
+  requiresClarification(): boolean {
+    const goal = this.goal.trim();
+    const vague = /\b(improve|production[- ]ready|make better|enhance|optimi[sz]e|work on)\b/i.test(goal);
+    const concrete = /\b(acceptance|criteria|must|should|test|deliver|release|scope|feature|bug|performance|security|endpoint|screen|report)\b/i.test(goal);
+    return goal.length < 80 || (vague && !concrete);
+  }
+
+  clarificationQuestions(): string {
+    return "Before I decompose this Workstream, please clarify:\n1. Which specific area or outcome should we improve first?\n2. What priority or constraints should guide the work?\n3. What acceptance criteria define production-ready for this Workstream?";
+  }
+
   /**
    * The PM Lead is the intelligent workflow orchestrator. This class remains
    * the deterministic safety layer: it validates the decision and exposes a
