@@ -496,6 +496,15 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     await persistWorkstreamStatus(workstream);
     return;
   }
+  if (sender.role === "pm" && orchestrator.requiresClarification()) {
+    const clarification = orchestrator.clarificationQuestions();
+    await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
+    workstream.status = "waiting_for_human";
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.clarification_requested", message: clarification, occurredAt: new Date().toISOString(), role: sender.role });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "pm.clarification_gate_rejected_decomposition", message: "PM output was not a clarification for an ambiguous Workstream goal", occurredAt: new Date().toISOString(), role: sender.role });
+    await persistWorkstreamStatus(workstream);
+    return;
+  }
   if (!resultText) {
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
