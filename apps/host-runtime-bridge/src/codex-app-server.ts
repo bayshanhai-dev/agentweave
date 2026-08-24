@@ -15,7 +15,9 @@ export class CodexAppServer {
   constructor(private readonly command = "codex") {
     this.child = spawn(command, ["app-server", "--stdio"], { shell: false, stdio: ["pipe", "pipe", "pipe"] });
     createInterface({ input: this.child.stdout }).on("line", (line) => this.receive(line));
+    createInterface({ input: this.child.stderr }).on("line", (line) => console.error(JSON.stringify({ event: "codex.app_server.stderr", command, line })));
     this.child.on("error", (error) => { for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); });
+    this.child.on("exit", (code, signal) => { const error = new Error(`Codex App Server exited (${code ?? "null"}, ${signal ?? "no signal"})`); for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); });
   }
   async request(method: string, params: Record<string, unknown>, correlationId: string): Promise<RpcResult> {
     if (method !== "initialize") await this.initialize();
