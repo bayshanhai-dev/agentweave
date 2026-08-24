@@ -4,6 +4,17 @@ import { createInterface } from "node:readline";
 type RpcResult = { id?: string; result?: Record<string, unknown>; error?: { message: string; code?: string } };
 type Pending = { resolve: (value: RpcResult) => void; reject: (error: Error) => void };
 
+function textFrom(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  const item = value as Record<string, unknown>;
+  for (const key of ["text", "delta", "output_text", "message"]) if (typeof item[key] === "string") return item[key] as string;
+  if (Array.isArray(item.content)) return item.content.map(textFrom).join("");
+  if (item.item) return textFrom(item.item);
+  if (item.result) return textFrom(item.result);
+  return "";
+}
+
 /** Host-owned long-lived Codex App Server process. */
 export class CodexAppServer {
   private readonly child: ChildProcessWithoutNullStreams;
@@ -34,7 +45,7 @@ export class CodexAppServer {
     let message: Record<string, unknown>; try { message = JSON.parse(line) as Record<string, unknown>; } catch { return; }
     if (typeof message.id === "string" && this.pending.has(message.id)) { const pending = this.pending.get(message.id)!; this.pending.delete(message.id); const error = message.error as RpcResult["error"] | undefined; pending.resolve({ id: message.id, result: (message.result ?? {}) as Record<string, unknown>, ...(error ? { error } : {}) }); return; }
     const params = (message.params ?? {}) as Record<string, unknown>; const threadId = String(params.threadId ?? params.thread_id ?? ""); if (!threadId) return;
-    const method = String(message.method ?? ""); const event = method === "item/agentMessage/delta" ? { type: "turn.delta", text: String(params.delta ?? params.text ?? "") } : method === "turn/completed" ? { type: "turn.completed" } : method === "turn/failed" ? { type: "turn.failed", error: params.error } : method === "item/started" ? { type: "tool.started", toolName: String(params.itemType ?? "tool") } : undefined;
+    const method = String(message.method ?? ""); const completedText = textFrom(params); const event = method === "item/agentMessage/delta" ? { type: "turn.delta", text: textFrom(params.delta ?? params.text) } : method === "item/completed" || method === "item/agentMessage/completed" ? (completedText ? { type: "turn.delta", text: completedText } : undefined) : method === "turn/completed" ? { type: "turn.completed", ...(completedText ? { text: completedText } : {}) } : method === "turn/failed" ? { type: "turn.failed", error: params.error } : method === "item/started" ? { type: "tool.started", toolName: String(params.itemType ?? "tool") } : undefined;
     if (event) this.queues.set(threadId, [...(this.queues.get(threadId) ?? []), event]);
   }
 }
