@@ -454,6 +454,15 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
 }
 
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
+  if (["turn.started", "turn.delta", "tool.started", "tool.completed", "turn.cancelled", "turn.failed"].includes(envelope.type)) {
+    const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
+    const payload = envelope.payload as { agentId?: string; turnId?: string; text?: string; toolName?: string; output?: string; error?: { message?: string } };
+    const agent = payload.agentId ? workstream.agents.find((candidate) => candidate.id === payload.agentId) : undefined;
+    const message = envelope.type === "turn.delta" ? payload.text ?? "" : envelope.type === "tool.started" ? `${payload.toolName ?? "tool"} started` : envelope.type === "tool.completed" ? `${payload.toolName ?? "tool"} completed` : envelope.type === "turn.failed" ? payload.error?.message ?? "Provider turn failed" : envelope.type.replaceAll(".", " ");
+    if (!message) return;
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message, occurredAt: new Date().toISOString(), ...(agent?.role ? { role: agent.role } : {}), ...(agent?.id ? { from: agent.id } : {}) });
+    return;
+  }
   if (envelope.type === "run.started" || envelope.type === "run.heartbeat") {
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
     const payload = envelope.payload as { agentId?: string; taskId?: string; elapsedMs?: number };

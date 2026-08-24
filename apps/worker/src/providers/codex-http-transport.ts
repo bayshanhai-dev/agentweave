@@ -29,7 +29,14 @@ export class CodexHttpTransport implements CodexTransport {
     const parsed = await this.parseResponse(response); return parsed.body as { id?: string; result?: Record<string, unknown>; error?: { message: string; code?: string } };
   }
   async *events(sessionId: string): AsyncIterable<Record<string, unknown>> {
-    if (process.env.CODEX_BRIDGE_MODE === "app-server") { const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/codex/app-server/events/${encodeURIComponent(sessionId)}`, { headers: this.token ? { authorization: `Bearer ${this.token}` } : {} }); const parsed = await this.parseResponse(response); if (!response.ok) throw new Error(parsed.body.error?.message ?? "Codex bridge event authentication failed"); for (const event of parsed.body.events ?? []) yield event; return; }
+    if (process.env.CODEX_BRIDGE_MODE === "app-server") {
+      const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/codex/app-server/events/${encodeURIComponent(sessionId)}`, { headers: this.token ? { authorization: `Bearer ${this.token}` } : {} });
+      if (!response.ok || !response.body) { const parsed = await this.parseResponse(response); throw new Error(parsed.body.error?.message ?? "Codex bridge event authentication failed"); }
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      for (;;) { const chunk = await reader.read(); if (chunk.done) break; buffer += decoder.decode(chunk.value, { stream: true }); const lines = buffer.split("\n"); buffer = lines.pop() ?? ""; for (const line of lines) { if (line.trim()) yield JSON.parse(line) as Record<string, unknown>; } }
+      if (buffer.trim()) yield JSON.parse(buffer) as Record<string, unknown>;
+      return;
+    }
     for (const event of this.eventsBySession.get(sessionId) ?? []) yield event; this.eventsBySession.delete(sessionId);
   }
   async cancel(): Promise<void> { /* one-shot bridge execution is bounded by the child process */ }
