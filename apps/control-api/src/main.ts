@@ -488,7 +488,7 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     return;
   }
   const resultText = payload.text?.trim() ?? "";
-  if (sender.role === "pm" && resultText.startsWith("[CLARIFICATION_REQUEST]")) {
+  if (sender.role === "pm" && (resultText.startsWith("[CLARIFICATION_REQUEST]") || /^(?:i need clarification|could you clarify|please clarify|please confirm|can you confirm|what exactly|which .*\?)/i.test(resultText))) {
     const clarification = resultText.replace(/^\[CLARIFICATION_REQUEST\]\s*/i, "").trim();
     await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     workstream.status = "waiting_for_human";
@@ -514,8 +514,9 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     }
     task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role });
   }
+  const orchestrationText = sender.role === "pm" ? resultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : resultText;
   const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
-  const action = orchestrator.apply({ type: eventType, content: resultText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+  const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
   const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role))?.id : undefined); if (!recipient) return;
   await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
