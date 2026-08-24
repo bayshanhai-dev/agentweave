@@ -108,6 +108,7 @@ services:
       CODEX_CONTAINER_WORKSPACE_ROOT: /workspaces
       CODEX_HOST_WORKSPACE_ROOT: /Users/tong/Documents/ChatGPT
       CODEX_BRIDGE_TOKEN: ${CODEX_BRIDGE_TOKEN:-}
+      PROVIDER_REQUEST_TIMEOUT_MS: ${PROVIDER_REQUEST_TIMEOUT_MS:-120000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
