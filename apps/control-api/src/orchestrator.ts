@@ -29,7 +29,7 @@ export class WorkstreamOrchestrator {
     return decision;
   }
 
-  start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: `Workstream goal:\n${this.goal}\n\nIf the goal or acceptance criteria are ambiguous, do not guess. Reply with a message beginning exactly with [CLARIFICATION_REQUEST] followed by your questions for the Human. Otherwise produce your decomposition.`, attempt: this.attempt }; }
+  start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: `PM fast clarification gate. Do not inspect the workspace, call tools, edit files, or perform implementation work in this turn. Read only the goal below. If the goal or acceptance criteria are ambiguous, reply immediately with a single message beginning exactly with [CLARIFICATION_REQUEST] followed by the minimum questions for the Human. Otherwise produce a concise decomposition.\n\nWorkstream goal:\n${this.goal}`, attempt: this.attempt }; }
 
   apply(event: OrchestratorEvent): OrchestratorAction | undefined {
     if (event.type === "goal.received" && this.stage === "pm") { this.stage = "pe"; return this.action("pe", "PM decomposition:\n" + event.content); }
