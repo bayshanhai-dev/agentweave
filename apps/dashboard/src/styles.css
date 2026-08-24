@@ -1,4 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+/* Keep the navbar controls visible while allowing only the workstream list to scroll. */
+.mantine-AppShell-navbar > .mantine-Stack-root { min-height: 0; }
+.mantine-AppShell-navbar > .mantine-Stack-root > .mantine-Button-root { flex: 0 0 auto; }
+.mantine-AppShell-navbar > .mantine-Stack-root > .mantine-ScrollArea-root { flex: 1 1 auto; min-height: 0; max-height: none !important; }
+.mantine-AppShell-navbar .mantine-NavLink-label { overflow-wrap: anywhere; }
 :root { font-family: Manrope, sans-serif; color: #e7e9ee; background: #101114; font-synthesis: none; }
 * { box-sizing: border-box; } body { margin: 0; } button, input, textarea, select { font: inherit; } button { cursor: pointer; }
 .app-shell { min-height: 100vh; display: flex; background: radial-gradient(circle at 70% -10%, #29352d 0, transparent 34%), #101114; }
