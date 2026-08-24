@@ -25,6 +25,9 @@ export class PostgresAgentSessionRepository implements AgentSessionRepository {
     return rows.length === 1;
   }
   async finishTask(taskId: string, status: "completed" | "failed"): Promise<void> {
-    await this.sql`update task_execution_claims set status=${status}, finished_at=now(), lease_expires_at=null where task_id=${taskId} and status='active'`;
+    // Keep the lease column non-null so older databases and the current schema
+    // agree. A finished claim is immediately reclaimable because its lease is
+    // set in the past, while its terminal status still suppresses duplicates.
+    await this.sql`update task_execution_claims set status=${status}, finished_at=now(), lease_expires_at=now() where task_id=${taskId} and status='active'`;
   }
 }
