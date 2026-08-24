@@ -17,5 +17,5 @@ const edges: Edge[] = [
 ].map(([source, target]) => ({ id: `${source}-${target}`, source, target, animated: true, style: { stroke: "#91a176", strokeWidth: 1.5 } }));
 
 export function AgentHiveGraph({ selected, onSelect, onEdgeSelect }: Props) {
-  return <div className="graph-frame"><ReactFlow nodes={nodes.map((node) => ({ ...node, selected: node.id === selected }))} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} nodesDraggable nodesConnectable={false} onNodeClick={(_, node) => onSelect(selected === node.id ? null : node.id)} onEdgeClick={(_, edge) => onEdgeSelect(edge.source, edge.target)}><Background color="#91a176" gap={22} size={1} /><Controls showInteractive={false} /></ReactFlow></div>;
+  return <div className="graph-frame"><ReactFlow nodes={nodes.map((node) => ({ ...node, selected: node.id === selected }))} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} nodesDraggable nodesConnectable={false} onNodeClick={(_, node) => { const next = selected === node.id ? null : node.id; onSelect(next); if (node.id !== "human") window.dispatchEvent(new CustomEvent("agentweave:agent-selected", { detail: { id: next } })); }} onEdgeClick={(_, edge) => onEdgeSelect(edge.source, edge.target)}><Background color="#91a176" gap={22} size={1} /><Controls showInteractive={false} /></ReactFlow></div>;
 }
