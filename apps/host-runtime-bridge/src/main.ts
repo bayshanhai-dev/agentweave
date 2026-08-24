@@ -7,7 +7,7 @@ import { mapWorkspacePath } from "./workspace-path.js";
 const app = Fastify({ logger: true });
 const broker = new WorkspaceBroker();
 const codex = new CodexBridge();
-const appServer = new CodexAppServer();
+const appServer = new CodexAppServer(process.env.CODEX_COMMAND ?? "codex");
 function authorized(request: { headers: Record<string, string | string[] | undefined> }): boolean { const token = process.env.CODEX_BRIDGE_TOKEN; return !token || request.headers.authorization === `Bearer ${token}`; }
 app.get("/health", async () => ({ status: "ok", service: "host-runtime-bridge" }));
 app.get("/v1/codex/health", async () => ({ status: "ok", provider: "codex", command: process.env.CODEX_COMMAND ?? "codex", authentication: process.env.CODEX_BRIDGE_TOKEN ? "required" : "disabled" }));
