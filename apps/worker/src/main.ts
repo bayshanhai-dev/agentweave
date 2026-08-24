@@ -65,7 +65,7 @@ await bus.consumer(subjects.inbox, async (message) => {
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
       try {
-        await runtime.dispatch({ taskId: executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id });
+        await runtime.dispatch({ taskId: executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
         await executor.finishTask(executionKey, "completed");
       } catch (error) {
         await executor.finishTask(executionKey, "failed");
