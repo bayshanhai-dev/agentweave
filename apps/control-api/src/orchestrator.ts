@@ -29,7 +29,7 @@ export class WorkstreamOrchestrator {
     return decision;
   }
 
-  start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: `PM clarification gate. Do not inspect the workspace, call tools, edit files, decompose tasks, or perform implementation work in this turn. First decide whether the goal contains an explicit target scope and acceptance criteria. If either is missing, unclear, or open to multiple interpretations, this turn MUST be a Human follow-up: reply immediately with one message beginning exactly with [CLARIFICATION_REQUEST] and then the minimum concrete questions. Do not produce a plan in that case. Only when the target and acceptance criteria are explicit may you reply with [READY_FOR_DECOMPOSITION] followed by a concise decomposition.\n\nWorkstream goal:\n${this.goal}`, attempt: this.attempt }; }
+  start(): OrchestratorAction { if (this.stage !== "pm") throw new Error(`Cannot start from ${this.stage}`); return { stage: "pm", recipientRole: "pm", messageType: "request", content: `You are the PM and intelligent orchestrator for this Workstream. Analyze the goal, decide the next useful action, and coordinate with the Agent Hive. If you need information from Human, ask a focused question and let it bubble up; otherwise proceed with the best-supported interpretation.\n\nWorkstream goal:\n${this.goal}`, attempt: this.attempt }; }
 
   apply(event: OrchestratorEvent): OrchestratorAction | undefined {
     if (event.type === "goal.received" && this.stage === "pm") { this.stage = "pe"; return this.action("pe", "PM decomposition:\n" + event.content); }
