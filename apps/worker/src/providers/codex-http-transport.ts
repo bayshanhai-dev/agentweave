@@ -3,7 +3,7 @@ import type { CodexTransport } from "./codex-app-server.js";
 export class CodexHttpTransport implements CodexTransport {
   private readonly sessions = new Map<string, { workspacePath?: string; model?: string }>();
   private readonly eventsBySession = new Map<string, Record<string, unknown>[]>();
-  private readonly timeoutMs = Number(process.env.PROVIDER_REQUEST_TIMEOUT_MS ?? 45_000);
+  private readonly timeoutMs = Number(process.env.PROVIDER_REQUEST_TIMEOUT_MS ?? 120_000);
   constructor(private readonly baseUrl: string, private readonly token = process.env.CODEX_BRIDGE_TOKEN) {}
   private async parseResponse(response: Response): Promise<{ body: { id?: string; result?: Record<string, unknown>; error?: { message: string; code?: string }; text?: string; stderr?: string; exitCode?: number | null; threadId?: string; events?: Record<string, unknown>[]; errorText?: string }; status: number }> {
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
