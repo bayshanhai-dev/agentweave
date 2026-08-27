@@ -5,6 +5,7 @@ import { AgentTaskExecutor } from "./runtime/execution.js";
 import { AgentRuntime } from "./runtime/agent-runtime.js";
 import { PostgresAgentSessionRepository } from "./providers/postgres-session-repository.js";
 import { createHash } from "node:crypto";
+import { executionKeyForDelivery } from "./runtime/execution-key.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
 const provider = createProviderFromEnv();
@@ -50,7 +51,10 @@ await bus.consumer(subjects.inbox, async (message) => {
       // Correlation is the stable identity for a handoff; envelope.id is only the
       // delivery identity and therefore cannot be used as the execution key.
       const handoffKey = envelope.correlationId ?? createHash("sha256").update(`${targetAgentId}|${payload.messageType ?? ""}|${payload.content}`).digest("hex").slice(0, 24);
-      const executionKey = payload.taskId ?? `${targetAgentId}:${handoffKey}`;
+      // A business task can legitimately visit several agents. Claims must be
+      // unique per handoff/agent, while taskId remains stable for task status
+      // and evidence association in the Control Plane.
+      const executionKey = executionKeyForDelivery(payload.taskId, targetAgentId, handoffKey);
       executionKeyForCleanup = executionKey;
       if (inFlightTasks.has(executionKey)) {
         console.warn(JSON.stringify({ event: "worker.task.duplicate_suppressed", workerId, taskId: executionKey, messageId: envelope.id, occurredAt: new Date().toISOString() }));
@@ -65,7 +69,7 @@ await bus.consumer(subjects.inbox, async (message) => {
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
       try {
-        await runtime.dispatch({ taskId: executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
+        await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
         await executor.finishTask(executionKey, "completed");
       } catch (error) {
         await executor.finishTask(executionKey, "failed");

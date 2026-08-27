@@ -5,7 +5,7 @@ import { ExecutionControl } from "./execution-control.js";
 import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
 
-export type AgentTask = { taskId: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string; collectEvidence?: boolean };
+export type AgentTask = { taskId: string; executionKey?: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string; collectEvidence?: boolean };
 export type ExecutionSink = (event: ProviderRunEvent | { type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed"; taskId: string; agentId?: string; workstreamId?: string; text?: string; error?: string; evidenceIds?: string[]; elapsedMs?: number }) => Promise<void>;
 
 export class AgentTaskExecutor {
