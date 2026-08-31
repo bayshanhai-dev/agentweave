@@ -10,7 +10,7 @@ export type DockerRunner = (args: string[]) => Promise<{ stdout: string; stderr:
 export class WorkspaceBroker {
   private readonly roots: string[];
   private readonly bindings = new Map<string, WorkspaceBinding>();
-  constructor(private readonly options: { allowedRoots?: string[]; containerRoot?: string; network?: string; workerImage?: string; docker?: DockerRunner } = {}) { this.roots = (options.allowedRoots ?? (process.env.WORKSPACE_ALLOWED_ROOTS ?? process.cwd()).split(",")).map(resolve); }
+  constructor(private readonly options: { allowedRoots?: string[]; containerRoot?: string; network?: string; workerImage?: string; docker?: DockerRunner } = {}) { this.roots = (options.allowedRoots ?? (process.env.WORKSPACE_ALLOWED_ROOTS ?? process.cwd()).split(",")).map((root) => resolve(root)); }
   async bind(input: { workstreamId: string; hostPath: string; readOnly?: boolean; agentId?: string }): Promise<WorkspaceBinding> {
     const hostPath = await realpath(input.hostPath); await access(hostPath);
     if (!this.roots.some((root) => hostPath === root || (!relative(root, hostPath).startsWith(`..${sep}`) && !isAbsolute(relative(root, hostPath))))) throw new Error("workspace_path_not_allowed");

@@ -21,7 +21,10 @@ function extractText(stdout: string): string {
 /** Host-side boundary for Codex. It never accepts a shell command string. */
 export class CodexBridge {
   private readonly roots: string[];
-  constructor(private readonly options: { allowedRoots?: string[]; command?: string } = {}) { this.roots = (options.allowedRoots ?? (process.env.WORKSPACE_ALLOWED_ROOTS ?? "/Users/tong/Documents/ChatGPT/AcademicPaperBuddy").split(",")).map((root) => resolve(root)); }
+  constructor(private readonly options: { allowedRoots?: string[]; command?: string } = {}) {
+    const configuredRoots = process.env.WORKSPACE_ALLOWED_ROOTS ?? process.env.CODEX_HOST_WORKSPACE_ROOT ?? resolve(process.cwd(), "workspaces");
+    this.roots = (options.allowedRoots ?? configuredRoots.split(",")).map((root) => resolve(root));
+  }
   async execute(input: CodexExecution & { threadId?: string }): Promise<CodexExecutionResult> {
     const workspacePath = await realpath(mapWorkspacePath(input.workspacePath)); await access(workspacePath);
     const relativePath = relative(this.roots.find((root) => workspacePath === root || (!relative(root, workspacePath).startsWith(`..${sep}`) && !isAbsolute(relative(root, workspacePath)))) ?? this.roots[0]!, workspacePath);

@@ -11,15 +11,14 @@ import {
   Divider,
   Group,
   MantineProvider,
+  Modal,
   NavLink,
   Paper,
   Pagination,
   ScrollArea,
-  SegmentedControl,
   SimpleGrid,
   Stack,
   Text,
-  Textarea,
   ThemeIcon,
   Title,
   Tooltip,
@@ -30,12 +29,9 @@ import {
   IconActivity,
   IconArrowsExchange,
   IconBrain,
-  IconCheck,
   IconChevronRight,
   IconCircleDot,
-  IconLayoutDashboard,
   IconLayoutKanban,
-  IconMessage,
   IconMoon,
   IconPlus,
   IconSun,
@@ -43,13 +39,12 @@ import {
 } from "@tabler/icons-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AgentHiveGraph } from "./AgentHiveGraph";
 import { AgentExecutionPanel } from "./AgentExecutionPanel";
 import { SummaryReport } from "./SummaryReport";
 import { TaskBoard, type Task } from "./TaskBoard";
 import { WorkstreamControls } from "./WorkstreamControls";
-import { RunConsole } from "./RunConsole";
 import { LiveMessageBus } from "./LiveMessageBus";
+import { providerModelLabel } from "./providerDisplay";
 import "./styles.css";
 
 const api = `${window.location.protocol}//${window.location.hostname}:3000`;
@@ -67,7 +62,6 @@ type Event = {
   elapsedMs?: number;
   recipientIds?: string[];
   messageType?: string;
-  taskId?: string;
   correlationId?: string;
   role?: string;
   from?: string;
@@ -88,12 +82,6 @@ type Workstream = {
   events: Event[];
   messages?: Event[];
 };
-const pages = [
-  { value: "Overview", label: "Overview", icon: IconLayoutDashboard },
-  { value: "Agent hive", label: "Agent Hive", icon: IconTopologyStar3 },
-  { value: "Tasks", label: "Tasks", icon: IconCheck },
-  { value: "Activity", label: "Activity", icon: IconActivity },
-];
 const labels: Record<string, string> = {
   human: "Human",
   pm: "PM",
@@ -226,35 +214,50 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function MacroPlanBoard({ api, workstream, onChange }: { api: string; workstream: Workstream; onChange: (tasks: Task[]) => void }) {
+function MacroPlanBoard({ workstream }: { workstream: Workstream }) {
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const columns = [
     { status: "ready", label: "Backlog", color: "gray" },
     { status: "assigned", label: "To Do", color: "blue" },
     { status: "running", label: "In Progress", color: "yellow" },
     { status: "review", label: "Review", color: "violet" },
+    { status: "done", label: "Done", color: "green" },
   ] as const;
   const priority = (task: Task) => (task as Task & { priority?: string }).priority ?? "normal";
+  const taskOwner = (task: Task) => {
+    if (!task.ownerAgentId) return "Unassigned";
+    const agent = workstream.agents.find((candidate) => candidate.id === task.ownerAgentId);
+    return agent?.role.toUpperCase() ?? task.ownerAgentId.split(":").at(-1)?.replace(/-\d+$/, "").toUpperCase() ?? task.ownerAgentId;
+  };
   return <Stack gap="md" className="macro-plan-board">
     <Group justify="space-between" align="flex-end"><div><Group gap="xs"><IconLayoutKanban size={18} /><Title order={2}>Macro Plan</Title></Group><Text size="sm" c="dimmed">A live view of the workstream’s durable task queue.</Text></div><Badge variant="dot" color="teal">{workstream.tasks.length} tasks</Badge></Group>
-    <SimpleGrid cols={{ base: 1, sm: 2, xl: 4 }} spacing="sm">
+        <SimpleGrid cols={{ base: 1, sm: 2, xl: 5 }} spacing="sm">
       {columns.map((column) => { const tasks = workstream.tasks.filter((task) => task.status === column.status); return <Stack key={column.status} gap="xs" className="macro-column">
         <Group justify="space-between" className="macro-column-header"><Group gap="xs"><Badge color={column.color} variant="light" size="sm">{tasks.length}</Badge><Text fw={700} size="sm">{column.label}</Text></Group><Text size="xs" c="dimmed" tt="uppercase">{column.status}</Text></Group>
-        {tasks.length ? tasks.map((task) => <Card key={task.id} withBorder padding="sm" className="macro-task-card"><Stack gap="xs"><Group justify="space-between" align="flex-start"><Text fw={650} size="sm">{task.title}</Text><Badge size="xs" variant="outline" color={priority(task) === "high" ? "red" : "gray"}>{priority(task)}</Badge></Group><Group gap="xs"><Badge size="xs" variant="light">{task.ownerAgentId ?? "unassigned"}</Badge><Text size="xs" c="dimmed">{task.evidence.length} evidence</Text></Group><Text size="xs" c="dimmed" lineClamp={2}>{task.acceptanceCriteria[0] ?? "No acceptance criteria"}</Text></Stack></Card>) : <Card withBorder padding="md" className="macro-empty"><Text size="xs" c="dimmed">No tasks in this lane</Text></Card>}
+        {tasks.length ? tasks.map((task) => <Card key={task.id} withBorder padding="sm" className="macro-task-card" role="button" tabIndex={0} aria-label={`Open task: ${task.title}`} onClick={() => setSelectedTask(task)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedTask(task); } }}><Stack gap="xs"><Text className="macro-task-title">{task.title}</Text><Group gap="xs" wrap="wrap" className="macro-task-meta"><Badge size="xs" variant="outline" color={priority(task) === "high" ? "red" : "gray"}>{priority(task)}</Badge><Badge size="xs" variant="light" color={task.ownerAgentId ? "blue" : "gray"}>Assigned · {taskOwner(task)}</Badge><Text size="xs" c="dimmed">{task.evidence.length} evidence</Text></Group><Text size="xs" c="dimmed" lineClamp={2}>{task.acceptanceCriteria[0] ?? "No acceptance criteria"}</Text></Stack></Card>) : <Card withBorder padding="md" className="macro-empty"><Text size="xs" c="dimmed">No tasks in this lane</Text></Card>}
       </Stack>; })}
     </SimpleGrid>
-    <Box className="macro-task-sync"><TaskBoard api={api} workstreamId={workstream.id} tasks={workstream.tasks} onChange={onChange} /></Box>
+    <Modal opened={Boolean(selectedTask)} onClose={() => setSelectedTask(null)} title="Task details" size="lg" centered>
+      {selectedTask && <Stack gap="md" className="macro-task-detail">
+        <div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Task</Text><Title order={3}>{selectedTask.title}</Title></div>
+        <Group gap="xs"><StatusBadge status={selectedTask.status} /><Badge variant="light">Assigned · {taskOwner(selectedTask)}</Badge><Badge variant="outline">{priority(selectedTask)}</Badge></Group>
+        <div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Acceptance criteria</Text>{selectedTask.acceptanceCriteria.length ? selectedTask.acceptanceCriteria.map((criterion) => <Text key={criterion} size="sm" mt="xs">✓ {criterion}</Text>) : <Text size="sm" c="dimmed" mt="xs">No acceptance criteria</Text>}</div>
+        <SimpleGrid cols={{ base: 1, sm: 2 }}><div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Dependencies</Text><Text size="sm" mt="xs">{selectedTask.dependencies.length ? selectedTask.dependencies.join(", ") : "None"}</Text></div><div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Evidence</Text><Text size="sm" mt="xs">{selectedTask.evidence.length ? selectedTask.evidence.join(", ") : "None"}</Text></div></SimpleGrid>
+        <Text size="xs" c="dimmed">Task ID · {selectedTask.id}</Text>
+      </Stack>}
+    </Modal>
   </Stack>;
 }
 function App() {
   const [items, setItems] = useState<Workstream[]>([]);
   const [selected, setSelected] = useState<Workstream | null>(null);
-  const [page, setPage] = useState("Overview");
-  const [focus, setFocus] = useState<string | null>(null);
-  const [edgeFocus, setEdgeFocus] = useState<[string, string] | null>(null);
+  const [auditOpen, { open: openAudit, close: closeAudit }] = useDisclosure(false);
+  const [taskPanelOpen, { open: openTaskPanel, close: closeTaskPanel }] = useDisclosure(false);
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [opened, { toggle, close }] = useDisclosure(false);
+  const [workstreamsOpen, { toggle: toggleWorkstreams, close: closeWorkstreams }] = useDisclosure(false);
   const mobile = useMediaQuery("(max-width: 48em)");
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   useEffect(() => {
@@ -267,18 +270,33 @@ function App() {
   }, []);
   useEffect(() => {
     if (!selected) return;
-    const socket = new WebSocket(wsUrl);
-    socket.onmessage = (incoming) => {
+    const selectedId = selected.id;
+    let socket: WebSocket | undefined;
+    let reconnectTimer: number | undefined;
+    let reconnectDelay = 500;
+    let disposed = false;
+    const syncSnapshot = async () => {
+      const response = await fetch(`${api}/api/workstreams/${selectedId}`).catch(() => undefined);
+      if (!response?.ok) return;
+      const updated = await response.json() as Workstream;
+      setSelected((current) => current?.id === selectedId ? updated : current);
+      setItems((current) => current.map((item) => item.id === selectedId ? updated : item));
+    };
+    const handleMessage = (incoming: MessageEvent<string>) => {
       const envelope = JSON.parse(incoming.data) as {
         workstreamId?: string;
-        message?: Event;
+        message?: Event | string;
         type?: string;
         occurredAt?: string;
       };
-      const event: Event = envelope.message
-        ? { ...envelope.message, type: envelope.type, occurredAt: envelope.occurredAt }
+      const durableMessage =
+        envelope.message && typeof envelope.message === "object"
+          ? envelope.message
+          : undefined;
+      const event: Event = durableMessage
+        ? { ...durableMessage, type: envelope.type, occurredAt: envelope.occurredAt }
         : (envelope as Event);
-      if (envelope.workstreamId === selected.id) {
+      if (envelope.workstreamId === selectedId) {
         const statusByEvent: Record<string, string> = {
           "workstream.starting": "starting",
           "workstream.active": "active",
@@ -289,74 +307,63 @@ function App() {
         };
         setSelected((current) => {
           if (!current) return current;
-          const isMessage = Boolean(envelope.message) || (event.type?.startsWith("message.") ?? false);
+          const isMessage = Boolean(durableMessage);
           if (isMessage && event.id && current.messages?.some((message) => message.id === event.id)) return current;
           if (!isMessage && event.id && current.events.some((existing) => existing.id === event.id)) return current;
           const running = ["run.started", "run.heartbeat", "turn.started", "turn.delta", "tool.started", "tool.completed"].includes(event.type ?? "");
-          const settled = ["task.completed", "task.failed", "turn.failed", "turn.cancelled"].includes(event.type ?? "");
+          const settled = ["agent.reply.created", "task.completed", "task.failed", "turn.completed", "turn.failed", "turn.cancelled"].includes(event.type ?? "");
+          const taskStatus = running ? "running" : event.type === "task.completed" ? "done" : event.type === "task.failed" ? "failed" : undefined;
           const agents = event.role
-            ? current.agents.map((agent) => agent.role === event.role ? { ...agent, status: running ? "running" : settled ? (event.type === "task.completed" ? "done" : "failed") : agent.status } : agent)
+            ? current.agents.map((agent) => agent.role === event.role ? { ...agent, status: running ? "running" : settled ? (event.type === "task.failed" || event.type === "turn.failed" ? "failed" : "idle") : agent.status } : agent)
             : current.agents;
           return {
             ...current,
             status: statusByEvent[event.type ?? ""] ?? current.status,
             agents,
+            tasks: taskStatus && event.taskId ? current.tasks.map((task) => task.id === event.taskId ? { ...task, status: taskStatus } : task) : current.tasks,
             events: [...current.events, event],
             messages: isMessage ? [...(current.messages ?? []), event] : current.messages,
           };
         });
+        if (event.type === "task.created") {
+          void fetch(`${api}/api/workstreams/${selectedId}`)
+            .then((response) => response.ok ? response.json() as Promise<Workstream> : undefined)
+            .then((updated) => updated && setSelected((current) => current?.id === selectedId ? { ...current, tasks: updated.tasks } : current));
+        }
       }
     };
-    return () => socket.close();
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(wsUrl);
+      socket.onopen = () => {
+        reconnectDelay = 500;
+        void syncSnapshot();
+      };
+      socket.onmessage = handleMessage;
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (disposed) return;
+        reconnectTimer = window.setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 5_000);
+      };
+    };
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
   }, [selected?.id]);
-  useEffect(() => {
-    const listener = (event: globalThis.Event) =>
-      selectAgent(
-        (event as CustomEvent<{ id?: string | null }>).detail?.id ?? null,
-      );
-    window.addEventListener("agentweave:agent-selected", listener);
-    return () =>
-      window.removeEventListener("agentweave:agent-selected", listener);
-  }, []);
   const messages =
     selected?.messages ??
     selected?.events.filter((event) => event.type?.startsWith("message.")) ??
     [];
-  const filtered = useMemo(
-    () =>
-      messages.filter((event) =>
-        edgeFocus
-          ? ((event.from ?? event.senderId) === edgeFocus[0] && (event.to ?? event.recipientIds?.join(","))?.includes(edgeFocus[1])) ||
-            ((event.from ?? event.senderId) === edgeFocus[1] && (event.to ?? event.recipientIds?.join(","))?.includes(edgeFocus[0]))
-          : focus
-            ? (event.from ?? event.senderId) === focus || (event.to ?? event.recipientIds?.join(","))?.split(",").includes(focus)
-            : true,
-      ),
-    [messages, focus, edgeFocus],
-  );
-  function choose(item: Workstream, next: string) {
+  function choose(item: Workstream) {
     setSelected(item);
-    setPage(next);
-    setFocus(null);
-    setEdgeFocus(null);
     setDraft("");
     setSendError(null);
+    if (immersiveOverview) closeWorkstreams();
     if (mobile) close();
-  }
-  function selectAgent(id: string | null) {
-    if (!id || id === "human") return;
-    setFocus((current) => {
-      const next = current === id ? null : id;
-      setDraft((currentDraft) => {
-        const tag = `@${id}`;
-        const withoutTag = currentDraft
-          .replace(new RegExp(`${tag}\\s*`, "ig"), "")
-          .trimStart();
-        return next ? `${tag} ${withoutTag}` : withoutTag;
-      });
-      setSendError(null);
-      return next;
-    });
   }
   function addCreated(id: string) {
     void fetch(`${api}/api/workstreams/${id}`)
@@ -372,19 +379,20 @@ function App() {
   }
   async function send() {
     if (!selected || !draft.trim()) return;
-    const mentions = [...draft.matchAll(/@(pm|pe|coder|qa)\b/gi)].map((match) =>
-      match[1].toLowerCase(),
-    );
+    const agentRoles = new Set(selected.agents.map((agent) => agent.role.toLowerCase()));
+    const mentions = [...draft.matchAll(/@([a-z][a-z0-9_-]*)\b/gi)]
+      .map((match) => match[1].toLowerCase())
+      .filter((role) => agentRoles.has(role));
     const recipients = [
-      ...new Set(mentions.length ? mentions : focus ? [focus] : []),
+      ...new Set(mentions),
     ];
     if (!recipients.length) {
       setSendError(
-        "Select an Agent or mention one with @pm, @pe, @coder, or @qa.",
+        "Mention one or more roles with @, for example @pm or @backend.",
       );
       return;
     }
-    const content = draft.replace(/@(pm|pe|coder|qa)\b/gi, "").trim();
+    const content = draft.replace(/@[a-z][a-z0-9_-]*\b/gi, "").trim();
     try {
       const response = await fetch(
         `${api}/api/workstreams/${selected.id}/messages`,
@@ -395,7 +403,6 @@ function App() {
             from: "human",
             recipients,
             content,
-            intent: "question",
           }),
         },
       );
@@ -407,7 +414,6 @@ function App() {
           ? { ...current, messages: [...(current.messages ?? []), localMessage] }
           : current,
       );
-      setFocus(recipients[0]);
       setDraft("");
       setSendError(null);
     } catch (cause) {
@@ -416,15 +422,6 @@ function App() {
   }
   const navigation = (
     <Stack gap={4}>
-      <NavLink
-        label="Overview"
-        leftSection={<IconLayoutDashboard size={17} />}
-        active={!selected}
-        onClick={() => {
-          setSelected(null);
-          if (mobile) close();
-        }}
-      />
       {items.map((item) => (
         <Box key={item.id}>
           <NavLink
@@ -436,25 +433,9 @@ function App() {
               </ThemeIcon>
             }
             rightSection={<IconChevronRight size={15} />}
-            active={selected?.id === item.id && page === "Overview"}
-            onClick={() => choose(item, "Overview")}
+            active={selected?.id === item.id}
+            onClick={() => choose(item)}
           />
-          {selected?.id === item.id && (
-            <Stack gap={2} ml="xl">
-              {pages.slice(1).map((entry) => {
-                const PageIcon = entry.icon;
-                return (
-                  <NavLink
-                    key={entry.value}
-                    label={entry.label}
-                    leftSection={<PageIcon size={15} />}
-                    active={page === entry.value}
-                    onClick={() => choose(item, entry.value)}
-                  />
-                );
-              })}
-            </Stack>
-          )}
         </Box>
       ))}
     </Stack>
@@ -497,11 +478,12 @@ function App() {
       </Box>
     </Stack>
   );
+  const immersiveOverview = Boolean(selected);
   return (
     <AppShell
-      header={{ height: 64 }}
-      navbar={{ width: 280, breakpoint: "sm", collapsed: { mobile: !opened } }}
-      padding="lg"
+      header={{ height: immersiveOverview ? 48 : 64 }}
+      navbar={{ width: 280, breakpoint: "sm", collapsed: { mobile: !opened, desktop: immersiveOverview ? !workstreamsOpen : false } }}
+      padding={immersiveOverview ? "xs" : "lg"}
     >
       <AppShell.Header>
         <Group h="100%" px="lg" justify="space-between">
@@ -512,11 +494,24 @@ function App() {
               hiddenFrom="sm"
               size="sm"
             />
-            <Text fw={800} hiddenFrom="sm">
+            <Text fw={800}>
               AgentWeave
             </Text>
+            {immersiveOverview && (
+              <Tooltip label="Workstreams">
+                <Burger opened={workstreamsOpen} onClick={toggleWorkstreams} aria-label="Toggle Workstreams" size="sm" />
+              </Tooltip>
+            )}
+            {immersiveOverview && <Badge size="xs" color="teal" variant="light">System active</Badge>}
+            {immersiveOverview && <Text size="xs" c="dimmed" ff="monospace">dir: {selected?.workspaceRoot}</Text>}
           </Group>
           <Group gap="sm">
+            {immersiveOverview && (
+              <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
+                New Workstream
+              </Button>
+            )}
+            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool} · {selected ? providerModelLabel(selected.provider.model) : "—"}</Text>}
             <Badge
               variant="light"
               leftSection={<IconArrowsExchange size={12} />}
@@ -543,16 +538,16 @@ function App() {
       </AppShell.Header>
       <AppShell.Navbar p="md">{sidebar}</AppShell.Navbar>
       <AppShell.Main>
-        <Box maw={1400} mx="auto">
-          <Group justify="space-between" mb="xl">
+        <Box maw={immersiveOverview ? "none" : 1400} mx="auto" className={immersiveOverview ? "immersive-workspace" : undefined}>
+          {!immersiveOverview && <Group justify="space-between" mb="xl">
             <div>
               <Text size="xs" tt="uppercase" c="dimmed" fw={700}>
                 {selected?.flavor ?? "Agent network"}
               </Text>
-              <Title order={1}>{selected ? page : "Workstreams"}</Title>
+              <Title order={1}>{selected ? "Overview" : "Workstreams"}</Title>
             </div>
             {selected && <StatusBadge status={selected.status} />}
-          </Group>
+          </Group>}
           {!selected ? (
             <Paper withBorder radius="lg" p={{ base: "xl", sm: 60 }}>
               <Stack align="flex-start" maw={650}>
@@ -561,7 +556,7 @@ function App() {
                 </ThemeIcon>
                 <Title order={2}>Operate your agent network.</Title>
                 <Text c="dimmed">
-                  Select a Workstream to inspect durable tasks, live Agent Hive
+                  Select a Workstream to inspect durable tasks, live agent
                   messages, evidence, and runtime activity.
                 </Text>
                 <Button
@@ -584,13 +579,17 @@ function App() {
             </Paper>
           ) : (
             <Stack gap="lg">
-              <Paper withBorder radius="lg" p="lg">
-                <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
-                  {selected.flavor}
-                </Text>
-                <Title order={2} mt={4}>
-                  {selected.goal}
-                </Title>
+              <Paper withBorder radius={immersiveOverview ? "sm" : "lg"} p={immersiveOverview ? "sm" : "lg"} className={immersiveOverview ? "runtime-workstream-bar" : undefined}>
+                <Group justify="space-between" align="flex-start" gap="md">
+                  <div>
+                    <Text size="xs" c="dimmed" tt="uppercase" fw={700}>{selected.flavor}</Text>
+                    <Title order={2} mt={4}>{selected.goal}</Title>
+                  </div>
+                  <Group gap="xs" className="workstream-utility-actions">
+                    <Button size="xs" variant="light" leftSection={<IconActivity size={14} />} onClick={openAudit}>Audit log</Button>
+                    <Button size="xs" variant="light" leftSection={<IconLayoutKanban size={14} />} onClick={openTaskPanel}>Task panel</Button>
+                  </Group>
+                </Group>
                 <Text size="xs" c="dimmed" mt={6}>
                   Workspace · {selected.workspaceRoot}
                 </Text>
@@ -598,21 +597,20 @@ function App() {
                   api={api}
                   workstreamId={selected.id}
                   status={selected.status}
-                  onStatus={(status) => setSelected({ ...selected, status })}
+                  onStatus={(status) =>
+                    setSelected((current) =>
+                      current?.id === selected.id ? { ...current, status } : current,
+                    )
+                  }
                   onCreated={addCreated}
                   openCreate={createOpen}
                   onCreateOpenChange={setCreateOpen}
                 />
               </Paper>
-              {page === "Overview" && (
-                <Stack gap="lg">
-                  <RunConsole status={selected.status} provider={selected.provider} events={selected.events} />
-                  <Paper withBorder radius="lg" p="lg">
-                    <AgentExecutionPanel agents={selected.agents} events={selected.events} />
-                  </Paper>
-                  <MacroPlanBoard api={api} workstream={selected} onChange={(tasks) => setSelected({ ...selected, tasks })} />
-                  <Paper withBorder radius="lg" p="lg">
+              <Stack gap="lg" className="runtime-cockpit">
+                  <Paper withBorder radius="lg" p="md" className="runtime-summary-report">
                     <SummaryReport
+                      compact
                       status={selected.status}
                       tasks={selected.tasks}
                       agents={selected.agents}
@@ -620,103 +618,41 @@ function App() {
                       events={selected.events}
                     />
                   </Paper>
-                </Stack>
-              )}
-              {page === "Tasks" && (
-                <Paper withBorder radius="lg" p="lg">
-                  <Group justify="space-between" mb="lg">
-                    <Title order={3}>Task board</Title>
-                    <IconCheck size={20} />
-                  </Group>
-                  <TaskBoard
-                    api={api}
-                    workstreamId={selected.id}
-                    tasks={selected.tasks}
-                    onChange={(tasks) => setSelected({ ...selected, tasks })}
-                  />
-                </Paper>
-              )}
-              {page === "Activity" && (
-                <Paper withBorder radius="lg" p="lg">
-                  <Group justify="space-between" mb="lg">
-                    <Title order={3}>Activity stream</Title>
-                    <Badge variant="light">
-                      {selected.events.length} events
-                    </Badge>
-                  </Group>
-                  <MessageList events={selected.events} paginated pageSize={10} />
-                </Paper>
-              )}
-              {page === "Agent hive" && (
-                <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="lg">
-                  <Stack>
-                    <Paper withBorder radius="lg" p="lg">
-                      <Group justify="space-between" mb="md">
-                        <Title order={3}>Agent Hive topology</Title>
-                        <SegmentedControl
-                          size="xs"
-                          value={focus ?? "all"}
-                          onChange={(value) => {
-                            setFocus(value === "all" ? null : value);
-                            setEdgeFocus(null);
-                          }}
-                          data={[
-                            { label: "All", value: "all" },
-                            ...["pm", "pe", "coder", "qa"].map((value) => ({
-                              label: value.toUpperCase(),
-                              value,
-                            })),
-                          ]}
-                        />
-                      </Group>
-                      <AgentHiveGraph
-                        selected={focus}
-                        onSelect={setFocus}
-                        onEdgeSelect={(source, target) => {
-                          setEdgeFocus([source, target]);
-                          setFocus(null);
-                        }}
+                  <div className="runtime-cockpit-layout">
+                    <Stack gap="lg" className="runtime-cockpit-main">
+                      <MacroPlanBoard
+                        workstream={selected}
                       />
-                    </Paper>
-                    <LiveMessageBus messages={messages} agents={selected.agents} />
-                  </Stack>
-                  <Card withBorder radius="lg">
-                    <Text size="xs" tt="uppercase" c="dimmed" fw={700}>
-                      Human conversation
-                    </Text>
-                    <Title order={3} mt="xs">
-                      {focus ? labels[focus] : "Select an Agent"}
-                    </Title>
-                    <Text size="sm" c="dimmed">
-                      Only Human ↔ Agent chat appears here.
-                    </Text>
-                    <MessageList
-                      events={filtered.filter(
-                        (event) =>
-                          (event.from ?? event.senderId) === "human" ||
-                          (event.to ?? event.recipientIds?.join(","))?.includes("human"),
-                      )}
-                      empty="No direct conversation yet"
-                    />
-                    <Divider my="md" />
-                    <Textarea
-                      label="Send a message"
-                      description="Mention an agent, e.g. @pm"
-                      value={draft}
-                      onChange={(event) => setDraft(event.currentTarget.value)}
-                      minRows={4}
-                    />
-                    <Button
-                      mt="sm"
-                      fullWidth
-                      leftSection={<IconMessage size={16} />}
-                      onClick={() => void send()}
-                    >
-                      Send message
-                    </Button>
-                  </Card>
-                </SimpleGrid>
-              )}
+                      <Paper withBorder radius="lg" p="lg" className="runtime-agent-panel">
+                        <AgentExecutionPanel agents={selected.agents} events={selected.events} />
+                      </Paper>
+                    </Stack>
+                    <Stack gap="lg" className="runtime-cockpit-rail">
+                      <LiveMessageBus
+                        messages={messages}
+                        agents={selected.agents}
+                        draft={draft}
+                        onDraftChange={setDraft}
+                        onSend={() => void send()}
+                        sendError={sendError}
+                      />
+                    </Stack>
+                  </div>
+              </Stack>
+              <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
+                <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
+                <ScrollArea h="65vh" type="auto">
+                  <Box pr="md"><MessageList events={selected.events} paginated pageSize={10} /></Box>
+                </ScrollArea>
+              </Modal>
+              <Modal opened={taskPanelOpen} onClose={closeTaskPanel} title={<Group gap="sm"><Text fw={800} size="lg">Task panel</Text><Badge variant="light">{selected.tasks.length} tasks</Badge></Group>} size="95%" centered>
+                <Text size="sm" c="dimmed" mb="md">Full task details and status controls for the current Workstream.</Text>
+                <ScrollArea h="72vh" type="auto">
+                  <Box pr="md">
+                    <TaskBoard tasks={selected.tasks} />
+                  </Box>
+                </ScrollArea>
+              </Modal>
             </Stack>
           )}
         </Box>

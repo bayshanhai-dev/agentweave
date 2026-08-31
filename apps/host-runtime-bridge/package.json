@@ -1,5 +1,5 @@
 {
-  "name": "@agentweave/workspace-broker",
+  "name": "@agentweave/host-runtime-bridge",
   "version": "0.0.0",
   "private": true,
   "type": "module",

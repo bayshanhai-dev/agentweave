@@ -20,6 +20,7 @@ export class CodexAppServer {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<string, Pending>();
   private readonly queues = new Map<string, Record<string, unknown>[]>();
+  private readonly streamedAgentMessages = new Set<string>();
   private initialized?: Promise<void>;
   private sequence = 0;
 
@@ -45,7 +46,29 @@ export class CodexAppServer {
     let message: Record<string, unknown>; try { message = JSON.parse(line) as Record<string, unknown>; } catch { return; }
     if (typeof message.id === "string" && this.pending.has(message.id)) { const pending = this.pending.get(message.id)!; this.pending.delete(message.id); const error = message.error as RpcResult["error"] | undefined; pending.resolve({ id: message.id, result: (message.result ?? {}) as Record<string, unknown>, ...(error ? { error } : {}) }); return; }
     const params = (message.params ?? {}) as Record<string, unknown>; const threadId = String(params.threadId ?? params.thread_id ?? ""); if (!threadId) return;
-    const method = String(message.method ?? ""); const completedText = textFrom(params); const event = method === "item/agentMessage/delta" ? { type: "turn.delta", text: textFrom(params.delta ?? params.text) } : method === "item/completed" || method === "item/agentMessage/completed" ? (completedText ? { type: "turn.delta", text: completedText } : undefined) : method === "turn/completed" ? { type: "turn.completed", ...(completedText ? { text: completedText } : {}) } : method === "turn/failed" ? { type: "turn.failed", error: params.error } : method === "item/started" ? { type: "tool.started", toolName: String(params.itemType ?? "tool") } : undefined;
+    const method = String(message.method ?? "");
+    const item = params.item && typeof params.item === "object" ? params.item as Record<string, unknown> : undefined;
+    const itemType = String(item?.type ?? params.itemType ?? "");
+    const normalizedItemType = itemType.replaceAll("_", "").toLowerCase();
+    const isAgentMessage = method.includes("agentMessage") || normalizedItemType === "agentmessage";
+    const isHumanMessage = normalizedItemType === "usermessage" || normalizedItemType === "humanmessage";
+    const completedText = textFrom(params);
+    const deltaText = textFrom(params.delta ?? params.text);
+    const tokenUsage = params.tokenUsage ?? params.token_usage ?? params.usage;
+    const event = method === "thread/tokenUsage/updated"
+      ? { type: "usage.updated", ...(tokenUsage && typeof tokenUsage === "object" ? { tokenUsage } : {}) }
+      : method === "item/agentMessage/delta"
+      ? (deltaText ? (this.streamedAgentMessages.add(threadId), { type: "turn.delta", text: deltaText }) : undefined)
+      : (method === "item/agentMessage/completed" || (method === "item/completed" && isAgentMessage))
+        ? (!this.streamedAgentMessages.has(threadId) && completedText ? { type: "turn.delta", text: completedText } : undefined)
+        : method === "turn/completed"
+          ? { type: "turn.completed", ...(completedText ? { text: completedText } : {}), ...(tokenUsage && typeof tokenUsage === "object" ? { tokenUsage } : {}) }
+          : method === "turn/failed"
+            ? { type: "turn.failed", error: params.error }
+            : method === "item/started" && !isAgentMessage && !isHumanMessage
+              ? { type: "tool.started", toolName: itemType || "tool" }
+              : undefined;
     if (event) this.queues.set(threadId, [...(this.queues.get(threadId) ?? []), event]);
+    if (method === "turn/completed" || method === "turn/failed") this.streamedAgentMessages.delete(threadId);
   }
 }

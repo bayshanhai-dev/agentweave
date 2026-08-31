@@ -17,7 +17,8 @@
     "infra:down": "docker compose down",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
-    "doctor": "make doctor"
+    "doctor": "make doctor",
+    "demo": "node scripts/demo.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

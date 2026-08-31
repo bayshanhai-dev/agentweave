@@ -75,6 +75,19 @@ describe("provider adapters", () => {
     expect(run.events.at(-1)).toMatchObject({ type: "turn.completed", text: "Final inspection summary" });
   });
 
+  it("captures Codex App Server token usage from the latest turn", async () => {
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-usage" } } } : { result: { turnId: "turn-usage" } }; },
+      async *events() {
+        yield { type: "turn.delta", text: "done" };
+        yield { type: "usage.updated", tokenUsage: { total: { inputTokens: 900, outputTokens: 90, totalTokens: 990 }, last: { inputTokens: 120, outputTokens: 30, totalTokens: 150 } } };
+      },
+    };
+    const run = await collect(new CodexAppServerAdapter(transport).run({ input: "inspect", correlationId: "corr-usage" }));
+    expect(run.result.usage).toMatchObject({ inputTokens: 120, outputTokens: 30, totalTokens: 150 });
+    expect(run.events.at(-2)).toMatchObject({ type: "usage.updated", usage: { totalTokens: 150 } });
+  });
+
   it("streams Claude stdout, exposes stderr, and uses argv safely", async () => {
     let command = ""; let args: string[] = [];
     const runner = (receivedCommand: string, receivedArgs: string[]): ProcessResult => { command = receivedCommand; args = receivedArgs; return { code: Promise.resolve(0), stdout: chunks(["hello", " world"]), stderr: chunks(["diagnostic"]), kill: () => undefined }; };

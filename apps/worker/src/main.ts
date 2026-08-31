@@ -46,6 +46,10 @@ await bus.consumer(subjects.inbox, async (message) => {
       const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
       if (!targetAgentId) return "dead-letter";
+      // Human is a durable message endpoint, not an executable Agent runtime.
+      // The wildcard inbox consumer must acknowledge replies addressed to Human
+      // without starting a provider turn for them.
+      if (targetAgentId === "human") return "ack";
       if (!payload.content) return "ack";
       // A missing taskId must not turn every duplicate message into a new run.
       // Correlation is the stable identity for a handoff; envelope.id is only the
