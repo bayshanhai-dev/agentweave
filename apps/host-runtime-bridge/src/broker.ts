@@ -13,7 +13,10 @@ export class WorkspaceBroker {
   constructor(private readonly options: { allowedRoots?: string[]; containerRoot?: string; network?: string; workerImage?: string; docker?: DockerRunner } = {}) { this.roots = (options.allowedRoots ?? (process.env.WORKSPACE_ALLOWED_ROOTS ?? process.cwd()).split(",")).map((root) => resolve(root)); }
   async bind(input: { workstreamId: string; hostPath: string; readOnly?: boolean; agentId?: string }): Promise<WorkspaceBinding> {
     const hostPath = await realpath(input.hostPath); await access(hostPath);
-    if (!this.roots.some((root) => hostPath === root || (!relative(root, hostPath).startsWith(`..${sep}`) && !isAbsolute(relative(root, hostPath))))) throw new Error("workspace_path_not_allowed");
+    if (!this.roots.some((root) => {
+      const relativePath = relative(root, hostPath);
+      return hostPath === root || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
+    })) throw new Error("workspace_path_not_allowed");
     const safeId = input.workstreamId.replace(/[^a-zA-Z0-9_.-]/g, "-"); const containerName = `agentweave-worker-${safeId}`; const containerPath = this.options.containerRoot ?? "/workspace"; const readOnly = input.readOnly ?? false;
     const docker = this.options.docker ?? (async (args: string[]) => exec("docker", args));
     await docker(["rm", "-f", containerName]).catch(() => undefined);
