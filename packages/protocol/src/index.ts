@@ -57,7 +57,7 @@ export const scalingRecommendationSchema = z.object({
   reason: z.string().min(1),
   taskIds: z.array(z.string().min(1)).default([]),
   estimatedTokenCost: z.number().nonnegative(),
-  status: z.enum(["pending", "approved", "rejected", "modified"]),
+  status: z.enum(["pending", "approved", "rejected", "modified"]).default("pending"),
   approvedBy: z.string().min(1).optional(),
 });
 
