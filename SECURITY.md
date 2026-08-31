@@ -30,6 +30,8 @@ local network:
 - protect the Control API and dashboard with an authenticated reverse proxy;
 - keep PostgreSQL, NATS, and observability ports private;
 - use strong, unique provider and bridge credentials;
+- rotate a bridge token immediately if it appears in a terminal transcript,
+  screenshot, issue, or shared log;
 - set a narrow workspace allowlist and never mount a broad home directory;
 - do not place credentials in `.env` committed to Git;
 - review logs before sharing them, because prompts and tool output may contain

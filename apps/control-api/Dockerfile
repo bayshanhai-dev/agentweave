@@ -5,6 +5,7 @@ RUN pnpm config set dangerouslyAllowAllBuilds true
 COPY package.json pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY apps/control-api ./apps/control-api
 COPY packages ./packages
+COPY scripts ./scripts
 RUN pnpm install --no-frozen-lockfile
 RUN pnpm --filter @agentweave/control-api... build
 

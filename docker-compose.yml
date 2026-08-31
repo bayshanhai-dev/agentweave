@@ -105,16 +105,16 @@ services:
       AGENTWEAVE_MODEL: ${AGENTWEAVE_MODEL:-}
       CODEX_APP_SERVER_URL: ${CODEX_APP_SERVER_URL:-http://host.docker.internal:3010}
       CODEX_BRIDGE_MODE: ${CODEX_BRIDGE_MODE:-app-server}
-      CODEX_CONTAINER_WORKSPACE_ROOT: /workspaces
-      CODEX_HOST_WORKSPACE_ROOT: /Users/tong/Documents/ChatGPT
+      CODEX_CONTAINER_WORKSPACE_ROOT: ${CODEX_CONTAINER_WORKSPACE_ROOT:-/workspaces}
+      # The host bridge resolves this path on the operator's machine. Keep it
+      # configurable: a repository must never assume a maintainer's home path.
+      CODEX_HOST_WORKSPACE_ROOT: ${CODEX_HOST_WORKSPACE_ROOT:-${AGENTWEAVE_HOST_WORKSPACE:-./workspaces}}
       CODEX_BRIDGE_TOKEN: ${CODEX_BRIDGE_TOKEN:-}
       PROVIDER_REQUEST_TIMEOUT_MS: ${PROVIDER_REQUEST_TIMEOUT_MS:-120000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./workspaces:/workspaces
-      - /Users/tong/Documents/ChatGPT/AcademicPaperBuddy:/workspaces/academic-paper-buddy
-      - /Users/tong/Documents/ChatGPT/AcademicPaperBuddy:/workspaces/AcademicPaperBuddy
+      - ${AGENTWEAVE_HOST_WORKSPACE:-./workspaces}:${CODEX_CONTAINER_WORKSPACE_ROOT:-/workspaces}
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,13 +1,49 @@
-import { useState } from "react";
+import { Alert, Badge, Card, Divider, Group, List, SimpleGrid, Stack, Text, Title } from "@mantine/core";
+import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
 
-export type Task = { id: string; title: string; status: string; ownerAgentId?: string; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[] };
-type Props = { api: string; workstreamId: string; tasks: Task[]; onChange: (tasks: Task[]) => void };
+export type Task = {
+  id: string;
+  title: string;
+  status: string;
+  ownerAgentId?: string;
+  createdByAgentId?: string;
+  parentTaskId?: string;
+  relatedTaskIds: string[];
+  acceptanceCriteria: string[];
+  dependencies: string[];
+  evidence: string[];
+};
 
-export function TaskBoard({ api, workstreamId, tasks, onChange }: Props) {
-  const [saving, setSaving] = useState<string | null>(null);
-  async function update(task: Task, status: string) {
-    setSaving(task.id);
-    try { const response = await fetch(`${api}/api/workstreams/${workstreamId}/tasks/${task.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, evidence: task.evidence }) }); if (response.ok) onChange(tasks.map((item) => item.id === task.id ? { ...item, status } : item)); } finally { setSaving(null); }
-  }
-  return <div className="task-board">{tasks.map((task) => <article className="task-card" key={task.id}><div className="task-card-head"><div><p className="kicker">Task</p><h3>{task.title}</h3></div><select value={task.status} disabled={saving === task.id} onChange={(event) => update(task, event.target.value)}><option>ready</option><option>assigned</option><option>running</option><option>review</option><option>blocked</option><option>done</option><option>cancelled</option></select></div><p className="task-meta">Owner · {task.ownerAgentId ?? "Unassigned"}</p><div className="task-section"><strong>Acceptance criteria</strong><ul>{task.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div><div className="task-section"><strong>Dependencies</strong><p>{task.dependencies.length ? task.dependencies.join(", ") : "None"}</p></div><div className="task-section"><strong>Evidence</strong><p>{task.evidence.length ? task.evidence.join(", ") : "No evidence attached yet"}</p></div></article>)}</div>;
+const statusLabels: Record<string, string> = {
+  ready: "Backlog", assigned: "Assigned", running: "In progress", review: "In review",
+  blocked: "Blocked", done: "Done", cancelled: "Cancelled", failed: "Failed",
+};
+const statusColors: Record<string, string> = {
+  ready: "gray", assigned: "blue", running: "yellow", review: "violet",
+  blocked: "orange", done: "green", cancelled: "gray", failed: "red",
+};
+
+export function TaskBoard({ tasks }: { tasks: Task[] }) {
+  if (!tasks.length) return <Alert icon={<IconAlertCircle size={18} />} title="No tasks yet">Tasks created by the Orchestrator will appear here.</Alert>;
+  return <Stack gap="md">{tasks.map((task) =>
+    <Card key={task.id} withBorder radius="md" padding="lg">
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <div>
+          <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Task</Text>
+          <Title order={4} mt={4}>{task.title}</Title>
+          <Text size="xs" c="dimmed" mt={6}>Owner · {task.ownerAgentId ?? "Unassigned"}{task.createdByAgentId ? ` · Created by ${task.createdByAgentId}` : ""}</Text>
+        </div>
+        <Stack gap={4} align="flex-end">
+          <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Agent-managed status</Text>
+          <Badge size="lg" variant="light" color={statusColors[task.status] ?? "gray"}>{statusLabels[task.status] ?? task.status}</Badge>
+        </Stack>
+      </Group>
+      <Divider my="md" />
+      <SimpleGrid cols={{ base: 1, sm: 3 }}>
+        <div><Text size="xs" tt="uppercase" fw={700} c="dimmed">Acceptance criteria</Text><List size="sm" mt="xs" spacing="xs" icon={<IconCheck size={14} />}>{task.acceptanceCriteria.map((criterion) => <List.Item key={criterion}>{criterion}</List.Item>)}</List></div>
+        <div><Text size="xs" tt="uppercase" fw={700} c="dimmed">Task relationships</Text><Text size="sm" mt="xs">{task.parentTaskId ? `Parent · ${task.parentTaskId}` : "Independent task"}</Text><Text size="sm" c="dimmed">{task.dependencies.length ? `Blocked by · ${task.dependencies.join(", ")}` : "No dependencies"}</Text><Text size="sm" c="dimmed">{task.relatedTaskIds.length ? `Related · ${task.relatedTaskIds.join(", ")}` : "No related tasks"}</Text></div>
+        <div><Text size="xs" tt="uppercase" fw={700} c="dimmed">Evidence</Text>{task.evidence.length ? <Group gap="xs" mt="xs">{task.evidence.map((evidence) => <Badge key={evidence} variant="light">{evidence}</Badge>)}</Group> : <Text size="sm" mt="xs" c="dimmed">No evidence attached yet</Text>}</div>
+      </SimpleGrid>
+    </Card>,
+  )}</Stack>;
 }

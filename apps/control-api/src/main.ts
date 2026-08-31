@@ -1,6 +1,7 @@
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
+import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
 import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
@@ -8,9 +9,10 @@ import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationDecision, t
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
-type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; occurredAt: string };
+type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
+type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
-type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "done"; orchestrator?: boolean };
+type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 const flavorTemplates = {
@@ -36,7 +38,7 @@ const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
-const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0 };
+const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
 
 app.addHook("onRequest", async (request, reply) => {
@@ -49,7 +51,9 @@ app.addHook("onRequest", async (request, reply) => {
 app.get("/health", async () => ({ status: "ok", service: "control-api" }));
 app.get("/metrics", async (_request, reply) => {
   reply.type("text/plain; version=0.0.4");
-  return Object.entries(metrics).map(([name, value]) => `agentweave_${name} ${value}`).join("\n") + "\n";
+  return Object.entries(metrics)
+    .map(([name, value]) => `agentweave_${name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)} ${value}`)
+    .join("\n") + "\n";
 });
 app.post("/api/runtime/workers/register", async (request, reply) => {
   const body = request.body as { workerId?: string; provider?: string; providerModel?: string; endpoint?: string | null; roles?: string[]; capabilities?: string[] } | undefined;
@@ -206,30 +210,28 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   const recipients = [...new Set([...(body?.recipients ?? []), ...(body?.to ? [body.to] : [])].map((id) => id.trim()).filter(Boolean))];
   if (!body?.content?.trim() || !recipients.length) return reply.code(400).send({ error: "recipient_and_content_required" });
   const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : workstream.agents.find((candidate) => candidate.id === recipient || candidate.role === recipient)?.id ?? recipient);
-  const slashType = body.content.trim().match(/^\/(question|request|directive|decision)\b/i)?.[1]?.toLowerCase();
-  const content = body.content.trim().replace(/^\/(question|request|directive|decision)\b\s*/i, "");
-  const messageType = slashType || body.intent || "question";
-  if (!["question", "request", "directive", "decision"].includes(messageType)) return reply.code(400).send({ error: "invalid_human_message_type", hint: "Use the Workstream control API for pause, resume, complete, or emergency stop." });
+  const { content, messageType } = classifyHumanMessage(body.content, body.intent);
+  const humanToPm = body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === "pm");
+  // A Human message to PM is an explicit resume signal while the Workstream is
+  // waiting. Persist active before publishing the inbox message: otherwise the
+  // Worker correctly sees waiting_for_human and acks the delivery without a turn.
+  if (humanToPm && workstream.status === "waiting_for_human") {
+    workstream.status = "active";
+    orchestrators.set(workstream.id, new WorkstreamOrchestrator(workstream.id, workstream.goal));
+    await persistWorkstreamStatus(workstream);
+    emit(workstream, "workstream.resumed_by_human_message", "Human resumed the Workstream through PM");
+  }
   let taskId = body.taskId;
   if (messageType === "request" && !taskId) {
     const now = new Date().toISOString();
-    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: "ready", acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], relatedTaskIds: [], createdAt: now, updatedAt: now };
+    const pmOwner = humanToPm ? workstream.agents.find((agent) => agent.role === "pm") : undefined;
+    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], relatedTaskIds: [], createdAt: now, updatedAt: now };
     workstream.tasks.push(task);
     await persistTask(task);
     emit(workstream, "task.created", `Human request queued: ${task.title}`);
     taskId = task.id;
   }
   const message = await createMessage(workstream, body.from?.trim() || "human", resolvedRecipients, content, messageType, { ...body, ...(taskId ? { taskId } : {}) }, body.id);
-  if (body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === "pm")) {
-    const orchestrator = orchestrators.get(workstream.id);
-    if (orchestrator?.stage === "waiting_for_human") {
-      const action = orchestrator.apply({ type: "human.clarification.replied", content });
-      workstream.status = "active";
-      emit(workstream, "workstream.clarification_received", "Human clarification received by PM");
-      if (action) { const pm = workstream.agents.find((agent) => agent.role === "pm"); if (pm) await createMessage(workstream, "human", [pm.id], action.content, action.messageType, { correlationId: message.correlationId, causationId: message.id }); }
-      await persistWorkstreamStatus(workstream);
-    }
-  }
   return reply.code(201).send(message);
 });
 app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply) => {
@@ -296,6 +298,12 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
   void persistWorkstreamStatus(workstream);
   metrics.eventsEmitted += 1;
   if (event.type === "run.started") metrics.runsStarted += 1;
+  if (event.type === "usage.updated" && event.usage) {
+    metrics.providerInputTokens += event.usage.inputTokens ?? 0;
+    metrics.providerOutputTokens += event.usage.outputTokens ?? 0;
+    metrics.providerTotalTokens += event.usage.totalTokens ?? 0;
+    metrics.providerCostUsd += event.usage.costUsd ?? 0;
+  }
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, role: event.role }, "workflow.event");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
@@ -383,7 +391,7 @@ async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAge
   const created: Task[] = specs.map((spec) => {
     const owner = spec.ownerRole ? workstream.agents.find((agent) => agent.role === spec.ownerRole) : undefined;
     return {
-      id: `${workstream.id}:task-${randomUUID()}`, workstreamId: workstream.id, title: spec.title.trim(), status: "ready",
+      id: `${workstream.id}:task-${randomUUID()}`, workstreamId: workstream.id, title: spec.title.trim(), status: owner ? "assigned" : "ready",
       ...(owner ? { ownerAgentId: owner.id } : {}), ...(creatorAgentId ? { createdByAgentId: creatorAgentId } : {}),
       ...(spec.parentTaskId ? { parentTaskId: spec.parentTaskId } : {}), relatedTaskIds: spec.relatedTaskIds ?? [],
       acceptanceCriteria: spec.acceptanceCriteria?.length ? spec.acceptanceCriteria : ["Task is completed with evidence"],
@@ -402,9 +410,15 @@ async function persistWorkstreamStatus(workstream: Workstream): Promise<void> {
   }
 }
 
+async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<void> {
+  if (agent.status === status) return;
+  agent.status = status;
+  await sql`update agents set status = ${status} where id = ${agent.id}`;
+}
+
 async function persistEvent(workstreamId: string, event: WorkflowEvent): Promise<void> {
-  await sql`insert into workflow_events (id, workstream_id, type, message, role, from_node, to_node, occurred_at)
-    values (${event.id}, ${workstreamId}, ${event.type}, ${event.message}, ${event.role ?? null}, ${event.from ?? null}, ${event.to ?? null}, ${event.occurredAt})`;
+  await sql`insert into workflow_events (id, workstream_id, type, message, role, from_node, to_node, agent_id, task_id, correlation_id, provider, model, usage, occurred_at)
+    values (${event.id}, ${workstreamId}, ${event.type}, ${event.message}, ${event.role ?? null}, ${event.from ?? null}, ${event.to ?? null}, ${event.agentId ?? null}, ${event.taskId ?? null}, ${event.correlationId ?? null}, ${event.provider ?? null}, ${event.model ?? null}, ${event.usage ? JSON.stringify(event.usage) : null}, ${event.occurredAt})`;
 }
 
 async function loadWorkstreams(): Promise<void> {
@@ -412,7 +426,7 @@ async function loadWorkstreams(): Promise<void> {
   for (const row of rows) {
     const agents = await sql`select id, role, authority, status from agents where workstream_id = ${row.id} order by id`;
     const tasks = await sql`select id, workstream_id, title, status, owner_agent_id, created_by_agent_id, parent_task_id, related_task_ids, acceptance_criteria, dependencies, evidence, created_at, updated_at from tasks where workstream_id = ${row.id} order by created_at asc`;
-    const events = await sql`select id, type, message, role, from_node, to_node, occurred_at from workflow_events where workstream_id = ${row.id} order by occurred_at asc`;
+    const events = await sql`select id, type, message, role, from_node, to_node, agent_id, task_id, correlation_id, provider, model, usage, occurred_at from workflow_events where workstream_id = ${row.id} order by occurred_at asc`;
     const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), ...(task.created_by_agent_id ? { createdByAgentId: String(task.created_by_agent_id) } : {}), ...(task.parent_task_id ? { parentTaskId: String(task.parent_task_id) } : {}), relatedTaskIds: jsonArray(task.related_task_ids), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
     const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
@@ -421,7 +435,7 @@ async function loadWorkstreams(): Promise<void> {
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
       messages: [],
-      events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role && ["pm", "pe", "coder", "qa"].includes(String(event.role)) ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
+      events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.correlation_id ? { correlationId: String(event.correlation_id) } : {}), ...(event.provider ? { provider: String(event.provider) } : {}), ...(event.model ? { model: String(event.model) } : {}), ...(event.usage ? { usage: event.usage as ProviderUsage } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
     if (normalizedStatus !== String(row.status)) await sql`update workstreams set status = ${normalizedStatus}, updated_at = now() where id = ${row.id}`;
     const messages = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where workstream_id = ${row.id} order by created_at asc`;
@@ -442,6 +456,7 @@ await sql`create table if not exists message_deliveries (message_id text not nul
 await sql`create table if not exists workstream_commands (workstream_id text not null references workstreams(id) on delete cascade, command_id text not null, command text not null, response jsonb not null, created_at timestamptz not null default now(), primary key (workstream_id, command_id))`;
 await sql`create table if not exists agent_sessions (id text primary key, agent_id text not null, provider text not null, provider_session_id text not null, status text not null, current_turn_id text, last_checkpoint jsonb, last_event_sequence integer not null default 0, worker_id text, lease_expires_at timestamptz, updated_at timestamptz not null default now())`;
 await sql`create table if not exists task_execution_claims (task_id text primary key, workstream_id text, worker_id text not null, message_id text not null, status text not null default 'active', started_at timestamptz not null default now(), finished_at timestamptz, lease_expires_at timestamptz not null)`;
+await sql`create table if not exists consumed_runtime_events (id text primary key, workstream_id text not null, event_type text not null, consumed_at timestamptz not null default now())`;
 await sql`create index if not exists task_execution_claims_lease_idx on task_execution_claims(status, lease_expires_at)`;
 await sql`create table if not exists workspace_evidence (id bigserial primary key, task_id text not null references tasks(id) on delete cascade, workspace_path text not null, git_diff text not null, test_command text, test_output text, test_exit_code integer, created_at timestamptz not null default now())`;
 await sql`alter table workspace_evidence add column if not exists kind text not null default 'workspace'`;
@@ -455,87 +470,160 @@ await sql`create index if not exists messages_workstream_created_idx on messages
 await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
 await sql`alter table workflow_events add column if not exists from_node text`;
 await sql`alter table workflow_events add column if not exists to_node text`;
+await sql`alter table workflow_events add column if not exists agent_id text`;
+await sql`alter table workflow_events add column if not exists task_id text`;
+await sql`alter table workflow_events add column if not exists correlation_id text`;
+await sql`alter table workflow_events add column if not exists provider text`;
+await sql`alter table workflow_events add column if not exists model text`;
+await sql`alter table workflow_events add column if not exists usage jsonb`;
 await eventBus.connect();
 await loadWorkstreams();
-await eventBus.consumer(subjects.events, async (message) => { await handleWorkerResult(eventBus.decode(message)); return "ack"; });
+await eventBus.consumer(subjects.events, async (message) => {
+  const envelope = eventBus.decode(message) as { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string };
+  if (envelope.id) {
+    const claimed = await sql`insert into consumed_runtime_events (id, workstream_id, event_type) values (${envelope.id}, ${envelope.workstreamId}, ${envelope.type}) on conflict do nothing returning id`;
+    if (!claimed.length) return "ack";
+    try {
+      await handleWorkerResult(envelope);
+    } catch (error) {
+      await sql`delete from consumed_runtime_events where id = ${envelope.id}`;
+      throw error;
+    }
+  } else {
+    await handleWorkerResult(envelope);
+  }
+  return "ack";
+});
 setInterval(() => { void sql`update runtime_workers set status='offline', updated_at=now() where status='online' and last_heartbeat_at < now() - interval '45 seconds'`; }, 15_000);
 
 async function startOrchestration(workstream: Workstream): Promise<void> {
   const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal); orchestrators.set(workstream.id, orchestrator);
   workstream.status = "active"; emit(workstream, "workstream.active", "Workflow started");
   const action = orchestrator.start(); const pm = workstream.agents.find((candidate) => candidate.role === "pm")!;
-  await createMessage(workstream, "human", [pm.id], action.content, action.messageType, workstream.tasks[0] ? { taskId: workstream.tasks[0].id } : {});
+  const existingBootstrap = workstream.tasks.find((task) => task.ownerAgentId === pm.id && task.status !== "done");
+  const bootstrap = existingBootstrap ?? (await createTasks(workstream, [{ title: "Analyze the Workstream goal and coordinate the first actionable plan", ownerRole: "pm", acceptanceCriteria: ["The goal is decomposed into concrete Agent-owned tasks"] }]))[0];
+  await createMessage(workstream, "human", [pm.id], action.content, action.messageType, bootstrap ? { taskId: bootstrap.id } : {});
 }
 
 async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
-  if (["turn.started", "turn.delta", "tool.started", "tool.completed", "turn.cancelled", "turn.failed"].includes(envelope.type)) {
+  if (["turn.started", "turn.delta", "turn.completed", "tool.started", "tool.completed", "turn.cancelled", "turn.failed", "usage.updated"].includes(envelope.type)) {
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
-    const payload = envelope.payload as { agentId?: string; taskId?: string; turnId?: string; text?: string; toolName?: string; output?: string; error?: { message?: string } };
+    const payload = envelope.payload as { agentId?: string; taskId?: string; turnId?: string; text?: string; toolName?: string; output?: string; error?: { message?: string }; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage };
     const agent = payload.agentId ? workstream.agents.find((candidate) => candidate.id === payload.agentId) : undefined;
-    const message = envelope.type === "turn.delta" ? payload.text ?? "" : envelope.type === "tool.started" ? `${payload.toolName ?? "tool"} started` : envelope.type === "tool.completed" ? `${payload.toolName ?? "tool"} completed` : envelope.type === "turn.failed" ? payload.error?.message ?? "Provider turn failed" : envelope.type.replaceAll(".", " ");
+    const message = envelope.type === "turn.delta" ? payload.text ?? "" : envelope.type === "tool.started" ? `${payload.toolName ?? "tool"} started` : envelope.type === "tool.completed" ? `${payload.toolName ?? "tool"} completed` : envelope.type === "turn.failed" ? payload.error?.message ?? "Provider turn failed" : envelope.type === "usage.updated" ? "Provider usage updated" : envelope.type.replaceAll(".", " ");
     if (!message) return;
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message, occurredAt: new Date().toISOString(), ...(agent?.role ? { role: agent.role } : {}), ...(agent?.id ? { from: agent.id, agentId: agent.id } : {}), ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(payload.toolName ? { toolName: payload.toolName } : {}), ...(payload.output ? { output: payload.output } : {}) });
+    const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    const isActiveTurn = ["turn.started", "turn.delta", "tool.started", "tool.completed"].includes(envelope.type);
+    if (agent && isActiveTurn) await setAgentStatus(agent, "running");
+    if (task && isActiveTurn && !["done", "failed", "cancelled"].includes(task.status)) {
+      task.status = "running";
+      task.updatedAt = new Date().toISOString();
+      await persistTask(task);
+    }
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message, occurredAt: new Date().toISOString(), ...(agent?.role ? { role: agent.role } : {}), ...(agent?.id ? { from: agent.id, agentId: agent.id } : {}), ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(payload.toolName ? { toolName: payload.toolName } : {}), ...(payload.output ? { output: payload.output } : {}), ...(envelope.correlationId ?? payload.correlationId ? { correlationId: envelope.correlationId ?? payload.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     return;
   }
   if (envelope.type === "run.started" || envelope.type === "run.heartbeat") {
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
-    const payload = envelope.payload as { agentId?: string; taskId?: string; elapsedMs?: number };
+    const payload = envelope.payload as { agentId?: string; taskId?: string; elapsedMs?: number; provider?: string; model?: string; usage?: ProviderUsage };
     const role = payload.agentId ? workstream.agents.find((agent) => agent.id === payload.agentId)?.role : undefined;
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message: `${role ?? payload.agentId ?? "agent"} ${envelope.type === "run.heartbeat" ? `running (${Math.round((payload.elapsedMs ?? 0) / 1000)}s)` : "started"}`, occurredAt: new Date().toISOString(), ...(role ? { role } : {}), ...(payload.agentId ? { agentId: payload.agentId } : {}), ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(payload.elapsedMs !== undefined ? { elapsedMs: payload.elapsedMs } : {}) });
+    const agent = payload.agentId ? workstream.agents.find((candidate) => candidate.id === payload.agentId) : undefined;
+    const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    if (agent) await setAgentStatus(agent, "running");
+    if (task && !["done", "failed", "cancelled"].includes(task.status)) {
+      task.status = "running";
+      task.updatedAt = new Date().toISOString();
+      await persistTask(task);
+    }
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message: `${role ?? payload.agentId ?? "agent"} ${envelope.type === "run.heartbeat" ? `running (${Math.round((payload.elapsedMs ?? 0) / 1000)}s)` : "started"}`, occurredAt: new Date().toISOString(), ...(role ? { role } : {}), ...(payload.agentId ? { agentId: payload.agentId } : {}), ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(payload.elapsedMs !== undefined ? { elapsedMs: payload.elapsedMs } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     return;
   }
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
-  const workstream = workstreams.get(envelope.workstreamId); const orchestrator = orchestrators.get(envelope.workstreamId); if (!workstream || !orchestrator) return;
-  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[] } };
+  const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
+  // The API can restart while a durable Worker turn is still in flight. Rebuild
+  // the lightweight orchestration state from the persisted Workstream instead
+  // of silently dropping that result.
+  let orchestrator = orchestrators.get(envelope.workstreamId);
+  if (!orchestrator) {
+    orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal);
+    orchestrators.set(workstream.id, orchestrator);
+  }
+  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
   const payload = raw.result ?? raw;
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
   if (envelope.type === "task.failed") {
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
+    await setAgentStatus(sender, "failed");
     const reason = payload.error?.trim() || "provider execution failed";
     workstream.status = "waiting_for_human";
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() });
     await persistWorkstreamStatus(workstream);
     return;
   }
   const resultText = payload.text?.trim() ?? "";
-  if (sender.role === "pm" && (resultText.startsWith("[CLARIFICATION_REQUEST]") || /^(?:i need clarification|could you clarify|please clarify|please confirm|can you confirm|what exactly|which .*\?)/i.test(resultText))) {
-    const clarification = resultText.replace(/^\[CLARIFICATION_REQUEST\]\s*/i, "").trim();
+  if (sender.role === "pm" && resultText.startsWith("[HUMAN_BLOCKED]")) {
+    const clarification = resultText.replace(/^\[HUMAN_BLOCKED\]\s*/i, "").trim();
     await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     workstream.status = "waiting_for_human";
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.clarification_requested", message: clarification, occurredAt: new Date().toISOString(), role: sender.role });
+    await setAgentStatus(sender, "idle");
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.human_blocked", message: clarification, occurredAt: new Date().toISOString(), role: sender.role });
     await persistWorkstreamStatus(workstream);
     return;
   }
   if (!resultText) {
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
+    await setAgentStatus(sender, "failed");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role });
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
     return;
   }
-  const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  const durableTask = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  // Worker execution IDs are not necessarily durable task IDs. Only a task
+  // that exists in this Workstream may advance orchestration; all other turns
+  // are direct Human ↔ Agent conversation and belong in the Intercom.
+  // It must come back to the Intercom as a reply, rather than being interpreted
+  // as an orchestration handoff or disappearing into lifecycle events.
+  if (!durableTask) {
+    await createMessage(workstream, sender.id, ["human"], resultText, "reply", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
+    await setAgentStatus(sender, "idle");
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "agent.reply.created", message: `${sender.role} replied to Human`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
+    return;
+  }
+  const task = durableTask;
   if (task && task.ownerAgentId === sender.id) {
     const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
     const evidenceRows = evidenceIds.length ? await sql`select id from workspace_evidence where task_id = ${task.id} and id = any(${evidenceIds}::bigint[])` : [];
     if (workstream.workspaceRoot && (!evidenceIds.length || evidenceRows.length !== evidenceIds.length)) {
-      task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task);
+      task.status = "failed"; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "failed"); await persistTask(task);
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → evidence persistence incomplete`, occurredAt: new Date().toISOString(), role: sender.role });
       return;
     }
-    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role });
+    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "idle"); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+  }
+  if (sender.role === "pm" && resultText.startsWith("[PROPOSE_COMPLETE]")) {
+    const proposal = resultText.replace(/^\[PROPOSE_COMPLETE\]\s*/i, "").trim();
+    await createMessage(workstream, sender.id, ["human"], proposal || "PM proposes completion based on the attached evidence.", "decision", { ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+    workstream.status = "waiting_for_human";
+    await setAgentStatus(sender, "idle");
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completion_proposed", message: "PM proposed completion for Human review", occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id });
+    await persistWorkstreamStatus(workstream);
+    return;
   }
   const orchestrationText = sender.role === "pm" ? resultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : resultText;
   const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
-  if (!action) { workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
-  let handoffTaskId = payload.taskId;
+  if (!action) { await setAgentStatus(sender, "idle"); workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
+  let handoffTaskId: string | undefined = payload.taskId;
   if (sender.role === "pm" && action.recipientRole !== "human") {
     const specs = extractTaskSpecs(orchestrationText);
-    const created = await createTasks(workstream, specs.length ? specs : [{ title: "Refine the implementation plan for the Workstream goal", ownerRole: "pe" }], sender.id);
+    const decomposed = specs.length ? specs : [{ title: "Refine the implementation plan for the Workstream goal", ownerRole: "pe" as Role }];
+    if (decomposed[0] && !decomposed[0].ownerRole) decomposed[0] = { ...decomposed[0], ownerRole: action.recipientRole };
+    const created = await createTasks(workstream, decomposed, sender.id);
     handoffTaskId = created[0]?.id;
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.decomposition.persisted", message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from PM output`, occurredAt: new Date().toISOString(), role: sender.role });
   } else if (action.recipientRole !== "human") {
@@ -549,6 +637,7 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
   }
   const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role))?.id : undefined); if (!recipient) return;
   await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(handoffTaskId ? { taskId: handoffTaskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+  await setAgentStatus(sender, "idle");
   if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Human approval required before completion", occurredAt: new Date().toISOString() }); }
 }
 

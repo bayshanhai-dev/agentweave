@@ -24,6 +24,20 @@ Use `make logs` for a bounded recent log tail. Use `docker compose ps` before
 restarting anything. If Docker Desktop is unavailable, restart Docker before
 diagnosing application failures.
 
+## Demo and Codex bridge
+
+`make demo` starts the Docker stack and creates a disposable, deterministic
+mock-provider workstream. It is the fastest smoke test for a fresh clone.
+
+For a real Codex-backed run, set `AGENTWEAVE_PROVIDER=codex` and the two
+workspace-root values in `.env`, then keep `make bridge` running in a second
+terminal. The bridge uses the host's installed and authenticated `codex`
+command; it is intentionally not containerized because it operates on the
+host workspace. Keep its workspace root narrow and its token private.
+
+To reset only Docker-managed local state, use `make fresh CONFIRM=YES`. It
+removes named Docker volumes but not `AGENTWEAVE_HOST_WORKSPACE`.
+
 ## Checks
 
 ```bash

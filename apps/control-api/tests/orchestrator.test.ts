@@ -1,17 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { WorkstreamOrchestrator } from "../src/orchestrator.js";
+import { extractTaskSpecs, WorkstreamOrchestrator } from "../src/orchestrator.js";
 
 describe("WorkstreamOrchestrator", () => {
-  it("routes the workflow through PM, PE, Coder, QA, then Human review", () => {
+  it("routes the workflow through PM, PE, Coder, QA, then returns to PM for completion triage", () => {
     const flow = new WorkstreamOrchestrator("ws-1", "process the paper");
     expect(flow.start().recipientRole).toBe("pm");
     expect(flow.apply({ type: "goal.received", content: "process the paper" })?.recipientRole).toBe("pe");
     expect(flow.apply({ type: "task.decomposed", content: "task" })?.recipientRole).toBe("coder");
     expect(flow.apply({ type: "design.completed", content: "design" })?.recipientRole).toBe("qa");
-    expect(flow.apply({ type: "qa.passed", content: "pass" })?.recipientRole).toBe("human");
-    expect(flow.stage).toBe("waiting_for_human");
-    expect(flow.apply({ type: "human.approved", content: "approved" })).toBeUndefined();
-    expect(flow.stage).toBe("completed");
+    expect(flow.apply({ type: "qa.passed", content: "pass" })?.recipientRole).toBe("pm");
+    expect(flow.stage).toBe("pm");
   });
 
   it("routes a QA failure back to Coder and increments the attempt", () => {
@@ -27,5 +25,13 @@ describe("WorkstreamOrchestrator", () => {
     expect(flow.validateDecision({ action: "create_task", targetRole: "qa", taskTitle: "Run API integration checks", reason: "The implementation changed materially" }).targetRole).toBe("qa");
     expect(() => flow.validateDecision({ action: "create_task", targetRole: "qa", reason: "missing title" })).toThrow("taskTitle");
     expect(() => flow.validateDecision({ action: "message_agent", targetRole: "coder", reason: "missing content" })).toThrow("content");
+  });
+
+  it("extracts multiple independent owned tasks from PM output", () => {
+    expect(extractTaskSpecs("[TASKS]\n1. [PE] Define the document model\n2. [CODER] Implement the parser\n3. [QA] Add regression coverage")).toEqual([
+      { title: "Define the document model", ownerRole: "pe" },
+      { title: "Implement the parser", ownerRole: "coder" },
+      { title: "Add regression coverage", ownerRole: "qa" },
+    ]);
   });
 });
