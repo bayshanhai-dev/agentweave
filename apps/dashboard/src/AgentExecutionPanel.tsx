@@ -1,5 +1,6 @@
 import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { useEffect, useState } from "react";
+import { tokenUsage } from "./agentUsage";
 
 type Agent = { id: string; role: string; status: string };
 type ExecutionEvent = {
@@ -41,29 +42,6 @@ function relativeTime(value?: string): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
   return `${Math.floor(minutes / 60)}h ago`;
-}
-
-function tokenUsage(events: ExecutionEvent[]) {
-  const turns = new Map<string, NonNullable<ExecutionEvent["usage"]>>();
-  events.forEach((event) => {
-    if (!event.usage) return;
-    const key = event.correlationId ?? event.taskId ?? event.id;
-    if (!key) return;
-    const previous = turns.get(key);
-    const previousTotal = previous?.totalTokens ?? (previous?.inputTokens ?? 0) + (previous?.outputTokens ?? 0);
-    const nextTotal = event.usage.totalTokens ?? (event.usage.inputTokens ?? 0) + (event.usage.outputTokens ?? 0);
-    if (!previous || nextTotal >= previousTotal) turns.set(key, event.usage);
-  });
-  return [...turns.values()].reduce<{ inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number; reported: boolean }>(
-    (total, usage) => ({
-      inputTokens: total.inputTokens + (usage.inputTokens ?? 0),
-      outputTokens: total.outputTokens + (usage.outputTokens ?? 0),
-      totalTokens: total.totalTokens + (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)),
-      costUsd: total.costUsd + (usage.costUsd ?? 0),
-      reported: true,
-    }),
-    { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, reported: false },
-  );
 }
 
 export function AgentExecutionPanel({ agents, events }: { agents: Agent[]; events: ExecutionEvent[] }) {
