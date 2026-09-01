@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { agentInstanceSchema, agentMessageSchema, eventEnvelopeSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "../src/index.js";
+import {
+  agentInstanceSchema,
+  agentMessageSchema,
+  eventEnvelopeSchema,
+  governedOutputSchema,
+  roleTemplateSchema,
+  scalingRecommendationSchema,
+  taskLeaseSchema,
+} from "../src/index.js";
 
 describe("scaling contracts", () => {
   it("normalizes the canonical runtime event envelope", () => {
@@ -9,7 +17,13 @@ describe("scaling contracts", () => {
       workstreamId: "ws-1",
       correlationId: "trace-1",
       occurredAt: new Date().toISOString(),
-      payload: { taskId: "task-1" },
+      payload: {
+        id: "event-1",
+        type: "task.created",
+        message: "Task created",
+        occurredAt: new Date().toISOString(),
+        taskId: "task-1",
+      },
     });
     expect(event).toMatchObject({
       schemaVersion: 1,
@@ -18,47 +32,140 @@ describe("scaling contracts", () => {
     });
   });
 
-  it("rejects malformed runtime events before transport", () => {
-    expect(() => eventEnvelopeSchema.parse({
-      id: "",
-      type: "task.created",
+  it("rejects unregistered and mismatched runtime event payloads", () => {
+    const base = {
+      id: "event-1",
       workstreamId: "ws-1",
       correlationId: "trace-1",
-      occurredAt: "not-a-date",
-      payload: {},
-    })).toThrow();
+      occurredAt: new Date().toISOString(),
+    };
+    expect(() =>
+      eventEnvelopeSchema.parse({
+        ...base,
+        type: "unknown.event",
+        payload: {},
+      }),
+    ).toThrow(/Unsupported runtime event type/);
+    expect(() =>
+      eventEnvelopeSchema.parse({
+        ...base,
+        type: "run.started",
+        payload: { type: "run.heartbeat" },
+      }),
+    ).toThrow(/does not match/);
+  });
+
+  it("validates provider and message payloads by registered event type", () => {
+    const now = new Date().toISOString();
+    const base = {
+      id: "event-1",
+      workstreamId: "ws-1",
+      correlationId: "trace-1",
+      occurredAt: now,
+    };
+    expect(
+      eventEnvelopeSchema.parse({
+        ...base,
+        type: "run.started",
+        payload: {
+          type: "run.started",
+          taskId: "task-1",
+          agentId: "agent-1",
+          provider: "mock",
+        },
+      }).type,
+    ).toBe("run.started");
+    expect(
+      eventEnvelopeSchema.parse({
+        ...base,
+        type: "message.created",
+        payload: {
+          id: "message-1",
+          workstreamId: "ws-1",
+          senderId: "human",
+          recipientIds: ["pm-1"],
+          messageType: "clarification",
+          content: "Need input",
+          correlationId: "trace-1",
+          evidenceIds: [],
+          createdAt: now,
+          deliveryStatus: "delivered",
+        },
+      }).type,
+    ).toBe("message.created");
+    expect(() =>
+      eventEnvelopeSchema.parse({
+        ...base,
+        type: "message.created",
+        payload: { content: "missing durable identifiers" },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects malformed runtime events before transport", () => {
+    expect(() =>
+      eventEnvelopeSchema.parse({
+        id: "",
+        type: "task.created",
+        workstreamId: "ws-1",
+        correlationId: "trace-1",
+        occurredAt: "not-a-date",
+        payload: {},
+      }),
+    ).toThrow();
   });
 
   it("models durable multi-recipient messages with correlation", () => {
-    const message = agentMessageSchema.parse({ id: "m-1", workstreamId: "ws-1", senderId: "human", recipientIds: ["ws-1:pm", "ws-1:pe"], messageType: "directive", content: "Review this", correlationId: "c-1", createdAt: new Date().toISOString(), deliveryStatus: "delivered" });
+    const message = agentMessageSchema.parse({
+      id: "m-1",
+      workstreamId: "ws-1",
+      senderId: "human",
+      recipientIds: ["ws-1:pm", "ws-1:pe"],
+      messageType: "directive",
+      content: "Review this",
+      correlationId: "c-1",
+      createdAt: new Date().toISOString(),
+      deliveryStatus: "delivered",
+    });
     expect(message.recipientIds).toHaveLength(2);
     expect(message.evidenceIds).toEqual([]);
   });
   it("defaults a role to one instance and one concurrent task", () => {
-    expect(roleTemplateSchema.parse({ roleTemplateId: "coder", role: "coder" })).toMatchObject({
+    expect(
+      roleTemplateSchema.parse({ roleTemplateId: "coder", role: "coder" }),
+    ).toMatchObject({
       maxInstances: 1,
       maxConcurrency: 1,
     });
   });
 
   it("requires task ownership to name an agent instance", () => {
-    expect(() => taskLeaseSchema.parse({ taskId: "task-1", leasedAt: new Date().toISOString() })).toThrow();
-    expect(agentInstanceSchema.parse({
-      agentInstanceId: "coder-1",
-      roleTemplateId: "coder",
-      role: "coder",
-      workstreamId: "ws-1",
-      sessionId: "session-1",
-      status: "idle",
-    }).authority).toBe("executor");
+    expect(() =>
+      taskLeaseSchema.parse({
+        taskId: "task-1",
+        leasedAt: new Date().toISOString(),
+      }),
+    ).toThrow();
+    expect(
+      agentInstanceSchema.parse({
+        agentInstanceId: "coder-1",
+        roleTemplateId: "coder",
+        role: "coder",
+        workstreamId: "ws-1",
+        sessionId: "session-1",
+        status: "idle",
+      }).authority,
+    ).toBe("executor");
   });
 
   it("keeps governed outputs explicit about evidence and approval", () => {
-    expect(governedOutputSchema.parse({
-      outputId: "output-1",
-      agentInstanceId: "coder-1",
-      kind: "execution",
-    })).toMatchObject({ evidenceIds: [], approvalRequired: false });
+    expect(
+      governedOutputSchema.parse({
+        outputId: "output-1",
+        agentInstanceId: "coder-1",
+        kind: "execution",
+      }),
+    ).toMatchObject({ evidenceIds: [], approvalRequired: false });
   });
 
   it("requires a human decision before scale-up can execute", () => {
