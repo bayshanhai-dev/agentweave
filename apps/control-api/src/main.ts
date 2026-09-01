@@ -4,11 +4,17 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
 import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationDecision, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
+import { WorkstreamRepository } from "./repositories/workstream-repository.js";
+import { TaskRepository } from "./repositories/task-repository.js";
+import { WorkflowEventRepository } from "./repositories/workflow-event-repository.js";
+import { MessageRepository } from "./repositories/message-repository.js";
+import { RuntimeRepository } from "./repositories/runtime-repository.js";
+import { EvidenceRepository } from "./repositories/evidence-repository.js";
+import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./commands/workstream-lifecycle.js";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -39,6 +45,13 @@ const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const commandRepository = new WorkstreamCommandRepository(sql);
+const workstreamRepository = new WorkstreamRepository(sql);
+const taskRepository = new TaskRepository(sql);
+const workflowEventRepository = new WorkflowEventRepository(sql);
+const messageRepository = new MessageRepository(sql);
+const runtimeRepository = new RuntimeRepository(sql);
+const evidenceRepository = new EvidenceRepository(sql);
+const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
@@ -61,13 +74,13 @@ app.get("/metrics", async (_request, reply) => {
 app.post("/api/runtime/workers/register", async (request, reply) => {
   const body = request.body as { workerId?: string; provider?: string; providerModel?: string; endpoint?: string | null; roles?: string[]; capabilities?: string[] } | undefined;
   if (!body?.workerId?.trim()) return reply.code(400).send({ error: "worker_id_required" });
-  await sql`insert into runtime_workers (id, provider, provider_model, endpoint, roles, capabilities, status, last_heartbeat_at) values (${body.workerId.trim()}, ${body.provider ?? "unknown"}, ${body.providerModel ?? "default"}, ${body.endpoint ?? null}, ${body.roles ?? []}, ${body.capabilities ?? []}, 'online', now()) on conflict (id) do update set provider=excluded.provider, provider_model=excluded.provider_model, endpoint=excluded.endpoint, roles=excluded.roles, capabilities=excluded.capabilities, status='online', last_heartbeat_at=now()`;
+  await runtimeRepository.registerWorker({ workerId: body.workerId.trim(), provider: body.provider ?? "unknown", providerModel: body.providerModel ?? "default", ...(body.endpoint !== undefined ? { endpoint: body.endpoint } : {}), roles: body.roles ?? [], capabilities: body.capabilities ?? [] });
   return { workerId: body.workerId.trim(), status: "online" };
 });
 app.post("/api/runtime/workers/:workerId/heartbeat", async (request, reply) => {
   const workerId = (request.params as { workerId: string }).workerId;
-  const result = await sql`update runtime_workers set status='online', last_heartbeat_at=now(), current_task_id=${(request.body as { taskId?: string } | undefined)?.taskId ?? null} where id=${workerId} returning id`;
-  return result.length ? { workerId, status: "online" } : reply.code(404).send({ error: "worker_not_registered" });
+  const found = await runtimeRepository.heartbeatWorker(workerId, (request.body as { taskId?: string } | undefined)?.taskId);
+  return found ? { workerId, status: "online" } : reply.code(404).send({ error: "worker_not_registered" });
 });
 app.get("/api/workstreams", async () => [...workstreams.values()]);
 app.get("/api/workstreams/:id", async (request, reply) => {
@@ -121,44 +134,14 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   }
   return { accepted: true, workstreamId: id, decision };
 });
-for (const [command, target] of Object.entries({ pause: "paused", resume: "active", complete: "completed", "emergency-stop": "emergency_stopped", "waiting-for-human": "waiting_for_human" } as const)) {
+for (const command of ["pause", "resume", "complete", "emergency-stop", "waiting-for-human"] as const) {
   app.post(`/api/workstreams/:id/${command}`, async (request, reply) => {
     const { id } = request.params as { id: string };
     const workstream = workstreams.get(id);
     const body = (request.body ?? {}) as CommandBody;
     if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-    if (["completing", "completed", "archived", "emergency_stopped"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_actionable", status: workstream.status });
-    const commandId = body.commandId?.trim() || randomUUID();
-    const existing = await commandRepository.findResponse(id, commandId);
-    if (existing) return existing;
-    const current = workstream.status as WorkstreamStatus;
-    const transitionTarget: WorkstreamStatus = command === "pause" ? "pausing" : command === "resume" ? "resuming" : command === "complete" ? "completing" : target;
-    const emergencyStop = command === "emergency-stop" && current !== "archived";
-    if (!emergencyStop && !canTransition(current, transitionTarget)) return reply.code(409).send({ error: "invalid_workstream_transition", from: current, to: target });
-    if (command === "pause") {
-      workstream.status = "pausing";
-      emit(workstream, "workstream.pausing", body.reason?.trim() || "Pause requested");
-      workstream.status = "paused";
-    } else if (command === "resume") {
-      workstream.status = "resuming";
-      emit(workstream, "workstream.resuming", body.reason?.trim() || "Resume requested");
-      workstream.status = "active";
-    } else if (command === "complete") {
-      workstream.status = "completing";
-      emit(workstream, "workstream.completing", body.reason?.trim() || "Completion requested");
-      workstream.status = "completed";
-    } else {
-      workstream.status = target;
-    }
-    if (command === "pause" || command === "waiting-for-human") workstream.agents.forEach((agent) => { if (agent.status === "running" || agent.status === "idle") agent.status = "paused"; });
-    if (command === "emergency-stop") workstream.agents.forEach((agent) => { if (agent.status !== "done") agent.status = "stopped"; });
-    if (command === "complete") workstream.agents.forEach((agent) => { agent.status = "done"; });
-    if (target === "active") workstream.agents.forEach((agent) => { if (agent.status !== "done" && agent.status !== "stopped") agent.status = "idle"; });
-    const eventType = command === "emergency-stop" ? "workstream.emergency_stopped" : `workstream.${command.replaceAll("-", "_")}`;
-    emit(workstream, eventType, body.reason?.trim() || `Workstream ${command.replaceAll("-", " ")} requested`);
-    const response = { commandId, workstreamId: id, command, status: workstream.status, accepted: true };
-    await commandRepository.commit({ workstreamId: id, commandId, command, status: workstream.status, agents: workstream.agents, response });
-    return response;
+    try { return await lifecycleCommandHandler.execute(workstream, command, body, (type, message) => emit(workstream, type, message)); }
+    catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
   });
 }
 app.post("/api/workstreams/:id/approval", async (request, reply) => {
@@ -166,33 +149,13 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   const workstream = workstreams.get(id);
   const body = (request.body ?? {}) as CommandBody;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  if (body.decision !== "resume" && body.decision !== "complete" && body.decision !== "reject") return reply.code(400).send({ error: "decision_required" });
-  const commandId = body.commandId?.trim() || randomUUID();
-  const existing = await commandRepository.findResponse(id, commandId);
-  if (existing) return existing;
-  const target: WorkstreamStatus = body.decision === "resume" ? "active" : body.decision === "complete" ? "completed" : "paused";
-  const validationTarget: WorkstreamStatus = body.decision === "complete" ? (workstream.status === "completing" ? "waiting_for_human" : "completing") : body.decision === "reject" ? "pausing" : target;
-  if (!canTransition(workstream.status as WorkstreamStatus, validationTarget)) return reply.code(409).send({ error: "invalid_workstream_transition", from: workstream.status, to: target });
-  if (body.decision === "complete") {
-    workstream.status = "completing";
-    emit(workstream, "approval.complete", body.reason?.trim() || "Human approval: complete");
-    workstream.status = "completed";
-  } else if (body.decision === "reject") {
-    workstream.status = "pausing";
-    emit(workstream, "approval.reject", body.reason?.trim() || "Human approval rejected");
-    workstream.status = "paused";
-  } else {
-    workstream.status = target;
-    emit(workstream, `approval.${body.decision}`, body.reason?.trim() || `Human approval: ${body.decision}`);
-  }
-  const response = { commandId, workstreamId: id, command: "approval", decision: body.decision, status: target, accepted: true };
-  await commandRepository.commit({ workstreamId: id, commandId, command: `approval:${body.decision}`, status: workstream.status, agents: workstream.agents, response });
-  return response;
+  try { return await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message)); }
+  catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
 });
 app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => {
   const { id, agentId } = request.params as { id: string; agentId: string };
   if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
-  const rows = await sql`select m.*, d.delivery_status as recipient_delivery_status from messages m join message_deliveries d on d.message_id = m.id where m.workstream_id = ${id} and d.recipient_id = ${agentId} order by m.created_at asc`;
+  const rows = await messageRepository.listInboxRows(id, agentId);
   return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status) }));
 });
 app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
@@ -277,7 +240,7 @@ app.get("/events", { websocket: true }, async (socket, request) => {
   socket.send(JSON.stringify({ type: "system.connected", occurredAt: new Date().toISOString() }));
   const after = (request.query as { after?: string } | undefined)?.after;
   if (after) {
-    const rows = await sql`select m.* from messages m where m.created_at > ${after} order by m.created_at asc`;
+    const rows = await messageRepository.listRowsAfter(after);
     for (const row of rows) {
       const message: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
       socket.send(JSON.stringify({ workstreamId: message.workstreamId, type: "message.created", message, occurredAt: message.createdAt }));
@@ -312,8 +275,7 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
 async function createMessageEvent(workstream: Workstream, from: string, to: string, content: string, intent: string): Promise<WorkflowEvent> {
   const event: WorkflowEvent = { id: randomUUID(), type: "message.sent", message: content, from, to, occurredAt: new Date().toISOString() };
   workstream.events.push(event);
-  await sql`insert into workflow_events (id, workstream_id, type, message, role, from_node, to_node, occurred_at)
-    values (${event.id}, ${workstream.id}, ${event.type}, ${content}, ${intent}, ${from}, ${to}, ${event.occurredAt})`;
+  await workflowEventRepository.append(workstream.id, { ...event, role: intent });
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, from, to, intent }, "message.sent");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
@@ -325,23 +287,19 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   const existing = requestedId ? workstream.messages.find((candidate) => candidate.id === requestedId) : undefined;
   if (existing) return existing;
   if (requestedId) {
-    const persisted = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where id = ${requestedId} and workstream_id = ${workstream.id}`;
-    if (persisted.length) {
-      const row = persisted[0]!;
+    const row = await messageRepository.findRow(workstream.id, requestedId);
+    if (row) {
       const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
       workstream.messages.push(restored);
       return restored;
     }
   }
   const message: Message = { id: requestedId ?? randomUUID(), workstreamId: workstream.id, senderId, recipientIds, messageType, content, ...(extra.taskId ? { taskId: extra.taskId } : {}), correlationId: extra.correlationId ?? randomUUID(), ...(extra.causationId ? { causationId: extra.causationId } : {}), evidenceIds: extra.evidenceIds ?? [], createdAt: now, deliveryStatus: "pending" };
-  await sql`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
-    values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, ${message.deliveryStatus})`;
+  await messageRepository.create(message);
   workstream.messages.push(message);
-  await sql`insert into message_deliveries ${sql(message.recipientIds.map((recipientId) => ({ message_id: message.id, recipient_id: recipientId, delivery_status: "pending" })))} on conflict do nothing`;
   emitMessage(workstream, "message.created", message);
   message.deliveryStatus = "delivered";
-  await sql`update message_deliveries set delivery_status = 'delivered', delivered_at = now() where message_id = ${message.id}`;
-  await sql`update messages set delivery_status = ${message.deliveryStatus} where id = ${message.id}`;
+  await messageRepository.markDelivered(message.id);
   emitMessage(workstream, "message.delivered", message);
   return message;
 }
@@ -359,31 +317,20 @@ async function updateDelivery(request: { params: unknown; body?: unknown }, repl
   const workstream = workstreams.get(id); const body = request.body as { recipientId?: string } | undefined;
   if (!workstream || !workstream.messages.some((message) => message.id === messageId)) return reply.code(404).send({ error: "message_not_found" });
   if (!body?.recipientId) return reply.code(400).send({ error: "recipient_id_required" });
-  await sql`update message_deliveries set delivery_status = ${status}, delivered_at = coalesce(delivered_at, now()) where message_id = ${messageId} and recipient_id = ${body.recipientId}`;
   const message = workstream.messages.find((candidate) => candidate.id === messageId)!;
-  if (status === "failed") message.deliveryStatus = "failed";
-  else {
-    const pending = await sql`select 1 from message_deliveries where message_id = ${messageId} and delivery_status <> 'acknowledged' limit 1`;
-    if (!pending.length) message.deliveryStatus = "acknowledged";
-  }
-  await sql`update messages set delivery_status = ${message.deliveryStatus} where id = ${messageId}`;
+  const aggregateStatus = await messageRepository.updateDelivery(messageId, body.recipientId, status);
+  if (!aggregateStatus && status === "failed") return reply.code(404).send({ error: "message_delivery_not_found" });
+  if (aggregateStatus) message.deliveryStatus = aggregateStatus;
   emitMessage(workstream, status === "acknowledged" ? "message.acknowledged" : "message.failed", message);
   return { ...message, recipientId: body.recipientId };
 }
 
 async function persistWorkstream(workstream: Workstream): Promise<void> {
-  await sql`insert into workstreams (id, goal, flavor, status, tool, model, workspace_root)
-    values (${workstream.id}, ${workstream.goal}, ${workstream.flavor}, ${workstream.status}, ${workstream.provider.tool}, ${workstream.provider.model}, ${workstream.workspaceRoot})`;
-  for (const agent of workstream.agents) {
-    await sql`insert into agents (id, workstream_id, role, authority, status)
-      values (${agent.id}, ${workstream.id}, ${agent.role}, ${agent.authority}, ${agent.status})`;
-  }
+  await workstreamRepository.create(workstream);
 }
 
 async function persistTask(task: Task): Promise<void> {
-  await sql`insert into tasks (id, workstream_id, title, status, owner_agent_id, created_by_agent_id, parent_task_id, related_task_ids, acceptance_criteria, dependencies, evidence, created_at, updated_at)
-    values (${task.id}, ${task.workstreamId}, ${task.title}, ${task.status}, ${task.ownerAgentId ?? null}, ${task.createdByAgentId ?? null}, ${task.parentTaskId ?? null}, ${JSON.stringify(task.relatedTaskIds)}, ${JSON.stringify(task.acceptanceCriteria)}, ${JSON.stringify(task.dependencies)}, ${JSON.stringify(task.evidence)}, ${task.createdAt}, ${task.updatedAt})
-    on conflict (id) do update set status = excluded.status, owner_agent_id = excluded.owner_agent_id, created_by_agent_id = excluded.created_by_agent_id, parent_task_id = excluded.parent_task_id, related_task_ids = excluded.related_task_ids, acceptance_criteria = excluded.acceptance_criteria, dependencies = excluded.dependencies, evidence = excluded.evidence, updated_at = excluded.updated_at`;
+  await taskRepository.save(task);
 }
 
 async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAgentId?: string): Promise<Task[]> {
@@ -404,29 +351,25 @@ async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAge
 }
 
 async function persistWorkstreamStatus(workstream: Workstream): Promise<void> {
-  await sql`update workstreams set status = ${workstream.status}, updated_at = now() where id = ${workstream.id}`;
-  for (const agent of workstream.agents) {
-    await sql`update agents set status = ${agent.status} where id = ${agent.id}`;
-  }
+  await workstreamRepository.saveState(workstream);
 }
 
 async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<void> {
   if (agent.status === status) return;
   agent.status = status;
-  await sql`update agents set status = ${status} where id = ${agent.id}`;
+  await workstreamRepository.saveAgentStatus(agent.id, status);
 }
 
 async function persistEvent(workstreamId: string, event: WorkflowEvent): Promise<void> {
-  await sql`insert into workflow_events (id, workstream_id, type, message, role, from_node, to_node, agent_id, task_id, correlation_id, provider, model, usage, occurred_at)
-    values (${event.id}, ${workstreamId}, ${event.type}, ${event.message}, ${event.role ?? null}, ${event.from ?? null}, ${event.to ?? null}, ${event.agentId ?? null}, ${event.taskId ?? null}, ${event.correlationId ?? null}, ${event.provider ?? null}, ${event.model ?? null}, ${event.usage ? JSON.stringify(event.usage) : null}, ${event.occurredAt})`;
+  await workflowEventRepository.append(workstreamId, event);
 }
 
 async function loadWorkstreams(): Promise<void> {
-  const rows = await sql`select id, goal, flavor, status, tool, model, workspace_root from workstreams order by created_at desc`;
+  const rows = await workstreamRepository.listRows();
   for (const row of rows) {
-    const agents = await sql`select id, role, authority, status from agents where workstream_id = ${row.id} order by id`;
-    const tasks = await sql`select id, workstream_id, title, status, owner_agent_id, created_by_agent_id, parent_task_id, related_task_ids, acceptance_criteria, dependencies, evidence, created_at, updated_at from tasks where workstream_id = ${row.id} order by created_at asc`;
-    const events = await sql`select id, type, message, role, from_node, to_node, agent_id, task_id, correlation_id, provider, model, usage, occurred_at from workflow_events where workstream_id = ${row.id} order by occurred_at asc`;
+    const agents = await workstreamRepository.listAgentRows(String(row.id));
+    const tasks = await taskRepository.listRows(String(row.id));
+    const events = await workflowEventRepository.listRows(String(row.id));
     const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), ...(task.created_by_agent_id ? { createdByAgentId: String(task.created_by_agent_id) } : {}), ...(task.parent_task_id ? { parentTaskId: String(task.parent_task_id) } : {}), relatedTaskIds: jsonArray(task.related_task_ids), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
     const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
@@ -437,8 +380,8 @@ async function loadWorkstreams(): Promise<void> {
       messages: [],
       events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.correlation_id ? { correlationId: String(event.correlation_id) } : {}), ...(event.provider ? { provider: String(event.provider) } : {}), ...(event.model ? { model: String(event.model) } : {}), ...(event.usage ? { usage: event.usage as ProviderUsage } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
-    if (normalizedStatus !== String(row.status)) await sql`update workstreams set status = ${normalizedStatus}, updated_at = now() where id = ${row.id}`;
-    const messages = await sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where workstream_id = ${row.id} order by created_at asc`;
+    if (normalizedStatus !== String(row.status)) await workstreamRepository.updateStatus(String(row.id), normalizedStatus);
+    const messages = await messageRepository.listRows(String(row.id));
     workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"] }));
   }
   app.log.info({ workstreamCount: workstreams.size }, "workstreams.loaded");
@@ -451,12 +394,12 @@ await loadWorkstreams();
 await eventBus.consumer(subjects.events, async (message) => {
   const envelope = eventBus.decode(message) as { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string };
   if (envelope.id) {
-    const claimed = await sql`insert into consumed_runtime_events (id, workstream_id, event_type) values (${envelope.id}, ${envelope.workstreamId}, ${envelope.type}) on conflict do nothing returning id`;
-    if (!claimed.length) return "ack";
+    const claimed = await runtimeRepository.claimEvent(envelope.id, envelope.workstreamId, envelope.type);
+    if (!claimed) return "ack";
     try {
       await handleWorkerResult(envelope);
     } catch (error) {
-      await sql`delete from consumed_runtime_events where id = ${envelope.id}`;
+      await runtimeRepository.releaseEvent(envelope.id);
       throw error;
     }
   } else {
@@ -464,7 +407,7 @@ await eventBus.consumer(subjects.events, async (message) => {
   }
   return "ack";
 });
-setInterval(() => { void sql`update runtime_workers set status='offline', updated_at=now() where status='online' and last_heartbeat_at < now() - interval '45 seconds'`; }, 15_000);
+setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000);
 
 async function startOrchestration(workstream: Workstream): Promise<void> {
   const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal); orchestrators.set(workstream.id, orchestrator);
@@ -567,8 +510,8 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
   const task = durableTask;
   if (task && task.ownerAgentId === sender.id) {
     const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
-    const evidenceRows = evidenceIds.length ? await sql`select id from workspace_evidence where task_id = ${task.id} and id = any(${evidenceIds}::bigint[])` : [];
-    if (workstream.workspaceRoot && (!evidenceIds.length || evidenceRows.length !== evidenceIds.length)) {
+    const persistedEvidenceCount = await evidenceRepository.countMatching(task.id, evidenceIds);
+    if (workstream.workspaceRoot && (!evidenceIds.length || persistedEvidenceCount !== evidenceIds.length)) {
       task.status = "failed"; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "failed"); await persistTask(task);
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → evidence persistence incomplete`, occurredAt: new Date().toISOString(), role: sender.role });
       return;
