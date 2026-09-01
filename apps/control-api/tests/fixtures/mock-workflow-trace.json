@@ -1,0 +1,12 @@
+{
+  "goal": "Build a small accessible markdown note editor",
+  "steps": [
+    { "operation": "start", "expectedRecipient": "pm", "expectedStage": "pm" },
+    { "event": "goal.received", "content": "Three independent tasks", "expectedRecipient": "pe", "expectedStage": "pe" },
+    { "event": "task.decomposed", "content": "Implementation plan refined", "expectedRecipient": "coder", "expectedStage": "coder" },
+    { "event": "design.completed", "content": "Editor implementation completed", "expectedRecipient": "qa", "expectedStage": "qa" },
+    { "event": "qa.passed", "content": "Accessibility and formatting checks passed", "expectedRecipient": "pm", "expectedStage": "pm" }
+  ],
+  "completionMarker": "[PROPOSE_COMPLETE]",
+  "expectedHumanBoundary": "waiting_for_human"
+}

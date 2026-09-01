@@ -1,7 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { agentInstanceSchema, agentMessageSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "../src/index.js";
+import { agentInstanceSchema, agentMessageSchema, eventEnvelopeSchema, governedOutputSchema, roleTemplateSchema, scalingRecommendationSchema, taskLeaseSchema } from "../src/index.js";
 
 describe("scaling contracts", () => {
+  it("normalizes the canonical runtime event envelope", () => {
+    const event = eventEnvelopeSchema.parse({
+      id: "event-1",
+      type: "task.created",
+      workstreamId: "ws-1",
+      correlationId: "trace-1",
+      occurredAt: new Date().toISOString(),
+      payload: { taskId: "task-1" },
+    });
+    expect(event).toMatchObject({
+      schemaVersion: 1,
+      sequence: 0,
+      actor: { type: "system", id: "runtime" },
+    });
+  });
+
+  it("rejects malformed runtime events before transport", () => {
+    expect(() => eventEnvelopeSchema.parse({
+      id: "",
+      type: "task.created",
+      workstreamId: "ws-1",
+      correlationId: "trace-1",
+      occurredAt: "not-a-date",
+      payload: {},
+    })).toThrow();
+  });
+
   it("models durable multi-recipient messages with correlation", () => {
     const message = agentMessageSchema.parse({ id: "m-1", workstreamId: "ws-1", senderId: "human", recipientIds: ["ws-1:pm", "ws-1:pe"], messageType: "directive", content: "Review this", correlationId: "c-1", createdAt: new Date().toISOString(), deliveryStatus: "delivered" });
     expect(message.recipientIds).toHaveLength(2);
