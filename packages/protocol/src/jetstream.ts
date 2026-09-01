@@ -1,4 +1,5 @@
 import { AckPolicy, connect, DeliverPolicy, RetentionPolicy, StorageType, type Consumer, type JetStreamClient, type JetStreamManager, type JsMsg, nanos, StringCodec } from "nats";
+import { eventEnvelopeSchema, type EventEnvelope, type EventEnvelopeInput } from "./index.js";
 
 export const streamName = "AGENTWEAVE_EVENTS";
 export const subjects = {
@@ -8,7 +9,6 @@ export const subjects = {
   deadLetters: "aw.dead-letter.*",
 } as const;
 
-export type JetStreamEnvelope = { id: string; type: string; workstreamId: string; occurredAt: string; payload: unknown; correlationId?: string; causationId?: string };
 export type JetStreamConfig = { url: string; stream?: string; durableName?: string; deliverPolicy?: DeliverPolicy };
 
 export class JetStreamEventBus {
@@ -33,8 +33,15 @@ export class JetStreamEventBus {
     } catch { await this.manager.streams.add({ name: this.stream, subjects: Object.values(subjects), storage: StorageType.File, retention: RetentionPolicy.Limits }); }
   }
 
-  async publish(subject: string, envelope: JetStreamEnvelope): Promise<void> {
+  async publish(subject: string, input: EventEnvelopeInput): Promise<void> {
     if (!this.client) throw new Error("JetStreamEventBus is not connected");
+    const envelope = eventEnvelopeSchema.parse({
+      schemaVersion: 1,
+      actor: { type: "system", id: "runtime" },
+      sequence: 0,
+      correlationId: input.correlationId ?? input.id,
+      ...input,
+    });
     await this.client.publish(subject, this.codec.encode(JSON.stringify(envelope)), { msgID: envelope.id });
   }
 
@@ -52,6 +59,6 @@ export class JetStreamEventBus {
     return consumer;
   }
 
-  decode(message: JsMsg): JetStreamEnvelope { return JSON.parse(this.codec.decode(message.data)) as JetStreamEnvelope; }
+  decode(message: JsMsg): EventEnvelope { return eventEnvelopeSchema.parse(JSON.parse(this.codec.decode(message.data))); }
   async close(): Promise<void> { await this.connection?.drain(); }
 }

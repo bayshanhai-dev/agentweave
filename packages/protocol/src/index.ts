@@ -7,22 +7,24 @@ export const actorSchema = z.object({
 });
 
 export const eventEnvelopeSchema = z.object({
-  eventId: z.string().min(1),
-  eventType: z.string().min(1),
-  schemaVersion: z.number().int().positive(),
+  id: z.string().min(1),
+  type: z.string().min(1),
+  schemaVersion: z.number().int().positive().default(1),
   workstreamId: z.string().min(1),
   taskId: z.string().min(1).optional(),
   sessionId: z.string().min(1).optional(),
   runId: z.string().min(1).optional(),
-  actor: actorSchema,
+  actor: actorSchema.default({ type: "system", id: "runtime" }),
   correlationId: z.string().min(1),
   causationId: z.string().min(1).optional(),
-  sequence: z.number().int().nonnegative(),
+  sequence: z.number().int().nonnegative().default(0),
   occurredAt: z.string().datetime(),
   payload: z.unknown(),
 });
 
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
+export type EventEnvelopeInput = Omit<EventEnvelope, "schemaVersion" | "actor" | "correlationId" | "sequence"> &
+  Partial<Pick<EventEnvelope, "schemaVersion" | "actor" | "correlationId" | "sequence">>;
 
 export const roleTemplateSchema = z.object({
   roleTemplateId: z.string().min(1),

@@ -7,6 +7,8 @@ import { DeliverPolicy } from "nats";
 import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
 import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationDecision, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
+import { runMigrations } from "./migrations.js";
+import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -36,6 +38,7 @@ await app.register(websocket);
 const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
+const commandRepository = new WorkstreamCommandRepository(sql);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
@@ -125,10 +128,9 @@ for (const [command, target] of Object.entries({ pause: "paused", resume: "activ
     const body = (request.body ?? {}) as CommandBody;
     if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
     if (["completing", "completed", "archived", "emergency_stopped"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_actionable", status: workstream.status });
-    if (["completing", "completed", "archived", "emergency_stopped"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_actionable", status: workstream.status });
     const commandId = body.commandId?.trim() || randomUUID();
-    const existing = await sql`select response from workstream_commands where workstream_id = ${id} and command_id = ${commandId}`;
-    if (existing.length) return existing[0]!.response;
+    const existing = await commandRepository.findResponse(id, commandId);
+    if (existing) return existing;
     const current = workstream.status as WorkstreamStatus;
     const transitionTarget: WorkstreamStatus = command === "pause" ? "pausing" : command === "resume" ? "resuming" : command === "complete" ? "completing" : target;
     const emergencyStop = command === "emergency-stop" && current !== "archived";
@@ -154,9 +156,8 @@ for (const [command, target] of Object.entries({ pause: "paused", resume: "activ
     if (target === "active") workstream.agents.forEach((agent) => { if (agent.status !== "done" && agent.status !== "stopped") agent.status = "idle"; });
     const eventType = command === "emergency-stop" ? "workstream.emergency_stopped" : `workstream.${command.replaceAll("-", "_")}`;
     emit(workstream, eventType, body.reason?.trim() || `Workstream ${command.replaceAll("-", " ")} requested`);
-    await persistWorkstreamStatus(workstream);
     const response = { commandId, workstreamId: id, command, status: workstream.status, accepted: true };
-    await sql`insert into workstream_commands (workstream_id, command_id, command, response) values (${id}, ${commandId}, ${command}, ${JSON.stringify(response)})`;
+    await commandRepository.commit({ workstreamId: id, commandId, command, status: workstream.status, agents: workstream.agents, response });
     return response;
   });
 }
@@ -167,8 +168,8 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
   if (body.decision !== "resume" && body.decision !== "complete" && body.decision !== "reject") return reply.code(400).send({ error: "decision_required" });
   const commandId = body.commandId?.trim() || randomUUID();
-  const existing = await sql`select response from workstream_commands where workstream_id = ${id} and command_id = ${commandId}`;
-  if (existing.length) return existing[0]!.response;
+  const existing = await commandRepository.findResponse(id, commandId);
+  if (existing) return existing;
   const target: WorkstreamStatus = body.decision === "resume" ? "active" : body.decision === "complete" ? "completed" : "paused";
   const validationTarget: WorkstreamStatus = body.decision === "complete" ? (workstream.status === "completing" ? "waiting_for_human" : "completing") : body.decision === "reject" ? "pausing" : target;
   if (!canTransition(workstream.status as WorkstreamStatus, validationTarget)) return reply.code(409).send({ error: "invalid_workstream_transition", from: workstream.status, to: target });
@@ -184,9 +185,8 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
     workstream.status = target;
     emit(workstream, `approval.${body.decision}`, body.reason?.trim() || `Human approval: ${body.decision}`);
   }
-  await persistWorkstreamStatus(workstream);
   const response = { commandId, workstreamId: id, command: "approval", decision: body.decision, status: target, accepted: true };
-  await sql`insert into workstream_commands (workstream_id, command_id, command, response) values (${id}, ${commandId}, ${JSON.stringify(body.decision)}, ${JSON.stringify(response)})`;
+  await commandRepository.commit({ workstreamId: id, commandId, command: `approval:${body.decision}`, status: workstream.status, agents: workstream.agents, response });
   return response;
 });
 app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => {
@@ -444,38 +444,8 @@ async function loadWorkstreams(): Promise<void> {
   app.log.info({ workstreamCount: workstreams.size }, "workstreams.loaded");
 }
 
-await sql`create table if not exists workstreams (id text primary key, goal text not null, flavor text not null, status text not null, tool text not null, model text not null, workspace_root text not null, created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
-await sql`create table if not exists tasks (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, title text not null, status text not null, owner_agent_id text, acceptance_criteria jsonb not null default '[]', dependencies jsonb not null default '[]', evidence jsonb not null default '[]', created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
-await sql`alter table tasks add column if not exists created_by_agent_id text`;
-await sql`alter table tasks add column if not exists parent_task_id text`;
-await sql`alter table tasks add column if not exists related_task_ids jsonb not null default '[]'`;
-await sql`create table if not exists agents (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, role text not null, authority text not null, status text not null)`;
-await sql`create table if not exists workflow_events (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, type text not null, message text not null, role text, from_node text, to_node text, occurred_at timestamptz not null)`;
-await sql`create table if not exists messages (id text primary key, workstream_id text not null references workstreams(id) on delete cascade, sender_id text not null, recipient_ids text[] not null, message_type text not null, content text not null, task_id text, correlation_id text not null, causation_id text, evidence_ids jsonb not null default '[]', created_at timestamptz not null default now(), delivery_status text not null default 'pending')`;
-await sql`create table if not exists message_deliveries (message_id text not null references messages(id) on delete cascade, recipient_id text not null, delivery_status text not null default 'pending', delivered_at timestamptz, primary key (message_id, recipient_id))`;
-await sql`create table if not exists workstream_commands (workstream_id text not null references workstreams(id) on delete cascade, command_id text not null, command text not null, response jsonb not null, created_at timestamptz not null default now(), primary key (workstream_id, command_id))`;
-await sql`create table if not exists agent_sessions (id text primary key, agent_id text not null, provider text not null, provider_session_id text not null, status text not null, current_turn_id text, last_checkpoint jsonb, last_event_sequence integer not null default 0, worker_id text, lease_expires_at timestamptz, updated_at timestamptz not null default now())`;
-await sql`create table if not exists task_execution_claims (task_id text primary key, workstream_id text, worker_id text not null, message_id text not null, status text not null default 'active', started_at timestamptz not null default now(), finished_at timestamptz, lease_expires_at timestamptz not null)`;
-await sql`create table if not exists consumed_runtime_events (id text primary key, workstream_id text not null, event_type text not null, consumed_at timestamptz not null default now())`;
-await sql`create index if not exists task_execution_claims_lease_idx on task_execution_claims(status, lease_expires_at)`;
-await sql`create table if not exists workspace_evidence (id bigserial primary key, task_id text not null references tasks(id) on delete cascade, workspace_path text not null, git_diff text not null, test_command text, test_output text, test_exit_code integer, created_at timestamptz not null default now())`;
-await sql`alter table workspace_evidence add column if not exists kind text not null default 'workspace'`;
-await sql`alter table workspace_evidence add column if not exists warnings jsonb not null default '[]'`;
-await sql`create table if not exists runtime_workers (id text primary key, provider text not null, roles text[] not null default '{}', capabilities text[] not null default '{}', status text not null default 'offline', current_task_id text, last_heartbeat_at timestamptz, registered_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
-await sql`alter table runtime_workers add column if not exists provider_model text not null default 'default'`;
-await sql`alter table runtime_workers add column if not exists endpoint text`;
-await sql`create index if not exists runtime_workers_heartbeat_idx on runtime_workers(status, last_heartbeat_at)`;
-await sql`create index if not exists agent_sessions_lease_idx on agent_sessions(status, lease_expires_at)`;
-await sql`create index if not exists messages_workstream_created_idx on messages(workstream_id, created_at)`;
-await sql`create index if not exists messages_recipient_idx on messages using gin(recipient_ids)`;
-await sql`alter table workflow_events add column if not exists from_node text`;
-await sql`alter table workflow_events add column if not exists to_node text`;
-await sql`alter table workflow_events add column if not exists agent_id text`;
-await sql`alter table workflow_events add column if not exists task_id text`;
-await sql`alter table workflow_events add column if not exists correlation_id text`;
-await sql`alter table workflow_events add column if not exists provider text`;
-await sql`alter table workflow_events add column if not exists model text`;
-await sql`alter table workflow_events add column if not exists usage jsonb`;
+const appliedMigrations = await runMigrations(sql);
+if (appliedMigrations.length) app.log.info({ migrations: appliedMigrations }, "database.migrated");
 await eventBus.connect();
 await loadWorkstreams();
 await eventBus.consumer(subjects.events, async (message) => {

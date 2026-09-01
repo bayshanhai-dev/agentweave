@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { extractTaskSpecs, WorkstreamOrchestrator } from "../src/orchestrator.js";
+
+type TraceStep = {
+  operation?: "start";
+  event?: Parameters<WorkstreamOrchestrator["apply"]>[0]["type"];
+  content?: string;
+  expectedRecipient: string;
+  expectedStage: string;
+};
+
+const mockTrace = JSON.parse(
+  readFileSync(new URL("./fixtures/mock-workflow-trace.json", import.meta.url), "utf8"),
+) as { goal: string; steps: TraceStep[] };
 
 describe("WorkstreamOrchestrator", () => {
   it("routes the workflow through PM, PE, Coder, QA, then returns to PM for completion triage", () => {
@@ -10,6 +23,17 @@ describe("WorkstreamOrchestrator", () => {
     expect(flow.apply({ type: "design.completed", content: "design" })?.recipientRole).toBe("qa");
     expect(flow.apply({ type: "qa.passed", content: "pass" })?.recipientRole).toBe("pm");
     expect(flow.stage).toBe("pm");
+  });
+
+  it("preserves the machine-readable Mock demo trace", () => {
+    const flow = new WorkstreamOrchestrator("mock-trace", mockTrace.goal);
+    for (const step of mockTrace.steps) {
+      const action = step.operation === "start"
+        ? flow.start()
+        : flow.apply({ type: step.event!, content: step.content ?? "" });
+      expect(action?.recipientRole).toBe(step.expectedRecipient);
+      expect(flow.stage).toBe(step.expectedStage);
+    }
   });
 
   it("routes a QA failure back to Coder and increments the attempt", () => {

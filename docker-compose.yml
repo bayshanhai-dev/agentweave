@@ -9,7 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./db/migrations/001_agent_sessions.sql:/docker-entrypoint-initdb.d/001_agent_sessions.sql:ro
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agentweave -d agentweave"]
       interval: 2s
