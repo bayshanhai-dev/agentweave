@@ -173,6 +173,18 @@ export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend,
                   combobox.closeDropdown();
                 }
               }}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  (event.metaKey || event.ctrlKey) &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  combobox.closeDropdown();
+                  onSend();
+                }
+              }}
+              aria-keyshortcuts="Meta+Enter Control+Enter"
               minRows={3}
             />
           </Combobox.Target>
@@ -181,6 +193,7 @@ export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend,
           </Combobox.Dropdown>
         </Combobox>
         {sendError && <Text size="xs" c="red">{sendError}</Text>}
+        <Text size="xs" c="dimmed" ta="right">⌘ Enter / Ctrl Enter to send</Text>
         <Button fullWidth leftSection={<IconMessage size={16} />} onClick={onSend}>Send message</Button>
       </div>
     </Paper>
