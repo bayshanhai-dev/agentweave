@@ -48,6 +48,7 @@ export type PersistedMessage = {
 
 export type PersistedWorkflowEvent = {
   id: string;
+  sequence?: number;
   type: string;
   message: string;
   role?: string;
