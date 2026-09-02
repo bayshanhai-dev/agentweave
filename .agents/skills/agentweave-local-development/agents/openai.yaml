@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentWeave Local Development"
+  short_description: "Develop, test, and contribute to AgentWeave safely"
+  default_prompt: "Use $agentweave-local-development to develop and verify AgentWeave."
