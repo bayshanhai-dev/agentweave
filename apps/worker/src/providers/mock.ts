@@ -1,4 +1,5 @@
 import { providerError } from "./errors.js";
+import { agentTurnResultSchema } from "@agentweave/protocol";
 import type { ProviderAdapter, ProviderCapabilities, ProviderRunEvent, ProviderRunInput, ProviderRunResult, ProviderSession, SessionCheckpoint } from "./types.js";
 
 export class MockProviderAdapter implements ProviderAdapter {
@@ -17,7 +18,8 @@ export class MockProviderAdapter implements ProviderAdapter {
     if (this.options.fail) { const error = providerError("Mock provider failure", "provider", "retryable", { code: "MOCK_FAILURE" }); yield { type: "turn.failed", turnId, error }; throw new Error(error.message); }
     const text = this.options.qa === "fail" ? "QA review: fail" : demoResponse(input.input);
     yield { type: "turn.delta", turnId, text }; yield { type: "turn.completed", turnId, text };
-    const result: ProviderRunResult = { turnId, text, session: { ...session, providerTurnId: turnId, status: "completed" as const, updatedAt: new Date().toISOString() } }; this.completed.set(turnId, result); return result;
+    const structuredResult = agentTurnResultSchema.parse({ summary: text });
+    const result: ProviderRunResult = { turnId, text, structuredResult, session: { ...session, providerTurnId: turnId, status: "completed" as const, updatedAt: new Date().toISOString() } }; this.completed.set(turnId, result); return result;
   }
   async *cancel(_session: ProviderSession, turnId: string, correlationId?: string): AsyncGenerator<ProviderRunEvent> { yield { type: "turn.cancelled", turnId, ...(correlationId ? { correlationId } : {}) }; }
 }

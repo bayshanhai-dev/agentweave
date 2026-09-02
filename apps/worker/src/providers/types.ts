@@ -41,7 +41,7 @@ export type ProviderRunEvent =
   | { type: "turn.cancelled"; turnId: string; correlationId?: string }
   | { type: "provider.error"; error: ProviderError; correlationId?: string };
 
-export type ProviderRunResult = { turnId: string; text: string; session: ProviderSession; usage?: ProviderUsage; metadata?: Record<string, unknown> };
+export type ProviderRunResult = { turnId: string; text: string; session: ProviderSession; usage?: ProviderUsage; structuredResult?: AgentTurnResult; metadata?: Record<string, unknown> };
 
 export type ProviderError = {
   code: string; message: string; category: "timeout" | "cancelled" | "transport" | "authentication" | "configuration" | "provider" | "unknown";
@@ -56,3 +56,4 @@ export interface ProviderAdapter {
   run(input: ProviderRunInput): AsyncGenerator<ProviderRunEvent, ProviderRunResult>;
   cancel(session: ProviderSession, turnId: string, correlationId?: string): AsyncGenerator<ProviderRunEvent>;
 }
+import type { AgentTurnResult } from "@agentweave/protocol";
