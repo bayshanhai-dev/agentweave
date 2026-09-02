@@ -272,15 +272,18 @@ function App() {
   useEffect(() => {
     if (!selected) return;
     const selectedId = selected.id;
-    const lastSequence = Math.max(0, ...selected.events.map((event) => event.sequence ?? 0));
+    let lastSequence = Math.max(0, ...selected.events.map((event) => event.sequence ?? 0));
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
     let reconnectDelay = 500;
     let disposed = false;
     const syncSnapshot = async () => {
-      const response = await fetch(`${api}/api/workstreams/${selectedId}`).catch(() => undefined);
+      const response = await fetch(`${api}/api/workstreams/${selectedId}/snapshot`).catch(() => undefined);
       if (!response?.ok) return;
-      const updated = await response.json() as Workstream;
+      const snapshot = await response.json() as { schemaVersion: number; cursor: number; workstream: Workstream };
+      if (snapshot.schemaVersion !== 1 || !snapshot.workstream) return;
+      lastSequence = Math.max(lastSequence, snapshot.cursor);
+      const updated = snapshot.workstream;
       setSelected((current) => current?.id === selectedId ? updated : current);
       setItems((current) => current.map((item) => item.id === selectedId ? updated : item));
     };
@@ -299,39 +302,14 @@ function App() {
         ? { ...durableMessage, type: envelope.type, occurredAt: envelope.occurredAt }
         : (envelope as Event);
       if (envelope.workstreamId === selectedId) {
-        const statusByEvent: Record<string, string> = {
-          "workstream.starting": "starting",
-          "workstream.active": "active",
-          "workstream.waiting_for_human": "waiting_for_human",
-          "workstream.completed": "completed",
-          "workstream.paused": "paused",
-          "workstream.emergency_stopped": "emergency_stopped",
-        };
-        setSelected((current) => {
-          if (!current) return current;
-          const isMessage = Boolean(durableMessage);
-          if (isMessage && event.id && current.messages?.some((message) => message.id === event.id)) return current;
-          if (!isMessage && event.id && current.events.some((existing) => existing.id === event.id)) return current;
-          const running = ["run.started", "run.heartbeat", "turn.started", "turn.delta", "tool.started", "tool.completed"].includes(event.type ?? "");
-          const settled = ["agent.reply.created", "task.completed", "task.failed", "turn.completed", "turn.failed", "turn.cancelled"].includes(event.type ?? "");
-          const taskStatus = running ? "running" : event.type === "task.completed" ? "done" : event.type === "task.failed" ? "failed" : undefined;
-          const agents = event.role
-            ? current.agents.map((agent) => agent.role === event.role ? { ...agent, status: running ? "running" : settled ? (event.type === "task.failed" || event.type === "turn.failed" ? "failed" : "idle") : agent.status } : agent)
-            : current.agents;
-          return {
-            ...current,
-            status: statusByEvent[event.type ?? ""] ?? current.status,
-            agents,
-            tasks: taskStatus && event.taskId ? current.tasks.map((task) => task.id === event.taskId ? { ...task, status: taskStatus } : task) : current.tasks,
-            events: [...current.events, event],
-            messages: isMessage ? [...(current.messages ?? []), event] : current.messages,
-          };
-        });
-        if (event.type === "task.created") {
-          void fetch(`${api}/api/workstreams/${selectedId}`)
-            .then((response) => response.ok ? response.json() as Promise<Workstream> : undefined)
-            .then((updated) => updated && setSelected((current) => current?.id === selectedId ? { ...current, tasks: updated.tasks } : current));
+        const sequence = Number(event.sequence ?? 0);
+        if (sequence > 0 && sequence > lastSequence + 1) {
+          void syncSnapshot();
+          return;
         }
+        if (sequence > 0) lastSequence = Math.max(lastSequence, sequence);
+        // Workflow events invalidate the projection; domain state always comes from the server snapshot.
+        void syncSnapshot();
       }
     };
     const connect = () => {
