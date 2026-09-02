@@ -51,6 +51,7 @@ const api = `${window.location.protocol}//${window.location.hostname}:3000`;
 const wsUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:3000/events`;
 type Event = {
   id?: string;
+  sequence?: number;
   type?: string;
   message?: string;
   content?: string;
@@ -271,6 +272,7 @@ function App() {
   useEffect(() => {
     if (!selected) return;
     const selectedId = selected.id;
+    const lastSequence = Math.max(0, ...selected.events.map((event) => event.sequence ?? 0));
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
     let reconnectDelay = 500;
@@ -334,7 +336,7 @@ function App() {
     };
     const connect = () => {
       if (disposed) return;
-      socket = new WebSocket(wsUrl);
+      socket = new WebSocket(`${wsUrl}?workstreamId=${encodeURIComponent(selectedId)}&afterSequence=${lastSequence}`);
       socket.onopen = () => {
         reconnectDelay = 500;
         void syncSnapshot();
