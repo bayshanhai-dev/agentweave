@@ -131,6 +131,19 @@ export const agentMessageSchema = z.object({
 });
 export type AgentMessage = z.infer<typeof agentMessageSchema>;
 
+/** Versioned, provider-neutral result returned after an agent turn. */
+export const agentTurnResultSchema = z.object({
+  schemaVersion: z.literal(1).default(1),
+  summary: z.string().min(1),
+  insights: z.array(z.object({ id: z.string().min(1), content: z.string().min(1), evidenceIds: z.array(z.string().min(1)).default([]) })).default([]),
+  tasks: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), ownerRole: z.string().min(1), acceptanceCriteria: z.array(z.string().min(1)).default([]) })).default([]),
+  messages: z.array(z.object({ recipientRole: z.string().min(1), content: z.string().min(1), messageType: messageTypeSchema.default("reply") })).default([]),
+  decision: z.object({ action: z.enum(["continue", "complete", "wait", "ask_human"]), reason: z.string().min(1) }).optional(),
+  completionProposal: z.object({ reason: z.string().min(1), evidenceIds: z.array(z.string().min(1)).default([]) }).optional(),
+  humanBlock: z.object({ question: z.string().min(1), context: z.string().min(1) }).optional(),
+});
+export type AgentTurnResult = z.infer<typeof agentTurnResultSchema>;
+
 export const providerUsageSchema = z.object({
   source: z.enum(["provider", "estimated", "unknown"]),
   inputTokens: z.number().int().nonnegative().optional(),
