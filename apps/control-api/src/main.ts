@@ -18,7 +18,7 @@ import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./com
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
-type WorkflowEvent = { id: string; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; occurredAt: string };
+type WorkflowEvent = { id: string; sequence?: number; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
@@ -91,6 +91,14 @@ app.get("/api/workstreams/:id", async (request, reply) => {
 app.get("/api/workstreams/:id/tasks", async (request, reply) => {
   const { id } = request.params as { id: string }; const workstream = workstreams.get(id);
   return workstream ? workstream.tasks : reply.code(404).send({ error: "workstream_not_found" });
+});
+app.get("/api/workstreams/:id/events", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  const after = Number((request.query as { after?: string } | undefined)?.after ?? 0);
+  if (!Number.isInteger(after) || after < 0) return reply.code(400).send({ error: "invalid_sequence_cursor" });
+  const rows = await workflowEventRepository.listAfter(id, after);
+  return rows.map((event) => ({ id: String(event.id), sequence: Number(event.sequence), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() }));
 });
 app.get("/api/workstreams/:id/messages", async (request, reply) => {
   const workstream = workstreams.get((request.params as { id: string }).id);
@@ -238,7 +246,17 @@ app.post("/api/workstreams", async (request, reply) => {
 app.get("/events", { websocket: true }, async (socket, request) => {
   sockets.add(socket);
   socket.send(JSON.stringify({ type: "system.connected", occurredAt: new Date().toISOString() }));
-  const after = (request.query as { after?: string } | undefined)?.after;
+  const query = request.query as { after?: string; afterSequence?: string; workstreamId?: string } | undefined;
+  const after = query?.after;
+  const afterSequence = query?.afterSequence;
+  const replayWorkstreamId = query?.workstreamId;
+  if (replayWorkstreamId && afterSequence !== undefined) {
+    const sequence = Number(afterSequence);
+    if (Number.isInteger(sequence) && sequence >= 0) {
+      const rows = await workflowEventRepository.listAfter(replayWorkstreamId, sequence);
+      for (const row of rows) socket.send(JSON.stringify({ workstreamId: replayWorkstreamId, id: String(row.id), sequence: Number(row.sequence), type: String(row.type), message: String(row.message), ...(row.role ? { role: String(row.role) } : {}), ...(row.from_node ? { from: String(row.from_node) } : {}), ...(row.to_node ? { to: String(row.to_node) } : {}), occurredAt: new Date(String(row.occurred_at)).toISOString() }));
+    }
+  }
   if (after) {
     const rows = await messageRepository.listRowsAfter(after);
     for (const row of rows) {
@@ -256,6 +274,7 @@ function emit(workstream: Workstream, type: string, message: string, role?: Role
 }
 
 function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void {
+  event.sequence = Math.max(0, ...workstream.events.map((item) => item.sequence ?? 0)) + 1;
   workstream.events.push(event);
   void persistEvent(workstream.id, event);
   void persistWorkstreamStatus(workstream);
@@ -273,7 +292,7 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
 }
 
 async function createMessageEvent(workstream: Workstream, from: string, to: string, content: string, intent: string): Promise<WorkflowEvent> {
-  const event: WorkflowEvent = { id: randomUUID(), type: "message.sent", message: content, from, to, occurredAt: new Date().toISOString() };
+  const event: WorkflowEvent = { id: randomUUID(), sequence: Math.max(0, ...workstream.events.map((item) => item.sequence ?? 0)) + 1, type: "message.sent", message: content, from, to, occurredAt: new Date().toISOString() };
   workstream.events.push(event);
   await workflowEventRepository.append(workstream.id, { ...event, role: intent });
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, from, to, intent }, "message.sent");
@@ -378,7 +397,7 @@ async function loadWorkstreams(): Promise<void> {
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
       messages: [],
-      events: events.map((event) => ({ id: String(event.id), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.correlation_id ? { correlationId: String(event.correlation_id) } : {}), ...(event.provider ? { provider: String(event.provider) } : {}), ...(event.model ? { model: String(event.model) } : {}), ...(event.usage ? { usage: event.usage as ProviderUsage } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
+      events: events.map((event) => ({ id: String(event.id), sequence: Number(event.sequence), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.correlation_id ? { correlationId: String(event.correlation_id) } : {}), ...(event.provider ? { provider: String(event.provider) } : {}), ...(event.model ? { model: String(event.model) } : {}), ...(event.usage ? { usage: event.usage as ProviderUsage } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
     if (normalizedStatus !== String(row.status)) await workstreamRepository.updateStatus(String(row.id), normalizedStatus);
     const messages = await messageRepository.listRows(String(row.id));
