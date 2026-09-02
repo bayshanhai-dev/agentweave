@@ -88,6 +88,12 @@ app.get("/api/workstreams/:id", async (request, reply) => {
   const workstream = workstreams.get(id);
   return workstream ?? reply.code(404).send({ error: "workstream_not_found" });
 });
+app.get("/api/workstreams/:id/snapshot", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const workstream = workstreams.get(id);
+  if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+  return { schemaVersion: 1, cursor: Math.max(0, ...workstream.events.map((event) => event.sequence ?? 0)), workstream };
+});
 app.get("/api/workstreams/:id/tasks", async (request, reply) => {
   const { id } = request.params as { id: string }; const workstream = workstreams.get(id);
   return workstream ? workstream.tasks : reply.code(404).send({ error: "workstream_not_found" });
