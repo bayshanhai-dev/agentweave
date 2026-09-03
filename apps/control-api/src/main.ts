@@ -14,7 +14,9 @@ import { WorkflowEventRepository } from "./repositories/workflow-event-repositor
 import { MessageRepository } from "./repositories/message-repository.js";
 import { RuntimeRepository } from "./repositories/runtime-repository.js";
 import { EvidenceRepository } from "./repositories/evidence-repository.js";
+import { InsightRepository } from "./repositories/insight-repository.js";
 import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./commands/workstream-lifecycle.js";
+import { validateCollaborationRound, validateInsight, type CollaborationRound, type Insight } from "@agentweave/domain";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -51,6 +53,7 @@ const workflowEventRepository = new WorkflowEventRepository(sql);
 const messageRepository = new MessageRepository(sql);
 const runtimeRepository = new RuntimeRepository(sql);
 const evidenceRepository = new EvidenceRepository(sql);
+const insightRepository = new InsightRepository(sql);
 const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
@@ -109,6 +112,35 @@ app.get("/api/workstreams/:id/events", async (request, reply) => {
 app.get("/api/workstreams/:id/messages", async (request, reply) => {
   const workstream = workstreams.get((request.params as { id: string }).id);
   return workstream ? workstream.messages : reply.code(404).send({ error: "workstream_not_found" });
+});
+app.get("/api/workstreams/:id/insights", async (request, reply) => {
+  const id = (request.params as { id: string }).id;
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  const [insights, rounds, activeSynthesisInputs] = await Promise.all([insightRepository.listInsights(id), insightRepository.listRounds(id), insightRepository.activeSynthesisInputs(id)]);
+  return { insights, rounds, activeSynthesisInputs };
+});
+app.get("/api/workstreams/:id/insights/:insightId/opposing", async (request, reply) => {
+  const { id, insightId } = request.params as { id: string; insightId: string };
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  return insightRepository.opposingInsights(id, insightId);
+});
+app.post("/api/workstreams/:id/insights", async (request, reply) => {
+  const id = (request.params as { id: string }).id;
+  const insight = request.body as Insight;
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  if (!insight || insight.workstreamId !== id) return reply.code(400).send({ error: "invalid_insight_workstream" });
+  try { validateInsight(insight, new Set((await insightRepository.listInsights(id)).map((item) => item.id))); } catch (error) { return reply.code(400).send({ error: "invalid_insight", detail: String(error).replace(/^Error: /, "") }); }
+  await insightRepository.saveInsight(insight);
+  return reply.code(201).send(insight);
+});
+app.post("/api/workstreams/:id/collaboration-rounds", async (request, reply) => {
+  const id = (request.params as { id: string }).id;
+  const round = request.body as CollaborationRound;
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  if (!round || round.workstreamId !== id) return reply.code(400).send({ error: "invalid_round_workstream" });
+  try { validateCollaborationRound(round, new Set((await insightRepository.listInsights(id)).map((item) => item.id))); } catch (error) { return reply.code(400).send({ error: "invalid_collaboration_round", detail: String(error).replace(/^Error: /, "") }); }
+  await insightRepository.saveRound(round);
+  return reply.code(201).send(round);
 });
 app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) => {
   const { id } = request.params as { id: string };
