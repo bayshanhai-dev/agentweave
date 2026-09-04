@@ -16,6 +16,7 @@ import {
 import { IconArrowsExchange, IconMessage, IconMessages } from "@tabler/icons-react";
 import { useCombobox } from "@mantine/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { causalNeighbors, unifiedStream, type StreamInsight } from "./unified-stream";
 
 export type BusMessage = {
   id?: string;
@@ -36,6 +37,7 @@ export type BusMessage = {
 type Agent = { id: string; role: string };
 type Props = {
   messages: BusMessage[];
+  insights?: StreamInsight[];
   agents: Agent[];
   draft: string;
   onDraftChange: (value: string) => void;
@@ -52,16 +54,13 @@ function displayAgent(value: string | undefined, agents: Agent[]): string {
   return short.toUpperCase();
 }
 
-function timestamp(message: BusMessage): number {
-  const parsed = Date.parse(message.createdAt ?? message.occurredAt ?? "");
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend, sendError }: Props) {
+export function LiveMessageBus({ messages, insights = [], agents, draft, onDraftChange, onSend, sendError }: Props) {
   const [agentFilter, setAgentFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [mode, setMode] = useState("all");
   const [mentionQuery, setMentionQuery] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
   const combobox = useCombobox({
     onDropdownClose: () => combobox.resetSelectedOption(),
     onDropdownOpen: () => combobox.selectFirstOption(),
@@ -73,7 +72,7 @@ export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend,
   ];
   const typeOptions = [
     { value: "all", label: "All message types" },
-    ...[...new Set(messages.map((message) => message.messageType ?? message.type).filter(Boolean))].map((type) => ({ value: type!, label: type!.replaceAll(".", " ") })),
+    ...[...new Set([...messages.map((message) => message.messageType ?? message.type), ...insights.map((insight) => insight.kind)].filter(Boolean))].map((type) => ({ value: type!, label: type!.replaceAll(".", " ") })),
   ];
   const mentionOptions = [...new Set(agents.map((agent) => agent.role.toLowerCase()))]
     .filter((role) => role.includes(mentionQuery.toLowerCase()))
@@ -84,21 +83,14 @@ export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend,
     ));
   const visible = useMemo(
     () =>
-      messages
-        .filter((message) => {
-          const sender = message.senderId ?? message.from;
-          const recipients = message.recipientIds ?? (message.to ? message.to.split(",") : []);
-          const messageType = message.messageType ?? message.type;
-          return (agentFilter === "all" || sender === agentFilter || recipients.includes(agentFilter)) && (typeFilter === "all" || messageType === typeFilter);
-        })
-        .sort((a, b) => timestamp(a) - timestamp(b)),
-    [messages, agentFilter, typeFilter],
+      unifiedStream(messages, insights).filter((item) => (mode === "all" || item.kind === mode) && (agentFilter === "all" || item.authorId === agentFilter || item.recipientIds.includes(agentFilter)) && (typeFilter === "all" || item.category === typeFilter)),
+    [messages, insights, mode, agentFilter, typeFilter],
   );
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const viewport = viewportRef.current;
-      if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+      if (viewport && stickToBottom.current) viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [visible, agentFilter, typeFilter]);
@@ -116,6 +108,7 @@ export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend,
         <Badge variant="light" color="teal">● live · {visible.length}</Badge>
       </Group>
       <Group grow mb="md">
+        <Select aria-label="Choose stream mode" value={mode} onChange={(value) => setMode(value ?? "all")} data={[{ value: "all", label: "Messages + insights" }, { value: "message", label: "Messages" }, { value: "insight", label: "Insights" }]} allowDeselect={false} size="xs" />
         <Select aria-label="Filter messages by agent" value={agentFilter} onChange={(value) => setAgentFilter(value ?? "all")} data={agentOptions} allowDeselect={false} size="xs" />
         <Select aria-label="Filter messages by type" value={typeFilter} onChange={(value) => setTypeFilter(value ?? "all")} data={typeOptions} allowDeselect={false} size="xs" />
       </Group>
@@ -127,20 +120,22 @@ export function LiveMessageBus({ messages, agents, draft, onDraftChange, onSend,
           type="auto"
           offsetScrollbars
           viewportRef={viewportRef}
+          onScrollPositionChange={() => { const viewport = viewportRef.current; if (viewport) stickToBottom.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48; }}
         >
           <Stack gap={0}>
-            {visible.map((message, index) => {
-              const sender = message.senderId ?? message.from;
-              const recipients = message.recipientIds ?? (message.to ? message.to.split(",") : []);
-              const createdAt = message.createdAt ?? message.occurredAt;
-              const addressedToHuman = recipients.includes("human") || /@human\b/i.test(message.content ?? message.message ?? "");
-              return <Box key={message.id ?? `${sender}-${createdAt}-${index}`} className={`bus-message${addressedToHuman ? " bus-message-to-human" : ""}`}>
+            {visible.map((item, index) => {
+              const sender = item.authorId;
+              const recipients = item.recipientIds;
+              const createdAt = item.createdAt;
+              const addressedToHuman = recipients.includes("human") || /@human\b/i.test(item.content);
+              const neighbors = item.kind === "insight" ? causalNeighbors(item.id, insights) : undefined;
+              return <Box id={`stream-${item.id}`} key={item.id ?? `${sender}-${createdAt}-${index}`} className={`bus-message${addressedToHuman ? " bus-message-to-human" : ""}`}>
                 <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
-                  <Group gap="xs" wrap="wrap"><Text size="xs" fw={800} c={addressedToHuman ? "pink" : "teal"}>{displayAgent(sender, agents)} → {recipients.map((recipient) => displayAgent(recipient, agents)).join(", ") || "UNROUTED"}</Text>{addressedToHuman && <Badge size="xs" color="pink">@ HUMAN</Badge>}<Badge size="xs" variant="outline">{(message.messageType ?? message.type ?? "message").replaceAll(".", " ")}</Badge></Group>
+                  <Group gap="xs" wrap="wrap"><Text size="xs" fw={800} c={addressedToHuman ? "pink" : item.kind === "insight" ? "violet" : "teal"}>{displayAgent(sender, agents)}{item.kind === "message" ? ` → ${recipients.map((recipient) => displayAgent(recipient, agents)).join(", ") || "UNROUTED"}` : " · INSIGHT"}</Text>{addressedToHuman && <Badge size="xs" color="pink">@ HUMAN</Badge>}<Badge size="xs" variant="outline">{item.category.replaceAll(".", " ")}</Badge>{item.lifecycle && <Badge size="xs" variant="light">{item.lifecycle}</Badge>}</Group>
                   <Text size="xs" c="dimmed" style={{ whiteSpace: "nowrap" }}>{createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}</Text>
                 </Group>
-                <Text size="sm" mt={5} className="bus-message-content">{message.content ?? message.message ?? "(empty message)"}</Text>
-                {(message.taskId || message.correlationId) && <Group gap="xs" mt={7}><Text size="xs" c="dimmed">{message.taskId ? `Task · ${message.taskId.slice(-8)}` : ""}</Text>{message.correlationId && <Text size="xs" c="dimmed">Trace · {message.correlationId.slice(0, 8)}</Text>}</Group>}
+                <Text size="sm" mt={5} className="bus-message-content">{item.content || "(empty message)"}</Text>
+                {(item.taskId || item.correlationId || neighbors) && <Group gap="xs" mt={7}><Text size="xs" c="dimmed">{item.taskId ? `Task · ${item.taskId.slice(-8)}` : ""}</Text>{item.correlationId && <Text size="xs" c="dimmed">Trace · {item.correlationId.slice(0, 8)}</Text>}{neighbors && [...neighbors.supporting, ...neighbors.opposing].map((related) => <Button key={related.id} variant="subtle" size="compact-xs" color={neighbors.opposing.includes(related) ? "red" : "blue"} onClick={() => document.getElementById(`stream-${related.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{neighbors.opposing.includes(related) ? "Opposes" : "Supports"} · {related.id.slice(-8)}</Button>)}</Group>}
               </Box>;
             })}
           </Stack>
