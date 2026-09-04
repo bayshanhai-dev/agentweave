@@ -45,6 +45,7 @@ import { TaskBoard, type Task } from "./TaskBoard";
 import { WorkstreamControls } from "./WorkstreamControls";
 import { LiveMessageBus } from "./LiveMessageBus";
 import { providerModelLabel } from "./providerDisplay";
+import type { StreamInsight } from "./unified-stream";
 import "./styles.css";
 
 const api =
@@ -86,6 +87,7 @@ type Workstream = {
   tasks: Task[];
   events: Event[];
   messages?: Event[];
+  insights?: StreamInsight[];
 };
 const labels: Record<string, string> = {
   human: "Human",
@@ -282,12 +284,13 @@ function App() {
     let reconnectDelay = 500;
     let disposed = false;
     const syncSnapshot = async () => {
-      const response = await fetch(`${api}/api/workstreams/${selectedId}/snapshot`).catch(() => undefined);
+      const [response, insightResponse] = await Promise.all([fetch(`${api}/api/workstreams/${selectedId}/snapshot`).catch(() => undefined), fetch(`${api}/api/workstreams/${selectedId}/insights`).catch(() => undefined)]);
       if (!response?.ok) return;
       const snapshot = await response.json() as { schemaVersion: number; cursor: number; workstream: Workstream };
       if (snapshot.schemaVersion !== 1 || !snapshot.workstream) return;
       lastSequence = Math.max(lastSequence, snapshot.cursor);
-      const updated = snapshot.workstream;
+      const insightProjection = insightResponse?.ok ? await insightResponse.json() as { insights?: StreamInsight[] } : undefined;
+      const updated = { ...snapshot.workstream, insights: insightProjection?.insights ?? [] };
       setSelected((current) => current?.id === selectedId ? updated : current);
       setItems((current) => current.map((item) => item.id === selectedId ? updated : item));
     };
@@ -614,6 +617,7 @@ function App() {
                     <Stack gap="lg" className="runtime-cockpit-rail">
                       <LiveMessageBus
                         messages={messages}
+                        insights={selected.insights ?? []}
                         agents={selected.agents}
                         draft={draft}
                         onDraftChange={setDraft}
