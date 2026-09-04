@@ -47,8 +47,12 @@ import { LiveMessageBus } from "./LiveMessageBus";
 import { providerModelLabel } from "./providerDisplay";
 import "./styles.css";
 
-const api = `${window.location.protocol}//${window.location.hostname}:3000`;
-const wsUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:3000/events`;
+const api =
+  import.meta.env.VITE_CONTROL_API_URL ??
+  `${window.location.protocol}//${window.location.hostname}:3000`;
+const wsUrl =
+  import.meta.env.VITE_CONTROL_WS_URL ??
+  `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:3000/events`;
 type Event = {
   id?: string;
   sequence?: number;

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: agentweave
       POSTGRES_DB: agentweave
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
@@ -20,8 +20,8 @@ services:
     image: nats:2.11-alpine
     command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "${NATS_HOST_PORT:-4222}:4222"
+      - "${NATS_MONITOR_HOST_PORT:-8222}:8222"
     volumes:
       - nats-data:/data
     healthcheck:
@@ -84,7 +84,7 @@ services:
       DATABASE_URL: postgresql://agentweave:agentweave@postgres:5432/agentweave
       NATS_URL: nats://nats:4222
     ports:
-      - "3000:3000"
+      - "${CONTROL_API_HOST_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,6 +103,7 @@ services:
       WORKSPACE_ROOT: /workspaces
       AGENTWEAVE_PROVIDER: ${AGENTWEAVE_PROVIDER:-mock}
       AGENTWEAVE_MODEL: ${AGENTWEAVE_MODEL:-}
+      MOCK_PROVIDER_DELAY_MS: ${MOCK_PROVIDER_DELAY_MS:-0}
       CODEX_APP_SERVER_URL: ${CODEX_APP_SERVER_URL:-http://host.docker.internal:3010}
       CODEX_BRIDGE_MODE: ${CODEX_BRIDGE_MODE:-app-server}
       CODEX_CONTAINER_WORKSPACE_ROOT: ${CODEX_CONTAINER_WORKSPACE_ROOT:-/workspaces}
@@ -126,10 +127,11 @@ services:
       context: .
       dockerfile: apps/dashboard/Dockerfile
     environment:
-      VITE_CONTROL_API_URL: http://localhost:3000
-      VITE_CONTROL_WS_URL: ws://localhost:3000/events
+      VITE_CONTROL_API_URL: ${DASHBOARD_CONTROL_API_URL:-http://localhost:${CONTROL_API_HOST_PORT:-3000}}
+      VITE_CONTROL_WS_URL: ${DASHBOARD_CONTROL_WS_URL:-ws://localhost:${CONTROL_API_HOST_PORT:-3000}/events}
+      VITE_ALLOWED_HOSTS: ${DASHBOARD_ALLOWED_HOSTS:-}
     ports:
-      - "5173:5173"
+      - "${DASHBOARD_HOST_PORT:-5173}:5173"
     depends_on:
       - control-api
 
