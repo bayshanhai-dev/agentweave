@@ -242,6 +242,13 @@ executes Codex on your host while the Worker stays in Docker.
 4. Start the bridge in a separate terminal with `make bridge`, then run
    `make up` or `make demo` in another terminal.
 
+To verify the authenticated provider boundary without changing files, run the
+documented read-only smoke turn from another terminal:
+
+```bash
+CODEX_SMOKE_WORKSPACE=/absolute/path/inside/the/allowed/root pnpm test:smoke:codex
+```
+
 `make bridge` loads `.env` before starting, so the host bridge uses the same
 workspace mapping as Docker.
 

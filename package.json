@@ -18,9 +18,13 @@
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "doctor": "make doctor",
-    "demo": "node scripts/demo.mjs"
+    "demo": "node scripts/demo.mjs",
+    "test:e2e": "bash scripts/run-playwright-e2e.sh",
+    "test:e2e:browser": "playwright test",
+    "test:smoke:codex": "node scripts/codex-smoke.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@types/node": "^24.0.0",
     "prettier": "^3.6.2",
     "turbo": "^2.5.6",

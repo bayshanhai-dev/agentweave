@@ -35,6 +35,18 @@ terminal. The bridge uses the host's installed and authenticated `codex`
 command; it is intentionally not containerized because it operates on the
 host workspace. Keep its workspace root narrow and its token private.
 
+After the bridge is healthy, verify the real provider boundary with a read-only
+smoke turn from another terminal:
+
+```bash
+CODEX_SMOKE_WORKSPACE=/absolute/path/inside/the/allowed/root pnpm test:smoke:codex
+```
+
+The smoke command requires an explicitly selected workspace, asks Codex not to
+inspect or modify files, and checks for a deterministic acknowledgement. It is
+intentionally local-only: CI runs the credential-free Mock Playwright journey
+instead of receiving a maintainer's Codex authentication.
+
 To reset only Docker-managed local state, use `make fresh CONFIRM=YES`. It
 removes named Docker volumes but not `AGENTWEAVE_HOST_WORKSPACE`.
 
@@ -45,6 +57,7 @@ pnpm run typecheck
 pnpm run test
 pnpm run build
 pnpm run lint
+pnpm run test:e2e
 ```
 
 The repository's E2E checks require Docker and should use a disposable

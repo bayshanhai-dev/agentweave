@@ -37,3 +37,31 @@ jobs:
           context: .
           file: apps/control-api/Dockerfile
           push: false
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run deterministic Mock journey
+        run: pnpm test:e2e
+      - name: Upload E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-diagnostics
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
