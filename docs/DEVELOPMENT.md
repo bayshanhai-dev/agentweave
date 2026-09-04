@@ -47,6 +47,26 @@ inspect or modify files, and checks for a deterministic acknowledgement. It is
 intentionally local-only: CI runs the credential-free Mock Playwright journey
 instead of receiving a maintainer's Codex authentication.
 
+To exercise one real edit → review → QA → Human approval loop, start the stack
+with the Codex provider and an explicit QA command, then run the opt-in writable
+smoke harness:
+
+```bash
+AGENTWEAVE_PROVIDER=codex TEST_COMMAND="node verify.mjs" make up
+CODEX_HOST_WORKSPACE_ROOT=/absolute/narrow/allowed/root \
+CODEX_CONTAINER_WORKSPACE_ROOT=/workspaces \
+CODEX_WORKSTREAM_SMOKE_ALLOW_WRITE=YES \
+pnpm test:smoke:codex:workstream
+```
+
+The harness creates a uniquely named disposable Git repository beneath the
+configured host root, asks the real Workstream to create one deterministic
+file, verifies Codex turns, persisted evidence, QA/Human boundaries, and final
+API state, then writes a JSON report. It deliberately preserves the fixture and
+report on both success and failure for audit and service-log diagnosis. Remove
+that named fixture manually after review. Ordinary CI never runs this command
+or receives provider credentials.
+
 To reset only Docker-managed local state, use `make fresh CONFIRM=YES`. It
 removes named Docker volumes but not `AGENTWEAVE_HOST_WORKSPACE`.
 

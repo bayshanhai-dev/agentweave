@@ -21,7 +21,8 @@
     "demo": "node scripts/demo.mjs",
     "test:e2e": "bash scripts/run-playwright-e2e.sh",
     "test:e2e:browser": "playwright test",
-    "test:smoke:codex": "node scripts/codex-smoke.mjs"
+    "test:smoke:codex": "node scripts/codex-smoke.mjs",
+    "test:smoke:codex:workstream": "node scripts/codex-workstream-smoke.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
