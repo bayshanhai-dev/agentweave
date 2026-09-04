@@ -23,6 +23,7 @@ type ExecutionEvent = {
     costUsd?: number;
   };
 };
+type RuntimeProjection = { headline: string; agents: Array<{ agentId: string; role: string; status: string; activity: string; waitingReason?: string; providerState: "healthy" | "degraded" | "unavailable"; lastSignalAt?: string; stale: boolean; latencyMs?: number; usage: { source: string; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } }> };
 
 const roles = ["pm", "pe", "backend", "frontend", "qa", "devops"];
 const activeEvents = new Set(["run.started", "run.heartbeat", "turn.started", "turn.delta", "tool.started", "tool.completed"]);
@@ -44,7 +45,7 @@ function relativeTime(value?: string): string {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-export function AgentExecutionPanel({ agents, events }: { agents: Agent[]; events: ExecutionEvent[] }) {
+export function AgentExecutionPanel({ agents, events, projection }: { agents: Agent[]; events: ExecutionEvent[]; projection?: RuntimeProjection }) {
   const [, setClockTick] = useState(0);
   useEffect(() => {
     const interval = window.setInterval(() => setClockTick((tick) => tick + 1), 5_000);
@@ -56,17 +57,18 @@ export function AgentExecutionPanel({ agents, events }: { agents: Agent[]; event
     const latest = [...agentEvents].reverse().find((event) => event.type);
     const status = latest && activeEvents.has(latest.type ?? "") ? "running" : latest && settledEvents.has(latest.type ?? "") ? (latest.type === "task.failed" || latest.type === "turn.failed" ? "failed" : "idle") : agent?.status ?? "idle";
     const output = [...agentEvents].reverse().find((event) => event.type === "turn.delta" || event.type === "tool.completed" || event.type === "task.completed");
-    return { role, agent, status, latest, output, usage: tokenUsage(agentEvents) };
+    const projected = projection?.agents.find((candidate) => candidate.agentId === agent?.id || candidate.role === role);
+    return { role, agent, status: projected?.status ?? status, latest, output, usage: projected?.usage.source !== "unknown" ? { reported: true, inputTokens: projected?.usage.inputTokens ?? 0, outputTokens: projected?.usage.outputTokens ?? 0, totalTokens: projected?.usage.totalTokens ?? 0, costUsd: projected?.usage.costUsd ?? 0 } : tokenUsage(agentEvents), projected };
   });
   return <Stack gap="md" className="agent-execution-panel">
-    <Group justify="space-between"><div><Text size="xs" c="dimmed" tt="uppercase" fw={700}>Live execution</Text><Title order={3}>Agent execution cards</Title></div><Badge variant="light">{cards.filter((card) => card.status === "running").length} active</Badge></Group>
+    <Group justify="space-between"><div><Text size="xs" c="dimmed" tt="uppercase" fw={700}>Live execution</Text><Title order={3}>Agent execution cards</Title><Text size="xs" c="dimmed">{projection?.headline ?? "Runtime projection is connecting"}</Text></div><Badge variant="light">{cards.filter((card) => card.status === "running").length} active</Badge></Group>
     <SimpleGrid cols={{ base: 1, sm: 2, xl: 6 }} spacing="sm" className="agent-execution-grid">
-      {cards.map(({ role, agent, status, latest, output, usage }) => <Card key={role} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
+      {cards.map(({ role, agent, status, latest, output, usage, projected }) => <Card key={role} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
         <Group justify="space-between" align="flex-start"><div><Text fw={800}>{role.toUpperCase()}</Text><Text size="xs" c="dimmed">{agent?.id ?? "Not registered"}</Text></div><Badge size="sm" color={status === "failed" ? "red" : status === "running" ? "yellow" : "gray"}>{status}</Badge></Group>
         <div className="agent-presence" aria-label={status === "running" ? "Agent is processing" : "Agent is listening for work"}>
           <span className="agent-presence-dot" />
-          <Text size="xs" fw={600}>{status === "running" ? "Processing a live turn" : status === "failed" ? "Needs attention" : "Listening for work"}</Text>
-          <Text size="xs" c="dimmed">· {relativeTime(latest?.occurredAt)}</Text>
+          <Text size="xs" fw={600}>{projected?.activity ?? (status === "running" ? "Processing a live turn" : status === "failed" ? "Needs attention" : "Listening for work")}</Text>
+          <Text size="xs" c={projected?.stale ? "red" : "dimmed"}>· {relativeTime(projected?.lastSignalAt ?? latest?.occurredAt)}{projected?.latencyMs !== undefined ? ` · ${Math.round(projected.latencyMs / 1000)}s` : ""}</Text>
         </div>
         <Group gap="md" mt="sm" className="agent-token-usage">
           <div><Text size="xs" c="dimmed">TOKENS</Text><Text size="sm" fw={800}>{usage.reported ? usage.totalTokens.toLocaleString() : "—"}</Text></div>

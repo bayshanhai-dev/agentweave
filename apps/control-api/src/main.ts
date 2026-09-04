@@ -18,6 +18,7 @@ import { InsightRepository } from "./repositories/insight-repository.js";
 import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./commands/workstream-lifecycle.js";
 import { validateCollaborationRound, validateInsight, type CollaborationRound, type Insight } from "@agentweave/domain";
 import { CollaborationPolicy } from "./collaboration-policy.js";
+import { projectRuntime } from "./runtime-projection.js";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -97,7 +98,7 @@ app.get("/api/workstreams/:id/snapshot", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  return { schemaVersion: 1, cursor: Math.max(0, ...workstream.events.map((event) => event.sequence ?? 0)), workstream };
+  return { schemaVersion: 1, cursor: Math.max(0, ...workstream.events.map((event) => event.sequence ?? 0)), workstream, runtime: projectRuntime(workstream) };
 });
 app.get("/api/workstreams/:id/tasks", async (request, reply) => {
   const { id } = request.params as { id: string }; const workstream = workstreams.get(id);
