@@ -17,6 +17,7 @@ import { EvidenceRepository } from "./repositories/evidence-repository.js";
 import { InsightRepository } from "./repositories/insight-repository.js";
 import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./commands/workstream-lifecycle.js";
 import { validateCollaborationRound, validateInsight, type CollaborationRound, type Insight } from "@agentweave/domain";
+import { CollaborationPolicy } from "./collaboration-policy.js";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -54,6 +55,7 @@ const messageRepository = new MessageRepository(sql);
 const runtimeRepository = new RuntimeRepository(sql);
 const evidenceRepository = new EvidenceRepository(sql);
 const insightRepository = new InsightRepository(sql);
+const collaborationPolicy = new CollaborationPolicy();
 const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
@@ -140,7 +142,24 @@ app.post("/api/workstreams/:id/collaboration-rounds", async (request, reply) => 
   if (!round || round.workstreamId !== id) return reply.code(400).send({ error: "invalid_round_workstream" });
   try { validateCollaborationRound(round, new Set((await insightRepository.listInsights(id)).map((item) => item.id))); } catch (error) { return reply.code(400).send({ error: "invalid_collaboration_round", detail: String(error).replace(/^Error: /, "") }); }
   await insightRepository.saveRound(round);
+  emit(workstreams.get(id)!, "collaboration.round.started", `Collaboration round started: ${round.topic}`);
   return reply.code(201).send(round);
+});
+app.post("/api/workstreams/:id/collaboration-rounds/:roundId/turns", async (request, reply) => {
+  const { id, roundId } = request.params as { id: string; roundId: string };
+  const workstream = workstreams.get(id); const candidate = request.body as Insight;
+  if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+  const [rounds, insights] = await Promise.all([insightRepository.listRounds(id), insightRepository.listInsights(id)]);
+  const round = rounds.find((item) => item.id === roundId);
+  if (!round) return reply.code(404).send({ error: "collaboration_round_not_found" });
+  try {
+    validateInsight(candidate, new Set(insights.map((item) => item.id)));
+    const decision = collaborationPolicy.evaluate(round, insights.filter((item) => round.insightIds.includes(item.id)), candidate);
+    if (decision.accepted) await insightRepository.saveInsight(candidate);
+    await insightRepository.saveRound(decision.round);
+    emit(workstream, decision.stopReason ? "collaboration.round.stopped" : "collaboration.turn.accepted", decision.stopReason ? `${decision.stopReason}: ${decision.reason}` : `${candidate.kind}: ${decision.reason}`, workstream.agents.find((agent) => agent.id === candidate.authorAgentId)?.role);
+    return reply.code(decision.accepted ? 201 : 200).send(decision);
+  } catch (error) { return reply.code(400).send({ error: "invalid_collaboration_turn", detail: String(error).replace(/^Error: /, "") }); }
 });
 app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) => {
   const { id } = request.params as { id: string };
