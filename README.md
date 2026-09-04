@@ -174,8 +174,29 @@ The complete topology is in [`architecture.mmd`](architecture.mmd).
 - PostgreSQL for durable state and session recovery
 - NATS JetStream for commands, events, inboxes, ACKs, retries, and DLQ flows
 - Docker Compose for the local runtime
-- Vitest and TypeScript checks for validation
+- Vitest, Playwright, and TypeScript checks for validation
 - Prometheus, Loki, Promtail, and Grafana for local observability
+
+## Capability matrix
+
+AgentWeave is a developer preview. The table below separates behavior that is
+available on `main` from work that is intentionally still in progress.
+
+| Capability                                                                           | Status        | Current boundary                                                                                     |
+| ------------------------------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------- |
+| Durable Workstreams, Tasks, Messages, evidence, and provider sessions in PostgreSQL  | Implemented   | Designed for the trusted, single-host Docker deployment                                              |
+| Per-Workstream event sequence, reconnect cursor, and persisted Dashboard projections | Implemented   | Replays committed history; full crash-atomic publication is not yet guaranteed                       |
+| Deterministic Mock-provider operator journey                                         | Implemented   | Playwright covers create, start, activity, Human approval, and persisted completion                  |
+| Mock, Codex App Server, and Claude Code provider adapters                            | Implemented   | Mock is the supported deterministic path; real providers require local credentials and configuration |
+| Durable agent inboxes and structured Human ↔ Agent / Agent ↔ Agent messages          | Partial       | Transport and contracts exist; agent-owned collaboration policy is still evolving                    |
+| Insight and collaboration-round contracts, persistence, and read projections         | Partial       | Durable data model exists; automatic proposal/critique/synthesis rounds are planned                  |
+| Worker heartbeats, task leases, retries, and dead-letter handling                    | Partial       | Basic runtime signals exist; dependency-aware scheduling and cross-Worker lease recovery are planned |
+| Transactional state change + event outbox                                            | Planned       | A crash between database commit and event publication can still require operator diagnosis           |
+| Production security and untrusted multi-tenancy                                      | Not supported | No built-in authentication/authorization boundary; deploy only on a trusted local network            |
+
+“Implemented” describes code exercised on `main`; it is not a production
+support guarantee. See the open [v0.2 roadmap](https://github.com/bayshanhai-dev/agentweave/issues/20)
+for the remaining reliability and collaboration work.
 
 ## Day 1 scope
 
@@ -261,6 +282,29 @@ messages, logs, screenshots, or Git.
 AgentWeave is **pre-1.0 / developer preview**. It is intended for trusted,
 single-host experimentation. It is not production-hardened or suitable for
 untrusted multi-tenant deployment.
+
+### Developer-preview release checklist
+
+Before tagging or publishing a developer-preview build:
+
+- [ ] Start from a clean clone with Node.js 22+, pnpm 11.2.2, and a running
+      Docker daemon.
+- [ ] Run `cp .env.example .env`, `corepack enable`, `pnpm install`, and
+      `make demo`; confirm the Dashboard reaches Human review without manual
+      database changes.
+- [ ] Run `pnpm run typecheck`, `pnpm run test`, and `pnpm run build`.
+- [ ] Run the deterministic browser journey with `pnpm test:e2e`; it must not
+      require provider credentials or paid tokens.
+- [ ] Confirm the repository's
+      [CI workflow](https://github.com/bayshanhai-dev/agentweave/actions/workflows/ci.yml)
+      passes its `quality`, `docker`, and `e2e` jobs for the release commit.
+- [ ] Review [SECURITY.md](SECURITY.md), keep PostgreSQL, NATS, observability,
+      and the Codex bridge private, and verify no credential or broad host
+      workspace mount is included.
+- [ ] Record known limitations from the capability matrix in the release
+      notes; do not claim transactional crash recovery, untrusted
+      multi-tenancy, or autonomous collaboration until their roadmap issues
+      are complete.
 
 ## Community and security
 
