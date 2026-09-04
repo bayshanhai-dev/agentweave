@@ -112,6 +112,7 @@ services:
       CODEX_HOST_WORKSPACE_ROOT: ${CODEX_HOST_WORKSPACE_ROOT:-${AGENTWEAVE_HOST_WORKSPACE:-./workspaces}}
       CODEX_BRIDGE_TOKEN: ${CODEX_BRIDGE_TOKEN:-}
       PROVIDER_REQUEST_TIMEOUT_MS: ${PROVIDER_REQUEST_TIMEOUT_MS:-120000}
+      TEST_COMMAND: ${TEST_COMMAND:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

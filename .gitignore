@@ -11,3 +11,4 @@ test-results/
 postgres-data/
 nats-data/
 workspaces/
+agentweave-smoke-report.json
