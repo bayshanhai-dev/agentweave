@@ -76,6 +76,7 @@ type Event = {
   createdAt?: string;
 };
 type Agent = { id: string; role: string; authority: string; status: string };
+type RuntimeAgent = { agentId: string; role: string; status: string; activity: string; waitingReason?: string; providerState: "healthy" | "degraded" | "unavailable"; lastSignalAt?: string; stale: boolean; latencyMs?: number; usage: { source: string; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } };
 type Workstream = {
   id: string;
   goal: string;
@@ -88,6 +89,7 @@ type Workstream = {
   events: Event[];
   messages?: Event[];
   insights?: StreamInsight[];
+  runtime?: { generatedAt: string; status: string; headline: string; activeAgents: number; degradedAgents: number; lastActivityAt?: string; agents: RuntimeAgent[] };
 };
 const labels: Record<string, string> = {
   human: "Human",
@@ -286,11 +288,15 @@ function App() {
     const syncSnapshot = async () => {
       const [response, insightResponse] = await Promise.all([fetch(`${api}/api/workstreams/${selectedId}/snapshot`).catch(() => undefined), fetch(`${api}/api/workstreams/${selectedId}/insights`).catch(() => undefined)]);
       if (!response?.ok) return;
-      const snapshot = await response.json() as { schemaVersion: number; cursor: number; workstream: Workstream };
+      const snapshot = await response.json() as { schemaVersion: number; cursor: number; workstream: Workstream; runtime?: Workstream["runtime"] };
       if (snapshot.schemaVersion !== 1 || !snapshot.workstream) return;
       lastSequence = Math.max(lastSequence, snapshot.cursor);
       const insightProjection = insightResponse?.ok ? await insightResponse.json() as { insights?: StreamInsight[] } : undefined;
-      const updated = { ...snapshot.workstream, insights: insightProjection?.insights ?? [] };
+      const updated = {
+        ...snapshot.workstream,
+        insights: insightProjection?.insights ?? [],
+        ...(snapshot.runtime ? { runtime: snapshot.runtime } : {}),
+      };
       setSelected((current) => current?.id === selectedId ? updated : current);
       setItems((current) => current.map((item) => item.id === selectedId ? updated : item));
     };
@@ -611,7 +617,7 @@ function App() {
                         workstream={selected}
                       />
                       <Paper withBorder radius="lg" p="lg" className="runtime-agent-panel">
-                        <AgentExecutionPanel agents={selected.agents} events={selected.events} />
+                        <AgentExecutionPanel agents={selected.agents} events={selected.events} projection={selected.runtime} />
                       </Paper>
                     </Stack>
                     <Stack gap="lg" className="runtime-cockpit-rail">
