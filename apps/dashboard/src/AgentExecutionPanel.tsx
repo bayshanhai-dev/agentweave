@@ -25,7 +25,6 @@ type ExecutionEvent = {
 };
 type RuntimeProjection = { headline: string; agents: Array<{ agentId: string; role: string; status: string; activity: string; waitingReason?: string; providerState: "healthy" | "degraded" | "unavailable"; lastSignalAt?: string; stale: boolean; latencyMs?: number; usage: { source: string; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } }> };
 
-const roles = ["pm", "pe", "backend", "frontend", "qa", "devops"];
 const activeEvents = new Set(["run.started", "run.heartbeat", "turn.started", "turn.delta", "tool.started", "tool.completed"]);
 const settledEvents = new Set(["task.completed", "task.failed", "turn.completed", "turn.failed", "turn.cancelled"]);
 
@@ -51,8 +50,8 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
     const interval = window.setInterval(() => setClockTick((tick) => tick + 1), 5_000);
     return () => window.clearInterval(interval);
   }, []);
-  const cards = roles.map((role) => {
-    const agent = agents.find((candidate) => candidate.role === role);
+  const cards = agents.map((agent) => {
+    const role = agent.role;
     const agentEvents = events.filter((event) => event.agentId === agent?.id || event.role === role);
     const latest = [...agentEvents].reverse().find((event) => event.type);
     const status = latest && activeEvents.has(latest.type ?? "") ? "running" : latest && settledEvents.has(latest.type ?? "") ? (latest.type === "task.failed" || latest.type === "turn.failed" ? "failed" : "idle") : agent?.status ?? "idle";
@@ -63,7 +62,7 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
   return <Stack gap="md" className="agent-execution-panel">
     <Group justify="space-between"><div><Text size="xs" c="dimmed" tt="uppercase" fw={700}>Live execution</Text><Title order={3}>Agent execution cards</Title><Text size="xs" c="dimmed">{projection?.headline ?? "Runtime projection is connecting"}</Text></div><Badge variant="light">{cards.filter((card) => card.status === "running").length} active</Badge></Group>
     <SimpleGrid cols={{ base: 1, sm: 2, xl: 6 }} spacing="sm" className="agent-execution-grid">
-      {cards.map(({ role, agent, status, latest, output, usage, projected }) => <Card key={role} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
+      {cards.map(({ role, agent, status, latest, output, usage, projected }) => <Card key={agent.id} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
         <Group justify="space-between" align="flex-start"><div><Text fw={800}>{role.toUpperCase()}</Text><Text size="xs" c="dimmed">{agent?.id ?? "Not registered"}</Text></div><Badge size="sm" color={status === "failed" ? "red" : status === "running" ? "yellow" : "gray"}>{status}</Badge></Group>
         <div className="agent-presence" aria-label={status === "running" ? "Agent is processing" : "Agent is listening for work"}>
           <span className="agent-presence-dot" />

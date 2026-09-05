@@ -14,6 +14,68 @@ export const workstreamStatuses = [
 
 export type WorkstreamStatus = (typeof workstreamStatuses)[number];
 
+/**
+ * A template describes the agents and task views for one kind of workstream.
+ * The runtime treats role ids as data; only a template's orchestration policy
+ * may assign a role a special responsibility.
+ */
+export type WorkstreamTemplateRole = {
+  id: string;
+  label: string;
+  authority: "lead" | "reviewer" | "executor";
+  description: string;
+};
+
+export type WorkstreamTaskLane = {
+  status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled";
+  label: string;
+  color: string;
+};
+
+export type WorkstreamTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  roles: readonly WorkstreamTemplateRole[];
+  taskLanes: readonly WorkstreamTaskLane[];
+  orchestration: {
+    leadRole: string;
+    planningRole: string;
+    executionRoles: readonly string[];
+    reviewRole: string;
+  };
+};
+
+const standardTaskLanes: readonly WorkstreamTaskLane[] = [
+  { status: "ready", label: "Backlog", color: "gray" },
+  { status: "assigned", label: "To Do", color: "blue" },
+  { status: "running", label: "In Progress", color: "yellow" },
+  { status: "review", label: "Review", color: "violet" },
+  { status: "done", label: "Done", color: "green" },
+];
+
+export const workstreamTemplates: readonly WorkstreamTemplate[] = [
+  {
+    id: "software-development",
+    name: "Software development",
+    description: "Plan, implement, verify, and review a software change.",
+    roles: [
+      { id: "pm", label: "PM", authority: "lead", description: "Coordinates work and completion review." },
+      { id: "pe", label: "PE", authority: "lead", description: "Refines technical plans and acceptance criteria." },
+      { id: "backend", label: "Backend", authority: "executor", description: "Implements backend changes." },
+      { id: "frontend", label: "Frontend", authority: "executor", description: "Implements user-facing changes." },
+      { id: "qa", label: "QA", authority: "reviewer", description: "Verifies implementation and evidence." },
+      { id: "devops", label: "DevOps", authority: "executor", description: "Supports delivery and runtime operations." },
+    ],
+    taskLanes: standardTaskLanes,
+    orchestration: { leadRole: "pm", planningRole: "pe", executionRoles: ["backend", "frontend"], reviewRole: "qa" },
+  },
+];
+
+export function getWorkstreamTemplate(templateId: string): WorkstreamTemplate | undefined {
+  return workstreamTemplates.find((template) => template.id === templateId);
+}
+
 const transitions: Record<WorkstreamStatus, readonly WorkstreamStatus[]> = {
   draft: ["starting", "archived"],
   starting: ["active", "pausing"],

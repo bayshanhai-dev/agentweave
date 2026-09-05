@@ -39,9 +39,11 @@ const commands = [
 const demoWorkstream = {
   goal: "Build a small, accessible markdown note editor with a clear README and passing tests.",
   workspace: "/workspaces",
+  templateId: "software-development",
   provider: "mock",
   model: "deterministic",
 };
+type WorkstreamTemplate = { id: string; name: string; description: string };
 
 export function WorkstreamControls({
   api,
@@ -56,10 +58,11 @@ export function WorkstreamControls({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState(openCreate);
+  const [templates, setTemplates] = useState<WorkstreamTemplate[]>([]);
   const form = useForm({
     initialValues: {
       goal: "",
-      flavor: "software-development",
+      templateId: "software-development",
       workspace: "/workspaces/academic-paper-buddy",
       provider: "codex",
       model: "gpt-5.6-luna",
@@ -74,6 +77,14 @@ export function WorkstreamControls({
     },
   });
   useEffect(() => setOpened(openCreate), [openCreate]);
+  useEffect(() => {
+    let disposed = false;
+    void fetch(`${api}/api/workstream-templates`)
+      .then(async (response) => response.ok ? response.json() as Promise<WorkstreamTemplate[]> : [])
+      .then((available) => { if (!disposed) setTemplates(available); })
+      .catch(() => { if (!disposed) setTemplates([]); });
+    return () => { disposed = true; };
+  }, [api]);
   useEffect(() => {
     if (!workstreamId) return;
     let disposed = false;
@@ -106,7 +117,7 @@ export function WorkstreamControls({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           goal: values.goal.trim(),
-          flavor: values.flavor,
+          templateId: values.templateId,
           workspaceRoot: values.workspace.trim(),
           tool: values.provider,
           model: values.model,
@@ -303,14 +314,10 @@ export function WorkstreamControls({
               {...form.getInputProps("workspace")}
             />
             <Select
-              label="Flavor"
-              data={[
-                {
-                  value: "software-development",
-                  label: "Software development",
-                },
-              ]}
-              {...form.getInputProps("flavor")}
+              label="Workstream template"
+              description="Templates define the roles, task lanes, and workflow policy for this workstream."
+              data={(templates.length ? templates : [{ id: "software-development", name: "Software development", description: "" }]).map((template) => ({ value: template.id, label: template.name }))}
+              {...form.getInputProps("templateId")}
             />
             <Select
               label="Provider"
