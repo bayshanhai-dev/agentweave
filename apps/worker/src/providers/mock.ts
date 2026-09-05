@@ -18,10 +18,31 @@ export class MockProviderAdapter implements ProviderAdapter {
     if (this.options.fail) { const error = providerError("Mock provider failure", "provider", "retryable", { code: "MOCK_FAILURE" }); yield { type: "turn.failed", turnId, error }; throw new Error(error.message); }
     const text = this.options.qa === "fail" ? "QA review: fail" : demoResponse(input.input);
     yield { type: "turn.delta", turnId, text }; yield { type: "turn.completed", turnId, text };
-    const structuredResult = agentTurnResultSchema.parse({ summary: text });
+    const structuredResult = agentTurnResultSchema.parse(input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
+      summary: text,
+      insights: [{ id: "editor-model", content: "Keep the markdown document model separate from preview rendering so accessibility and formatting can be reviewed independently." }],
+      tasks: [{ id: "design", title: "Define the markdown note document model and accessibility requirements", ownerRole: "pe", acceptanceCriteria: ["Document model and accessibility requirements are explicit"] }],
+      messages: [{ recipientRole: "pe", messageType: "request", taskId: "design", content: "PM decomposition: Define the markdown document model and accessibility requirements; keep document state separate from preview rendering." }],
+    } : demoStructuredResult(input.input, text, this.options.qa));
     const result: ProviderRunResult = { turnId, text, structuredResult, session: { ...session, providerTurnId: turnId, status: "completed" as const, updatedAt: new Date().toISOString() } }; this.completed.set(turnId, result); return result;
   }
   async *cancel(_session: ProviderSession, turnId: string, correlationId?: string): AsyncGenerator<ProviderRunEvent> { yield { type: "turn.cancelled", turnId, ...(correlationId ? { correlationId } : {}) }; }
+}
+
+function demoStructuredResult(prompt: string, summary: string, qa?: "pass" | "fail") {
+  if (qa === "fail") return { summary, humanBlock: { question: "QA reported a failure; review the failed checks.", context: summary } };
+  if (prompt.includes("QA review completed successfully:")) return { summary, completionProposal: { reason: summary } };
+  const next = prompt.startsWith("PM decomposition:")
+    ? { role: "backend", title: "Implement the approved document model", content: "Implementation task and acceptance criteria: Implement the markdown editor with separate document state and preview rendering." }
+    : prompt.startsWith("Implementation task and acceptance criteria:")
+      ? { role: "qa", title: "Review implementation, tests, and evidence", content: "Review implementation, tests, and evidence: Check document state, preview rendering and keyboard accessibility." }
+      : prompt.startsWith("Review implementation, tests, and evidence:")
+        ? { role: "pm", title: "Review QA outcome for Human approval", content: "QA review completed successfully: Document model, preview and accessibility checks passed." }
+        : undefined;
+  return next ? { summary,
+    tasks: [{ id: "next", title: next.title, ownerRole: next.role }],
+    messages: [{ recipientRole: next.role, taskId: "next", content: next.content, messageType: "request" }],
+  } : { summary };
 }
 
 /**

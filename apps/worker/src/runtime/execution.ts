@@ -4,10 +4,13 @@ import type { AgentSessionRecord, AgentSessionRepository } from "../providers/se
 import { ExecutionControl } from "./execution-control.js";
 import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
+import { agentTurnResultSchema, type AgentTurnResult } from "@agentweave/protocol";
+import type { ProviderRunResult } from "../providers/types.js";
+import { parseAgentTurnResult } from "../providers/agent-turn-result.js";
 
 export type AgentTask = { taskId: string; executionKey?: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string; collectEvidence?: boolean };
 type ExecutionContext = { taskId: string; agentId?: string; workstreamId?: string; provider?: string; model?: string; usage?: ProviderUsage };
-export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed"; text?: string; error?: string; evidenceIds?: string[]; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
+export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; error?: string; evidenceIds?: string[]; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
 
 export class AgentTaskExecutor {
   private readonly controls = new Map<string, ExecutionControl>();
@@ -49,12 +52,26 @@ export class AgentTaskExecutor {
     try {
       control.assertRunnable();
       const run = this.provider.run({ session, input: task.prompt, ...(task.model ? { model: task.model } : {}), ...(workspacePath ? { workspacePath } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), idempotencyKey: task.idempotencyKey ?? task.taskId });
-      let result: { turnId: string; text: string; session: ProviderSession; usage?: ProviderUsage } | undefined;
+      let result: ProviderRunResult | undefined;
       let usage: ProviderUsage | undefined;
       let step = await run.next();
       while (!step.done) { const event = step.value; if (event.type === "usage.updated") usage = event.usage; else if (event.type === "turn.completed" && event.usage) usage = event.usage; await this.emitProviderEvent(event, task, session); if (event.type === "turn.started") { activeTurnId = event.turnId; record.currentTurnId = event.turnId; } record.lastEventSequence += 1; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); control.assertRunnable(); step = await run.next(); }
       result = step.value;
-      if (result) { control.assertRunnable(); record.status = "completed"; record.currentTurnId = result.turnId; record.lastCheckpoint = await this.provider.checkpoint(result.session); await this.sessions.save(record); let evidenceIds: string[] = []; if (task.collectEvidence && workspacePath) { const collected = await this.evidence.collect({ taskId: task.taskId, workspacePath, ...(process.env.TEST_COMMAND ? { commands: [process.env.TEST_COMMAND] } : {}) }); for (const evidence of collected) evidenceIds.push(await persistWorkspaceEvidence(evidence)); } await this.sink({ type: "task.completed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: result.session.provider, ...(result.session.model ? { model: result.session.model } : {}), ...(result.usage ?? usage ? { usage: result.usage ?? usage } : {}), text: result.text, ...(evidenceIds.length ? { evidenceIds } : {}) }); }
+      if (result) {
+        control.assertRunnable();
+        const structuredResult = result.structuredResult !== undefined
+          ? agentTurnResultSchema.parse(result.structuredResult)
+          : /^\s*(?:\{|```json\b)/.test(result.text) ? parseAgentTurnResult(result.text) : undefined;
+        record.status = "completed"; record.currentTurnId = result.turnId;
+        record.lastCheckpoint = await this.provider.checkpoint(result.session);
+        await this.sessions.save(record);
+        const evidenceIds: string[] = [];
+        if (task.collectEvidence && workspacePath) {
+          const collected = await this.evidence.collect({ taskId: task.taskId, workspacePath, ...(process.env.TEST_COMMAND ? { commands: [process.env.TEST_COMMAND] } : {}) });
+          for (const evidence of collected) evidenceIds.push(await persistWorkspaceEvidence(evidence));
+        }
+        await this.sink({ type: "task.completed", turnId: result.turnId, ...(structuredResult ? { structuredResult } : {}), taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: result.session.provider, ...(result.session.model ? { model: result.session.model } : {}), ...(result.usage ?? usage ? { usage: result.usage ?? usage } : {}), text: result.text, ...(evidenceIds.length ? { evidenceIds } : {}) });
+      }
     } catch (error) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) }); throw error; }
     finally { if (heartbeat) clearInterval(heartbeat); await this.sessions.releaseLease(id, this.workerId); if (task.workstreamId && this.controls.get(task.workstreamId) === control) this.controls.delete(task.workstreamId); }
   }

@@ -198,6 +198,32 @@ available on `main` from work that is intentionally still in progress.
 support guarantee. See the open [v0.2 roadmap](https://github.com/bayshanhai-dev/agentweave/issues/20)
 for the remaining reliability and collaboration work.
 
+### Structured agent results
+
+Workers forward validated `AgentTurnResult` values to the Control API. An agent
+can propose insights, assign tasks, and address another role directly; the
+runtime resolves role names and turn-local IDs rather than trusting model-supplied
+agent or workstream identities. Insight references must resolve within the same
+workstream, and cited evidence must belong to the executing task.
+
+To dispatch a newly proposed task, include a message whose `taskId` matches that
+task's local `id` and whose `recipientRole` matches its `ownerRole`. Creating a task
+alone does not schedule it. Results may also request Human input or propose
+completion; neither bypasses Human approval. Summary-only results retain the
+legacy orchestration path, while malformed declared JSON is rejected.
+
+Tasks, insights, durable inbox messages, source-task status, and a retry receipt
+are committed in one PostgreSQL transaction. Reapplying the same turn does not
+duplicate these records, and conflicting reuse of a turn ID is rejected. NATS
+publication follows that transaction: this is **not** a crash-atomic outbox or a
+complete autonomous collaboration policy yet. The deterministic Mock demo
+exercises a structured PM → PE → Backend → QA → PM handoff and persists a proposal.
+
+CI runs PostgreSQL-backed retry/rollback tests and a Playwright journey that
+verifies the proposal remains after reload. Run the database checks against a
+disposable database with `STRUCTURED_TURN_TEST_DATABASE_URL` set and
+`pnpm --filter @agentweave/control-api exec vitest run tests/structured-turn-postgres.test.ts`.
+
 ## Day 1 scope
 
 - Create one durable workstream.
