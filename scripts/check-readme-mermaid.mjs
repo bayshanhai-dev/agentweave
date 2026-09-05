@@ -14,15 +14,22 @@ if (!blocks.length) throw new Error("README.md contains no Mermaid diagrams");
 
 const directory = await mkdtemp(join(tmpdir(), "agentweave-readme-mermaid-"));
 try {
+  const puppeteerConfig = join(directory, "puppeteer-config.json");
+  await writeFile(
+    puppeteerConfig,
+    JSON.stringify({ args: ["--no-sandbox", "--disable-setuid-sandbox"] }),
+  );
+
   for (const [index, source] of blocks.entries()) {
     const input = join(directory, `diagram-${index + 1}.mmd`);
     const output = join(directory, `diagram-${index + 1}.svg`);
     await writeFile(input, source);
     const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-    const rendered = spawnSync(command, ["exec", "mmdc", "-i", input, "-o", output, "-b", "white"], {
-      cwd: repositoryRoot,
-      stdio: "inherit",
-    });
+    const rendered = spawnSync(
+      command,
+      ["exec", "mmdc", "-p", puppeteerConfig, "-i", input, "-o", output, "-b", "white"],
+      { cwd: repositoryRoot, stdio: "inherit" },
+    );
     if (rendered.status !== 0)
       throw new Error(`README Mermaid diagram ${index + 1} failed to render`);
   }
