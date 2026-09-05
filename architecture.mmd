@@ -1,106 +1,50 @@
-flowchart LR
-    Human["👤 Human Operator"]
-    Dashboard["🖥️ React Dashboard<br/><small>Workstreams · Tasks · Hive · Activity · Controls · Summary</small>"]
+flowchart TB
+    Human["Human operator"]
+    Dashboard["React Dashboard<br/>operator console"]
 
-    subgraph Control["⚙️ Control Plane"]
-        API["Control API<br/><small>HTTP / WebSocket</small>"]
-        Orch["Orchestrator<br/><small>routing · state transitions · retries · recovery</small>"]
-        Policy["Policy & Approval<br/><small>authority · budgets · human decisions</small>"]
-        Projector["Read Model / Event Projector"]
+    subgraph Control["Control Plane — current implementation"]
+        API["Control API<br/>HTTP · WebSocket · lifecycle"]
+        Orchestrator["Lifecycle & legacy orchestrator<br/>routing · state transitions · recovery"]
+        Gate["Structured Result Gate<br/>validate agent result · resolve roles · apply approval rules"]
+        Projection["Snapshot & runtime projection<br/>durable state + live events"]
     end
-    subgraph Durable["🗄️ Durable Backbone"]
-        DB[("PostgreSQL<br/><small>workstreams · tasks · agents · sessions · inbox · evidence</small>")]
-        NATS[("NATS JetStream<br/><small>events · commands · inboxes · ACK · retry · DLQ</small>")]
+
+    subgraph Durable["Durable Backbone — current implementation"]
+        DB[("PostgreSQL — source of truth<br/>workstreams · tasks · insights · messages · evidence · sessions · receipts")]
+        NATS[("NATS JetStream — durable transport<br/>inboxes · commands · execution events")]
     end
-    subgraph Runtime["⚡ Execution Plane — one or more Worker processes"]
-        Worker["Worker Runtime Pool<br/><small>registration · heartbeat · task lease · consumer</small>"]
-        Session["Durable Session Manager<br/><small>provider session · checkpoint · lease · resume</small>"]
-        Adapter["Provider Adapter Registry<br/><small>Mock · Codex · Claude · local / future tools</small>"]
-        Workspace["Workspace Boundary & Evidence<br/><small>mounted project · git diff · tests · artifacts</small>"]
-        PMActor["PM Actor"]
-        PEActor["PE Actor"]
-        Coder1Actor["Coder-1 Actor"]
-        Coder2Actor["Coder-2 Actor"]
-        QAActor["QA Actor"]
-        Weave["Agent Message Weave<br/><small>durable role-to-role messages</small>"]
-        Worker --> PMActor
-        Worker --> PEActor
-        Worker --> Coder1Actor
-        Worker --> Coder2Actor
-        Worker --> QAActor
-        PMActor <--> Weave
-        PEActor <--> Weave
-        Coder1Actor <--> Weave
-        Coder2Actor <--> Weave
-        QAActor <--> Weave
-        PMActor --> Session
-        PEActor --> Session
-        Coder1Actor --> Session
-        Coder2Actor --> Session
-        QAActor --> Session
-        Session --> Adapter --> Workspace
-    end
-    subgraph Hive["🐝 Agent Hive / Weave — any-direction collaboration"]
-        HiveHuman["Human"]
-        PM["PM<br/><small>lead</small>"]
-        PE["PE<br/><small>reviewer / lead</small>"]
-        Coder1["Coder-1<br/><small>executor</small>"]
-        Coder2["Coder-2<br/><small>executor</small>"]
-        QA["QA<br/><small>reviewer</small>"]
-        HiveHuman <--> PM
-        HiveHuman <--> PE
-        HiveHuman <--> Coder1
-        HiveHuman <--> Coder2
-        HiveHuman <--> QA
-        PM <--> PE
-        PM <--> Coder1
-        PM <--> Coder2
-        PM <--> QA
-        PE <--> Coder1
-        PE <--> Coder2
-        PE <--> QA
-        Coder1 <--> Coder2
-        Coder1 <--> QA
-        Coder2 <--> QA
-    end
-    subgraph Scaling["📈 Human-Approved Scaling"]
-        Detect["Detect parallel work"]
-        Recommend["Scaling recommendation"]
-        Approve["Human approval"]
-        Add["Add Agent Actor / Session"]
+
+    subgraph Runtime["Execution Plane — one or more Worker processes"]
+        Worker["Worker Runtime Pool<br/>consumer · lease · heartbeat"]
+        Actor["Dynamic AgentRuntime<br/>one serialized inbox per agent identity"]
+        Session["Durable provider session<br/>checkpoint · resume · cancellation"]
+        Provider["Provider adapter<br/>Mock · Codex App Server · Claude Code"]
+        Evidence["Workspace & evidence boundary<br/>tests · diffs · artifacts"]
     end
 
     Human <--> Dashboard
     Dashboard <-->|"HTTP / WebSocket"| API
-    API --> Orch
-    API --> Policy
+    API --> Orchestrator
+    API --> Projection
     API <--> DB
-    Orch <--> DB
-    Orch <--> NATS
-    Policy <--> DB
-    NATS --> Projector --> DB
-    NATS <--> Worker
-    Weave <--> Hive
-    Orch --> Detect --> Recommend --> Dashboard
-    Dashboard --> Approve --> Add
-    Add --> DB
-    Add --> NATS
+    Orchestrator --> DB
+    Orchestrator --> NATS
+    NATS -->|"worker result events"| Gate
+    Gate -->|"atomic task · insight · inbox-message effects"| DB
+    Gate -->|"recipient inbox delivery after commit"| NATS
+    NATS --> Worker
+    Worker --> Actor --> Session --> Provider
+    Actor --> Evidence
+    Worker -->|"normalized execution events"| NATS
+    DB --> Projection
 
     classDef human fill:#7c3aed,stroke:#5b21b6,color:#fff,stroke-width:2px,rx:8,ry:8
     classDef dashboard fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px,rx:8,ry:8
     classDef control fill:#2563eb,stroke:#1d4ed8,color:#fff,stroke-width:1.5px,rx:6,ry:6
     classDef durable fill:#0891b2,stroke:#0e7490,color:#fff,stroke-width:1.5px
     classDef runtime fill:#f59e0b,stroke:#b45309,color:#111,stroke-width:1.5px,rx:6,ry:6
-    classDef lead fill:#16a34a,stroke:#15803d,color:#fff,stroke-width:1.5px,rx:6,ry:6
-    classDef reviewer fill:#22c55e,stroke:#15803d,color:#fff,stroke-width:1.5px,rx:6,ry:6
-    classDef executor fill:#facc15,stroke:#ca8a04,color:#111,stroke-width:1.5px,rx:6,ry:6
-    classDef scaling fill:#db2777,stroke:#9d174d,color:#fff,stroke-width:1.5px,rx:6,ry:6
-    class Human,HiveHuman human
+    class Human human
     class Dashboard dashboard
-    class API,Orch,Policy,Projector control
+    class API,Orchestrator,Gate,Projection control
     class DB,NATS durable
-    class Worker,PMActor,PEActor,Coder1Actor,Coder2Actor,QAActor,Session,Adapter,Workspace runtime
-    class PM,PE lead
-    class QA reviewer
-    class Coder1,Coder2 executor
-    class Detect,Recommend,Approve,Add scaling
+    class Worker,Actor,Session,Provider,Evidence runtime
