@@ -26,6 +26,36 @@ jobs:
       - run: pnpm run test
       - run: pnpm run build
 
+  structured-results:
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentweave
+          POSTGRES_PASSWORD: agentweave
+          POSTGRES_DB: structured_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agentweave -d structured_test"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentweave/control-api... build
+      - run: pnpm --filter @agentweave/control-api exec vitest run tests/structured-turn-postgres.test.ts
+        env:
+          STRUCTURED_TURN_TEST_DATABASE_URL: postgres://agentweave:agentweave@localhost:5432/structured_test
+
   docker:
     runs-on: ubuntu-latest
     needs: quality

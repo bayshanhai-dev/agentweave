@@ -5,6 +5,8 @@ export function parseAgentTurnResult(text: string): AgentTurnResult {
   try {
     return agentTurnResultSchema.parse(JSON.parse(candidate));
   } catch (error) {
+    // Declared JSON must fail validation instead of becoming a successful text turn.
+    if (/^\s*(?:\{|```json\b)/.test(text)) throw new Error(`Invalid structured AgentTurnResult: ${String(error)}`);
     const summary = text.trim();
     if (!summary) throw new Error("AgentTurnResult is empty or malformed");
     return agentTurnResultSchema.parse({

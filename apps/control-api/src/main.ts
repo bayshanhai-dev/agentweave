@@ -19,6 +19,8 @@ import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./com
 import { validateCollaborationRound, validateInsight, type CollaborationRound, type Insight } from "@agentweave/domain";
 import { CollaborationPolicy } from "./collaboration-policy.js";
 import { projectRuntime } from "./runtime-projection.js";
+import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
+import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 
 type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -57,6 +59,7 @@ const runtimeRepository = new RuntimeRepository(sql);
 const evidenceRepository = new EvidenceRepository(sql);
 const insightRepository = new InsightRepository(sql);
 const collaborationPolicy = new CollaborationPolicy();
+const structuredTurnRepository = new StructuredTurnRepository(sql);
 const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
@@ -495,7 +498,7 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
   await createMessage(workstream, "human", [pm.id], action.content, action.messageType, bootstrap ? { taskId: bootstrap.id } : {});
 }
 
-async function handleWorkerResult(envelope: { type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
+async function handleWorkerResult(envelope: { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
   if (["turn.started", "turn.delta", "turn.completed", "tool.started", "tool.completed", "turn.cancelled", "turn.failed", "usage.updated"].includes(envelope.type)) {
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
     const payload = envelope.payload as { agentId?: string; taskId?: string; turnId?: string; text?: string; toolName?: string; output?: string; error?: { message?: string }; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage };
@@ -540,7 +543,7 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     orchestrators.set(workstream.id, orchestrator);
   }
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
-  const payload = raw.result ?? raw;
+  const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string };
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
   if (envelope.type === "task.failed") {
@@ -553,6 +556,59 @@ async function handleWorkerResult(envelope: { type: string; workstreamId: string
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() });
     await persistWorkstreamStatus(workstream);
     return;
+  }
+  if (payload.structuredResult !== undefined) {
+    try {
+      const result = parseStructuredTurn(payload.structuredResult);
+      if (hasStructuredActions(result)) {
+        const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId);
+        const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
+        if (evidenceIds.some((id) => !/^\d+$/.test(id))) throw new InvalidStructuredTurn("Invalid evidence ID");
+        const persistedCount = sourceTask ? await evidenceRepository.countMatching(sourceTask.id, evidenceIds) : 0;
+        if (persistedCount !== evidenceIds.length || (sourceTask && workstream.workspaceRoot && !evidenceIds.length)) throw new InvalidStructuredTurn("Structured result evidence persistence incomplete");
+        const planned = planStructuredTurn(result, { workstreamId: workstream.id, agentId: sender.id,
+          turnId: payload.turnId ?? envelope.id ?? "", correlationId: envelope.correlationId ?? envelope.id ?? "",
+          ...(sourceTask ? { taskId: sourceTask.id } : {}), agents: workstream.agents, tasks: workstream.tasks,
+          insights: await insightRepository.listInsights(workstream.id), evidenceIds, now: new Date().toISOString() });
+        const plan = await structuredTurnRepository.apply(planned);
+        for (const task of plan.tasks) if (!workstream.tasks.some((item) => item.id === task.id)) workstream.tasks.push(task as Task);
+        if (sourceTask) { sourceTask.status = plan.blocked ? "blocked" : "done"; sourceTask.evidence = plan.sourceEvidenceIds; sourceTask.updatedAt = plan.createdAt; }
+        sender.status = "idle";
+        if (plan.waitingForHuman) workstream.status = "waiting_for_human";
+        for (const message of plan.messages) {
+          if (!workstream.messages.some((item) => item.id === message.id)) workstream.messages.push(message as Message);
+          // A retry republishes stable message IDs; receiver execution keys suppress duplicates.
+          for (const recipient of message.recipientIds) await eventBus.publish(subjects.inbox.replace("*", recipient), {
+            id: `${message.id}:${recipient}`, type: "message.created", workstreamId: workstream.id,
+            correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: message,
+          });
+          const notification = JSON.stringify({ workstreamId: workstream.id, type: "message.created", message, occurredAt: message.createdAt });
+          for (const socket of sockets) socket.send(notification);
+        }
+        const event: WorkflowEvent = { id: `${plan.id}:applied`, type: sourceTask ? (plan.blocked ? "task.blocked" : "task.completed") : "agent.turn.applied", message: plan.summary,
+          ...(sourceTask ? { taskId: sourceTask.id } : {}),
+          agentId: sender.id, role: sender.role, occurredAt: plan.createdAt, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+          ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) };
+        event.sequence = await workflowEventRepository.append(workstream.id, event);
+        if (!workstream.events.some((item) => item.id === event.id)) workstream.events.push(event);
+        for (const socket of sockets) socket.send(JSON.stringify({ workstreamId: workstream.id, ...event }));
+        return;
+      }
+    } catch (error) {
+      if (!(error instanceof InvalidStructuredTurn)) throw error;
+      app.log.warn({ event: "agent.turn.rejected", workstreamId: workstream.id, agentId: sender.id, error: error.message }, "Structured result rejected");
+      if (["active", "starting"].includes(workstream.status)) {
+        const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId && task.ownerAgentId === sender.id);
+        if (sourceTask && !["done", "failed", "cancelled"].includes(sourceTask.status)) {
+          sourceTask.status = "failed"; sourceTask.updatedAt = new Date().toISOString(); await persistTask(sourceTask);
+        }
+        await setAgentStatus(sender, "failed");
+        workstream.status = "waiting_for_human";
+        await persistWorkstreamStatus(workstream);
+      }
+      emit(workstream, "agent.turn.rejected", error.message, sender.role);
+      return;
+    }
   }
   const resultText = payload.text?.trim() ?? "";
   if (sender.role === "pm" && resultText.startsWith("[HUMAN_BLOCKED]")) {

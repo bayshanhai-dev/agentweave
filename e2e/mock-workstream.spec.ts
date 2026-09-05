@@ -100,6 +100,24 @@ test("completes and persists the deterministic Mock workstream", async ({
     ),
   ).toBe(true);
   expect(awaitingApproval.workstream.messages.length).toBeGreaterThanOrEqual(5);
+  const insightResponse = await request.get(
+    `${controlApi}/api/workstreams/${created.id}/insights`,
+  );
+  expect(insightResponse.ok()).toBeTruthy();
+  const { insights } = await insightResponse.json();
+  expect(insights).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "proposal",
+        lifecycle: "proposed",
+        workstreamId: created.id,
+        content: expect.stringContaining("document model separate"),
+      }),
+    ]),
+  );
+  const proposalId = insights.find((item: { content: string }) =>
+    item.content.includes("document model separate"),
+  ).id;
   expect(
     awaitingApproval.workstream.tasks.filter((task) => task.status === "done")
       .length,
@@ -121,6 +139,14 @@ test("completes and persists the deterministic Mock workstream", async ({
   ).toBeVisible();
 
   const persisted = await snapshot(request, created.id);
+  const reloadedInsights = await (
+    await request.get(`${controlApi}/api/workstreams/${created.id}/insights`)
+  ).json();
+  expect(
+    reloadedInsights.insights.filter(
+      (item: { id: string }) => item.id === proposalId,
+    ),
+  ).toHaveLength(1);
   expect(persisted.workstream.status).toBe("completed");
   expect(persisted.workstream.goal).toBe(demoGoal);
   expect(
