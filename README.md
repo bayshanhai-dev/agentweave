@@ -140,7 +140,7 @@ flowchart TB
     subgraph PlannedHive[Planned: multiple dynamic agent identities]
         PM[PM]
         PE[PE]
-        Coder[Coder(s)]
+        Coder["Coder(s)"]
         QA[QA]
         PM <-. structured messages / shared insights .-> PE
         PM <-.-> Coder
