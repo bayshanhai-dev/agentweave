@@ -88,6 +88,7 @@ type Workstream = {
   tasks: Task[];
   events: Event[];
   messages?: Event[];
+  template?: { id: string; name: string; taskLanes: Array<{ status: string; label: string; color: string }> };
   insights?: StreamInsight[];
   runtime?: { generatedAt: string; status: string; headline: string; activeAgents: number; degradedAgents: number; lastActivityAt?: string; agents: RuntimeAgent[] };
 };
@@ -225,13 +226,14 @@ function StatusBadge({ status }: { status: string }) {
 
 function MacroPlanBoard({ workstream }: { workstream: Workstream }) {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const columns = [
+  const defaultColumns = [
     { status: "ready", label: "Backlog", color: "gray" },
     { status: "assigned", label: "To Do", color: "blue" },
     { status: "running", label: "In Progress", color: "yellow" },
     { status: "review", label: "Review", color: "violet" },
     { status: "done", label: "Done", color: "green" },
-  ] as const;
+  ];
+  const columns = workstream.template?.taskLanes.length ? workstream.template.taskLanes : defaultColumns;
   const priority = (task: Task) => (task as Task & { priority?: string }).priority ?? "normal";
   const taskOwner = (task: Task) => {
     if (!task.ownerAgentId) return "Unassigned";
@@ -240,7 +242,7 @@ function MacroPlanBoard({ workstream }: { workstream: Workstream }) {
   };
   return <Stack gap="md" className="macro-plan-board">
     <Group justify="space-between" align="flex-end"><div><Group gap="xs"><IconLayoutKanban size={18} /><Title order={2}>Macro Plan</Title></Group><Text size="sm" c="dimmed">A live view of the workstream’s durable task queue.</Text></div><Badge variant="dot" color="teal">{workstream.tasks.length} tasks</Badge></Group>
-        <SimpleGrid cols={{ base: 1, sm: 2, xl: 5 }} spacing="sm">
+        <SimpleGrid cols={{ base: 1, sm: 2, xl: Math.min(columns.length, 5) }} spacing="sm">
       {columns.map((column) => { const tasks = workstream.tasks.filter((task) => task.status === column.status); return <Stack key={column.status} gap="xs" className="macro-column">
         <Group justify="space-between" className="macro-column-header"><Group gap="xs"><Badge color={column.color} variant="light" size="sm">{tasks.length}</Badge><Text fw={700} size="sm">{column.label}</Text></Group><Text size="xs" c="dimmed" tt="uppercase">{column.status}</Text></Group>
         {tasks.length ? tasks.map((task) => <Card key={task.id} withBorder padding="sm" className="macro-task-card" role="button" tabIndex={0} aria-label={`Open task: ${task.title}`} onClick={() => setSelectedTask(task)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedTask(task); } }}><Stack gap="xs"><Text className="macro-task-title">{task.title}</Text><Group gap="xs" wrap="wrap" className="macro-task-meta"><Badge size="xs" variant="outline" color={priority(task) === "high" ? "red" : "gray"}>{priority(task)}</Badge><Badge size="xs" variant="light" color={task.ownerAgentId ? "blue" : "gray"}>Assigned · {taskOwner(task)}</Badge><Text size="xs" c="dimmed">{task.evidence.length} evidence</Text></Group><Text size="xs" c="dimmed" lineClamp={2}>{task.acceptanceCriteria[0] ?? "No acceptance criteria"}</Text></Stack></Card>) : <Card withBorder padding="md" className="macro-empty"><Text size="xs" c="dimmed">No tasks in this lane</Text></Card>}

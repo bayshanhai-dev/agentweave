@@ -1,6 +1,6 @@
 export type OrchestratorStage = "pm" | "pe" | "coder" | "qa" | "waiting_for_human" | "completed";
 export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected" | "human.clarification.replied"; content: string; evidenceIds?: string[] };
-export type TaskSpec = { title: string; ownerRole?: "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops"; acceptanceCriteria?: string[]; dependencies?: string[]; parentTaskId?: string; relatedTaskIds?: string[] };
+export type TaskSpec = { title: string; ownerRole?: string; acceptanceCriteria?: string[]; dependencies?: string[]; parentTaskId?: string; relatedTaskIds?: string[] };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: "pm" | "pe" | "coder" | "qa" | "human"; messageType: "request" | "decision"; content: string; attempt: number; taskSpecs?: TaskSpec[] };
 export type OrchestrationDecision = {
   action: "create_task" | "message_agent" | "wait" | "ask_human" | "complete";

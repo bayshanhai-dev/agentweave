@@ -16,26 +16,27 @@ import { RuntimeRepository } from "./repositories/runtime-repository.js";
 import { EvidenceRepository } from "./repositories/evidence-repository.js";
 import { InsightRepository } from "./repositories/insight-repository.js";
 import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./commands/workstream-lifecycle.js";
-import { validateCollaborationRound, validateInsight, type CollaborationRound, type Insight } from "@agentweave/domain";
+import { getWorkstreamTemplate, validateCollaborationRound, validateInsight, workstreamTemplates, type CollaborationRound, type Insight, type WorkstreamTemplate } from "@agentweave/domain";
 import { CollaborationPolicy } from "./collaboration-policy.js";
 import { projectRuntime } from "./runtime-projection.js";
 import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 
-type Role = "pm" | "pe" | "coder" | "backend" | "frontend" | "qa" | "devops";
+type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
 type WorkflowEvent = { id: string; sequence?: number; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
-const flavorTemplates = {
-  "software-development": [
-    { role: "pm", authority: "lead" }, { role: "pe", authority: "lead" },
-    { role: "backend", authority: "executor" }, { role: "frontend", authority: "executor" },
-    { role: "qa", authority: "reviewer" }, { role: "devops", authority: "executor" },
-  ],
-} as const;
+type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes">;
+const templateSummary = (template: WorkstreamTemplate): WorkstreamTemplateSummary => ({
+  id: template.id,
+  name: template.name,
+  description: template.description,
+  roles: template.roles,
+  taskLanes: template.taskLanes,
+});
 function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } } return []; }
 function normalizeLoadedStatus(status: string, events: Array<{ type: unknown }>): string {
   if (status !== "completing") return status;
@@ -65,6 +66,10 @@ const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://lo
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
+const workstreamResponse = (workstream: Workstream) => {
+  const template = getWorkstreamTemplate(workstream.flavor);
+  return { ...workstream, ...(template ? { template: templateSummary(template) } : {}) };
+};
 
 app.addHook("onRequest", async (request, reply) => {
   metrics.requests += 1;
@@ -91,17 +96,18 @@ app.post("/api/runtime/workers/:workerId/heartbeat", async (request, reply) => {
   const found = await runtimeRepository.heartbeatWorker(workerId, (request.body as { taskId?: string } | undefined)?.taskId);
   return found ? { workerId, status: "online" } : reply.code(404).send({ error: "worker_not_registered" });
 });
-app.get("/api/workstreams", async () => [...workstreams.values()]);
+app.get("/api/workstream-templates", async () => workstreamTemplates.map(templateSummary));
+app.get("/api/workstreams", async () => [...workstreams.values()].map(workstreamResponse));
 app.get("/api/workstreams/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
-  return workstream ?? reply.code(404).send({ error: "workstream_not_found" });
+  return workstream ? workstreamResponse(workstream) : reply.code(404).send({ error: "workstream_not_found" });
 });
 app.get("/api/workstreams/:id/snapshot", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  return { schemaVersion: 1, cursor: Math.max(0, ...workstream.events.map((event) => event.sequence ?? 0)), workstream, runtime: projectRuntime(workstream) };
+  return { schemaVersion: 1, cursor: Math.max(0, ...workstream.events.map((event) => event.sequence ?? 0)), workstream: workstreamResponse(workstream), runtime: projectRuntime(workstream) };
 });
 app.get("/api/workstreams/:id/tasks", async (request, reply) => {
   const { id } = request.params as { id: string }; const workstream = workstreams.get(id);
@@ -286,23 +292,24 @@ app.post("/api/workstreams/:id/start", async (request, reply) => {
   await startOrchestration(workstream); return workstream;
 });
 app.post("/api/workstreams", async (request, reply) => {
-  const body = request.body as { goal?: string; flavor?: keyof typeof flavorTemplates; tool?: string; model?: string; workspaceRoot?: string } | undefined;
+  const body = request.body as { goal?: string; templateId?: string; flavor?: string; tool?: string; model?: string; workspaceRoot?: string } | undefined;
   if (!body?.goal?.trim()) return reply.code(400).send({ error: "goal_required" });
-  const flavor = body.flavor ?? "software-development";
-  if (!flavorTemplates[flavor]) return reply.code(400).send({ error: "unsupported_flavor", availableFlavors: Object.keys(flavorTemplates) });
+  const flavor = body.templateId ?? body.flavor ?? "software-development";
+  const template = getWorkstreamTemplate(flavor);
+  if (!template) return reply.code(400).send({ error: "unsupported_template", availableTemplates: workstreamTemplates.map((candidate) => candidate.id) });
   const id = randomUUID();
   const workstream: Workstream = {
     id, goal: body.goal.trim(), flavor, status: "draft",
     provider: { tool: body.tool ?? "mock", model: body.model ?? "deterministic" },
     workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [], messages: [],
-    agents: flavorTemplates[flavor].map((template, index) => ({ id: `${id}:${template.role}-${index + 1}`, role: template.role, authority: template.authority, status: "idle", ...(template.role === "pm" ? { orchestrator: true } : {}) })),
+    agents: template.roles.map((role, index) => ({ id: `${id}:${role.id}-${index + 1}`, role: role.id, authority: role.authority, status: "idle", ...(role.id === template.orchestration.leadRole ? { orchestrator: true } : {}) })),
   };
   workstreams.set(id, workstream);
   await persistWorkstream(workstream);
   metrics.workstreamsCreated += 1;
-  app.log.info({ workstreamId: id, flavor: workstream.flavor, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
-  emit(workstream, "workstream.created", "Software development hive created");
-  return reply.code(201).send(workstream);
+  app.log.info({ workstreamId: id, templateId: template.id, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
+  emit(workstream, "workstream.created", `${template.name} workstream created`);
+  return reply.code(201).send(workstreamResponse(workstream));
 });
 app.get("/events", { websocket: true }, async (socket, request) => {
   sockets.add(socket);
