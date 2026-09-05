@@ -1,0 +1,52 @@
+flowchart TB
+    Human["Human operator"]
+    Dashboard["React Dashboard"]
+
+    subgraph CurrentBoundary["Current durable boundary — implemented"]
+        Gate["Control API<br/>validation · policy · durable commit"]
+        DB[("PostgreSQL<br/>source of truth")]
+        NATS[("NATS JetStream<br/>durable inbox transport")]
+        Gate <--> DB
+        Gate --> NATS
+    end
+
+    subgraph PlannedRuntime["Planned: agent-owned collaboration runtime"]
+        Inbox["Read durable Inbox"]
+        Context["Build Context Pack<br/>task · evidence · session summary · memory"]
+        Loop["Plan → Act → Observe"]
+        Tools["Provider & tools"]
+        Result["Structured result<br/>insight · task · message · decision"]
+        Memory["Memory, summaries & compaction"]
+        Inbox -.-> Context -.-> Loop -.-> Tools -.-> Result
+        Loop -.-> Memory
+        Memory -.-> Context
+    end
+
+    subgraph PlannedHive["Planned: multiple dynamic agent identities"]
+        PM["PM"]
+        PE["PE"]
+        Coder["Coder(s)"]
+        QA["QA"]
+        PM <-. "structured messages / shared insights" .-> PE
+        PM <-.-> Coder
+        PE <-.-> QA
+        Coder <-.-> QA
+    end
+
+    Human <--> Dashboard
+    Dashboard <--> Gate
+    NATS -. "planned autonomous inbox consumption" .-> Inbox
+    Result -. "validated before effects" .-> Gate
+    Loop -. "one loop per identity" .-> PM
+    Loop -.-> PE
+    Loop -.-> Coder
+    Loop -.-> QA
+
+    classDef current fill:#0891b2,stroke:#0e7490,color:#fff,stroke-width:1.5px,rx:6,ry:6
+    classDef planned fill:#fef3c7,stroke:#d97706,color:#111,stroke-width:1.5px,stroke-dasharray: 5 5,rx:6,ry:6
+    classDef human fill:#7c3aed,stroke:#5b21b6,color:#fff,stroke-width:2px,rx:8,ry:8
+    classDef dashboard fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px,rx:8,ry:8
+    class Human human
+    class Dashboard dashboard
+    class Gate,DB,NATS current
+    class Inbox,Context,Loop,Tools,Result,Memory,PM,PE,Coder,QA planned

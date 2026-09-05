@@ -56,62 +56,105 @@ waiting.
 
 ## Architecture
 
-AgentWeave is split into three planes:
+The two diagrams below deliberately separate the **current, code-backed
+runtime** from the **agent-owned collaboration vision**. Solid components and
+arrows in the first diagram describe behavior implemented on `main`. Dashed
+components and arrows in the second are planned work, not product claims.
+
+### Current runtime architecture
 
 ```mermaid
-flowchart LR
-    Human[Human Operator] <--> Dashboard[React Dashboard]
+flowchart TB
+    Human[Human operator] <--> Dashboard[React Dashboard<br/>operator console]
 
-    subgraph Control[Control Plane]
-        API[Control API<br/>HTTP / WebSocket]
-        Orch[Orchestrator<br/>routing · state · recovery]
-        Policy[Policy & Approval]
-        Projector[Read Model / Event Projector]
+    subgraph Control[Control Plane — current implementation]
+        API[Control API<br/>HTTP · WebSocket · lifecycle]
+        Orch[Lifecycle & legacy orchestrator<br/>routing · state transitions · recovery]
+        Gate[Structured Result Gate<br/>validate agent result · resolve roles · apply approval rules]
+        Projection[Snapshot & runtime projection<br/>durable state + live events]
     end
 
-    subgraph Durable[Durable Backbone]
-        DB[(PostgreSQL<br/>source of truth)]
-        NATS[(NATS JetStream<br/>commands · events · inboxes)]
+    subgraph Durable[Durable Backbone — current implementation]
+        DB[(PostgreSQL — source of truth<br/>tasks · insights · messages · evidence · sessions · receipts)]
+        NATS[(NATS JetStream — durable transport<br/>inboxes · commands · execution events)]
     end
 
-    subgraph Runtime[Execution Plane]
+    subgraph Runtime[Execution Plane — one or more Worker processes]
         Worker[Worker Runtime Pool]
-        Session[Durable Session Manager]
-        Adapter[Provider Adapters<br/>Mock · Codex · Claude]
-        Workspace[Workspace Boundary & Evidence]
-        PMActor[PM Actor]
-        PEActor[PE Actor]
-        Coder1Actor[Coder-1 Actor]
-        Coder2Actor[Coder-2 Actor]
-        QAActor[QA Actor]
-        Weave[Agent Message Weave<br/>durable role-to-role messages]
-        Worker --> PMActor
-        Worker --> PEActor
-        Worker --> Coder1Actor
-        Worker --> Coder2Actor
-        Worker --> QAActor
-        PMActor <--> Weave
-        PEActor <--> Weave
-        Coder1Actor <--> Weave
-        Coder2Actor <--> Weave
-        QAActor <--> Weave
-        PMActor --> Session
-        PEActor --> Session
-        Coder1Actor --> Session
-        Coder2Actor --> Session
-        QAActor --> Session
-        Session --> Adapter --> Workspace
+        Actor[Dynamic AgentRuntime<br/>one serialized inbox per agent identity]
+        Session[Durable provider session<br/>checkpoint · resume · cancellation]
+        Adapter[Provider adapter<br/>Mock · Codex App Server · Claude Code]
+        Workspace[Workspace & evidence boundary<br/>tests · diffs · artifacts]
+        Worker --> Actor --> Session --> Adapter
+        Actor --> Workspace
     end
 
     Dashboard <--> API
-    API <--> Orch
-    API <--> Policy
+    API --> Orch
+    API --> Projection
     API <--> DB
-    Orch <--> DB
-    Orch <--> NATS
-    NATS --> Projector --> DB
-    NATS <--> Worker
-    Weave <--> NATS
+    Orch --> DB
+    Orch --> NATS
+    NATS -->|worker result events| Gate
+    Gate -->|atomic task · insight · inbox-message effects| DB
+    Gate -->|recipient inbox delivery after commit| NATS
+    NATS --> Worker
+    Worker -->|normalized execution events| NATS
+    DB --> Projection
+```
+
+`PostgreSQL` is the source of truth. The Control API writes durable state and
+then publishes inboxes/events through JetStream; a crash-atomic transactional
+outbox is not implemented yet.
+
+### Agent-owned collaboration vision — planned
+
+Everything dashed in this diagram is planned. The implemented Control API,
+PostgreSQL, and JetStream boundary remains the validation and durability point
+even as agents become more self-directed.
+
+```mermaid
+flowchart TB
+    Human[Human operator] <--> Dashboard[React Dashboard]
+
+    subgraph CurrentBoundary[Current durable boundary — implemented]
+        Gate[Control API<br/>validation · policy · durable commit]
+        DB[(PostgreSQL<br/>source of truth)]
+        NATS[(NATS JetStream<br/>durable inbox transport)]
+        Gate <--> DB
+        Gate --> NATS
+    end
+
+    subgraph PlannedRuntime[Planned: agent-owned collaboration runtime]
+        Inbox[Read durable Inbox]
+        Context[Build Context Pack<br/>task · evidence · session summary · memory]
+        Loop[Plan → Act → Observe]
+        Tools[Provider & tools]
+        Result[Structured result<br/>insight · task · message · decision]
+        Memory[Memory, summaries & compaction]
+        Inbox -.-> Context -.-> Loop -.-> Tools -.-> Result
+        Loop -.-> Memory
+        Memory -.-> Context
+    end
+
+    subgraph PlannedHive[Planned: multiple dynamic agent identities]
+        PM[PM]
+        PE[PE]
+        Coder[Coder(s)]
+        QA[QA]
+        PM <-. structured messages / shared insights .-> PE
+        PM <-.-> Coder
+        PE <-.-> QA
+        Coder <-.-> QA
+    end
+
+    Dashboard <--> Gate
+    NATS -. planned autonomous inbox consumption .-> Inbox
+    Result -. validated before effects .-> Gate
+    Loop -. one loop per identity .-> PM
+    Loop -.-> PE
+    Loop -.-> Coder
+    Loop -.-> QA
 ```
 
 ### Control Plane
@@ -149,7 +192,8 @@ failure classification, checkpoints, and usage. Workspace access is explicit
 and bounded; tests, diffs, tool output, and artifacts are persisted as evidence
 instead of remaining hidden in a transcript.
 
-The complete topology is in [`architecture.mmd`](architecture.mmd).
+The renderable sources are [`architecture.mmd`](architecture.mmd) (current) and
+[`architecture-vision.mmd`](architecture-vision.mmd) (planned vision).
 
 ## Runtime concepts
 
