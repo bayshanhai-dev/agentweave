@@ -22,6 +22,6 @@ describe("workstream templates", () => {
 
   it("does not return a template for an unknown id", () => {
     expect(getWorkstreamTemplate("research")).toBeUndefined();
-    expect(workstreamTemplates).toHaveLength(1);
+    expect(workstreamTemplates.map((template) => template.id)).toEqual(["software-development", "research-synthesis"]);
   });
 });

@@ -1,47 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { extractTaskSpecs, WorkstreamOrchestrator } from "../src/orchestrator.js";
-
-type TraceStep = {
-  operation?: "start";
-  event?: Parameters<WorkstreamOrchestrator["apply"]>[0]["type"];
-  content?: string;
-  expectedRecipient: string;
-  expectedStage: string;
-};
-
-const mockTrace = JSON.parse(
-  readFileSync(new URL("./fixtures/mock-workflow-trace.json", import.meta.url), "utf8"),
-) as { goal: string; steps: TraceStep[] };
+import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
 
 describe("WorkstreamOrchestrator", () => {
-  it("routes the workflow through PM, PE, Coder, QA, then returns to PM for completion triage", () => {
+  it("routes the software-development policy through its declared responsibilities", () => {
     const flow = new WorkstreamOrchestrator("ws-1", "process the paper");
     expect(flow.start().recipientRole).toBe("pm");
     expect(flow.apply({ type: "goal.received", content: "process the paper" })?.recipientRole).toBe("pe");
-    expect(flow.apply({ type: "task.decomposed", content: "task" })?.recipientRole).toBe("coder");
+    expect(flow.apply({ type: "task.decomposed", content: "task" })?.recipientRole).toBe("backend");
     expect(flow.apply({ type: "design.completed", content: "design" })?.recipientRole).toBe("qa");
     expect(flow.apply({ type: "qa.passed", content: "pass" })?.recipientRole).toBe("pm");
-    expect(flow.stage).toBe("pm");
+    expect(flow.stage).toBe("lead");
   });
 
-  it("preserves the machine-readable Mock demo trace", () => {
-    const flow = new WorkstreamOrchestrator("mock-trace", mockTrace.goal);
-    for (const step of mockTrace.steps) {
-      const action = step.operation === "start"
-        ? flow.start()
-        : flow.apply({ type: step.event!, content: step.content ?? "" });
-      expect(action?.recipientRole).toBe(step.expectedRecipient);
-      expect(flow.stage).toBe(step.expectedStage);
-    }
+  it("routes a non-SDLC template without naming PM, QA, or Coder", () => {
+    const policy: OrchestrationPolicy = { templateId: "research-synthesis", leadRole: "research-lead", planningRole: "researcher", executionRoles: ["synthesizer"], reviewRole: "research-reviewer" };
+    const flow = new WorkstreamOrchestrator("research-1", "compare sources", policy);
+    expect(flow.start().recipientRole).toBe("research-lead");
+    expect(flow.apply({ type: "goal.received", content: "question" })?.recipientRole).toBe("researcher");
+    expect(flow.apply({ type: "task.decomposed", content: "evidence" })?.recipientRole).toBe("synthesizer");
+    expect(flow.apply({ type: "design.completed", content: "draft" })?.recipientRole).toBe("research-reviewer");
+    expect(flow.apply({ type: "qa.passed", content: "reviewed" })?.recipientRole).toBe("research-lead");
   });
 
-  it("routes a QA failure back to Coder and increments the attempt", () => {
+  it("routes a review failure back to the template execution role and increments the attempt", () => {
     const flow = new WorkstreamOrchestrator("ws-1", "goal");
     flow.start(); flow.apply({ type: "goal.received", content: "goal" }); flow.apply({ type: "task.decomposed", content: "task" }); flow.apply({ type: "design.completed", content: "design" });
-    expect(flow.apply({ type: "qa.failed", content: "missing evidence" })?.recipientRole).toBe("coder");
+    expect(flow.apply({ type: "qa.failed", content: "missing evidence" })?.recipientRole).toBe("backend");
     expect(flow.attempt).toBe(1);
-    expect(flow.stage).toBe("coder");
+    expect(flow.stage).toBe("execution");
   });
 
   it("validates intelligent PM orchestration decisions without hardcoding the next role", () => {

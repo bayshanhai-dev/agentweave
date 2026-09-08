@@ -111,12 +111,12 @@ test("completes and persists the deterministic Mock workstream", async ({
         kind: "proposal",
         lifecycle: "proposed",
         workstreamId: created.id,
-        content: expect.stringContaining("document model separate"),
+        content: expect.stringContaining("insight for software-development"),
       }),
     ]),
   );
   const proposalId = insights.find((item: { content: string }) =>
-    item.content.includes("document model separate"),
+    item.content.includes("insight for software-development"),
   ).id;
   expect(
     awaitingApproval.workstream.tasks.filter((task) => task.status === "done")
