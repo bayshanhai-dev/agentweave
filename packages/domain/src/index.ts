@@ -70,6 +70,25 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
     taskLanes: standardTaskLanes,
     orchestration: { leadRole: "pm", planningRole: "pe", executionRoles: ["backend", "frontend"], reviewRole: "qa" },
   },
+  {
+    id: "research-synthesis",
+    name: "Research synthesis",
+    description: "Frame a question, gather evidence, synthesize findings, and review the conclusion.",
+    roles: [
+      { id: "research-lead", label: "Research lead", authority: "lead", description: "Frames the question and coordinates the investigation." },
+      { id: "researcher", label: "Researcher", authority: "executor", description: "Collects and evaluates source material." },
+      { id: "synthesizer", label: "Synthesizer", authority: "executor", description: "Connects evidence into a coherent answer." },
+      { id: "research-reviewer", label: "Research reviewer", authority: "reviewer", description: "Checks claims, evidence, and uncertainty." },
+    ],
+    taskLanes: [
+      { status: "ready", label: "Question", color: "gray" },
+      { status: "assigned", label: "Evidence", color: "blue" },
+      { status: "running", label: "Synthesis", color: "yellow" },
+      { status: "review", label: "Review", color: "violet" },
+      { status: "done", label: "Published", color: "green" },
+    ],
+    orchestration: { leadRole: "research-lead", planningRole: "researcher", executionRoles: ["synthesizer"], reviewRole: "research-reviewer" },
+  },
 ];
 
 export function getWorkstreamTemplate(templateId: string): WorkstreamTemplate | undefined {

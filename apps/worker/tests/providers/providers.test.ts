@@ -25,6 +25,17 @@ describe("provider adapters", () => {
     expect(run.result.session.provider).toBe("mock");
   });
 
+  it("drives a deterministic scenario from template role ids instead of SDLC names", async () => {
+    const provider = new MockProviderAdapter();
+    const input = "[agentweave template=research-synthesis phase=lead recipient=research-lead lead=research-lead planning=researcher execution=synthesizer review=research-reviewer]\nFrame the question.";
+    const run = await collect(provider.run({ input, idempotencyKey: "research-lead" }));
+    expect(run.result.structuredResult).toMatchObject({
+      tasks: [{ ownerRole: "researcher" }],
+      messages: [{ recipientRole: "researcher", taskId: "lead-next" }],
+    });
+    expect(run.result.structuredResult?.messages[0]?.content).toContain("template=research-synthesis phase=planning recipient=researcher");
+  });
+
   it("does not duplicate an idempotent completed turn", async () => {
     const provider = new MockProviderAdapter(); const session = await provider.createSession();
     const first = await collect(provider.run({ session, input: "same", idempotencyKey: "key-1" }));

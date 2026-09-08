@@ -16,9 +16,10 @@ export class MockProviderAdapter implements ProviderAdapter {
     yield { type: "turn.started", turnId, ...(input.correlationId ? { correlationId: input.correlationId } : {}) };
     if (this.options.delayMs) await new Promise((resolve) => setTimeout(resolve, this.options.delayMs));
     if (this.options.fail) { const error = providerError("Mock provider failure", "provider", "retryable", { code: "MOCK_FAILURE" }); yield { type: "turn.failed", turnId, error }; throw new Error(error.message); }
-    const text = this.options.qa === "fail" ? "QA review: fail" : demoResponse(input.input);
+    const scenario = parseScenario(input.input);
+    const text = this.options.qa === "fail" && scenario?.phase === "review" ? "Mock review failed" : scenario ? `Mock ${scenario.phase} completed for ${scenario.template}` : demoResponse(input.input);
     yield { type: "turn.delta", turnId, text }; yield { type: "turn.completed", turnId, text };
-    const structuredResult = agentTurnResultSchema.parse(input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
+    const structuredResult = agentTurnResultSchema.parse(scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
       summary: text,
       insights: [{ id: "editor-model", content: "Keep the markdown document model separate from preview rendering so accessibility and formatting can be reviewed independently." }],
       tasks: [{ id: "design", title: "Define the markdown note document model and accessibility requirements", ownerRole: "pe", acceptanceCriteria: ["Document model and accessibility requirements are explicit"] }],
@@ -27,6 +28,38 @@ export class MockProviderAdapter implements ProviderAdapter {
     const result: ProviderRunResult = { turnId, text, structuredResult, session: { ...session, providerTurnId: turnId, status: "completed" as const, updatedAt: new Date().toISOString() } }; this.completed.set(turnId, result); return result;
   }
   async *cancel(_session: ProviderSession, turnId: string, correlationId?: string): AsyncGenerator<ProviderRunEvent> { yield { type: "turn.cancelled", turnId, ...(correlationId ? { correlationId } : {}) }; }
+}
+
+type Scenario = { template: string; phase: "lead" | "planning" | "execution" | "review" | "complete"; recipient: string; lead: string; planning: string; execution: string; review: string };
+
+function parseScenario(prompt: string): Scenario | undefined {
+  const match = prompt.match(/^\[agentweave template=([^\s]+) phase=(lead|planning|execution|review|complete) recipient=([^\s]+) lead=([^\s]+) planning=([^\s]+) execution=([^\s]+) review=([^\]]+)\]/);
+  if (!match) return undefined;
+  const [, template, phase, recipient, lead, planning, execution, review] = match;
+  return { template: template!, phase: phase as Scenario["phase"], recipient: recipient!, lead: lead!, planning: planning!, execution: execution!, review: review! };
+}
+
+function scenarioMarker(scenario: Scenario, phase: Scenario["phase"], recipient: string): string {
+  return `[agentweave template=${scenario.template} phase=${phase} recipient=${recipient} lead=${scenario.lead} planning=${scenario.planning} execution=${scenario.execution} review=${scenario.review}]`;
+}
+
+function scenarioResult(scenario: Scenario, summary: string, qa?: "pass" | "fail") {
+  if (qa === "fail" && scenario.phase === "review") return { summary, humanBlock: { question: "The deterministic review scenario failed.", context: summary } };
+  if (scenario.phase === "complete") return { summary, completionProposal: { reason: `${scenario.template} scenario completed with a reviewed result.` } };
+  const next = scenario.phase === "lead"
+    ? { phase: "planning" as const, role: scenario.planning, title: "Frame the next actionable plan" }
+    : scenario.phase === "planning"
+      ? { phase: "execution" as const, role: scenario.execution, title: "Produce the requested artifact and evidence" }
+      : scenario.phase === "execution"
+        ? { phase: "review" as const, role: scenario.review, title: "Review the artifact and supporting evidence" }
+        : { phase: "complete" as const, role: scenario.lead, title: "Assess the reviewed outcome for Human approval" };
+  const taskId = `${scenario.phase}-next`;
+  return {
+    summary,
+    insights: [{ id: `${scenario.phase}-insight`, content: `${scenario.recipient} contributed a ${scenario.phase} insight for ${scenario.template}.` }],
+    tasks: [{ id: taskId, title: next.title, ownerRole: next.role, acceptanceCriteria: [`${next.role} produces an auditable ${next.phase} result`] }],
+    messages: [{ recipientRole: next.role, messageType: "request" as const, taskId, content: `${scenarioMarker(scenario, next.phase, next.role)}\nContinue the ${scenario.template} scenario.` }],
+  };
 }
 
 function demoStructuredResult(prompt: string, summary: string, qa?: "pass" | "fail") {

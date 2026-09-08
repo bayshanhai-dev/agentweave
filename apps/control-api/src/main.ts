@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationDecision, type TaskSpec } from "./orchestrator.js";
+import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -69,6 +69,11 @@ type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | 
 const workstreamResponse = (workstream: Workstream) => {
   const template = getWorkstreamTemplate(workstream.flavor);
   return { ...workstream, ...(template ? { template: templateSummary(template) } : {}) };
+};
+const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => {
+  const template = getWorkstreamTemplate(workstream.flavor);
+  if (!template) throw new Error(`Unknown workstream template: ${workstream.flavor}`);
+  return { templateId: template.id, ...template.orchestration };
 };
 
 app.addHook("onRequest", async (request, reply) => {
@@ -249,20 +254,20 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   if (!body?.content?.trim() || !recipients.length) return reply.code(400).send({ error: "recipient_and_content_required" });
   const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : workstream.agents.find((candidate) => candidate.id === recipient || candidate.role === recipient)?.id ?? recipient);
   const { content, messageType } = classifyHumanMessage(body.content, body.intent);
-  const humanToPm = body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === "pm");
+  const humanToLead = body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === orchestrationPolicyFor(workstream).leadRole);
   // A Human message to PM is an explicit resume signal while the Workstream is
   // waiting. Persist active before publishing the inbox message: otherwise the
   // Worker correctly sees waiting_for_human and acks the delivery without a turn.
-  if (humanToPm && workstream.status === "waiting_for_human") {
+  if (humanToLead && workstream.status === "waiting_for_human") {
     workstream.status = "active";
-    orchestrators.set(workstream.id, new WorkstreamOrchestrator(workstream.id, workstream.goal));
+    orchestrators.set(workstream.id, new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream)));
     await persistWorkstreamStatus(workstream);
     emit(workstream, "workstream.resumed_by_human_message", "Human resumed the Workstream through PM");
   }
   let taskId = body.taskId;
   if (messageType === "request" && !taskId) {
     const now = new Date().toISOString();
-    const pmOwner = humanToPm ? workstream.agents.find((agent) => agent.role === "pm") : undefined;
+    const pmOwner = humanToLead ? workstream.agents.find((agent) => agent.role === orchestrationPolicyFor(workstream).leadRole) : undefined;
     const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], relatedTaskIds: [], createdAt: now, updatedAt: now };
     workstream.tasks.push(task);
     await persistTask(task);
@@ -497,12 +502,13 @@ await eventBus.consumer(subjects.events, async (message) => {
 setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000);
 
 async function startOrchestration(workstream: Workstream): Promise<void> {
-  const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal); orchestrators.set(workstream.id, orchestrator);
+  const policy = orchestrationPolicyFor(workstream);
+  const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal, policy); orchestrators.set(workstream.id, orchestrator);
   workstream.status = "active"; emit(workstream, "workstream.active", "Workflow started");
-  const action = orchestrator.start(); const pm = workstream.agents.find((candidate) => candidate.role === "pm")!;
-  const existingBootstrap = workstream.tasks.find((task) => task.ownerAgentId === pm.id && task.status !== "done");
-  const bootstrap = existingBootstrap ?? (await createTasks(workstream, [{ title: "Analyze the Workstream goal and coordinate the first actionable plan", ownerRole: "pm", acceptanceCriteria: ["The goal is decomposed into concrete Agent-owned tasks"] }]))[0];
-  await createMessage(workstream, "human", [pm.id], action.content, action.messageType, bootstrap ? { taskId: bootstrap.id } : {});
+  const action = orchestrator.start(); const lead = workstream.agents.find((candidate) => candidate.role === policy.leadRole)!;
+  const existingBootstrap = workstream.tasks.find((task) => task.ownerAgentId === lead.id && task.status !== "done");
+  const bootstrap = existingBootstrap ?? (await createTasks(workstream, [{ title: "Analyze the Workstream goal and coordinate the first actionable plan", ownerRole: policy.leadRole, acceptanceCriteria: ["The goal is decomposed into concrete Agent-owned tasks"] }]))[0];
+  await createMessage(workstream, "human", [lead.id], action.content, action.messageType, bootstrap ? { taskId: bootstrap.id } : {});
 }
 
 async function handleWorkerResult(envelope: { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
@@ -546,7 +552,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   // of silently dropping that result.
   let orchestrator = orchestrators.get(envelope.workstreamId);
   if (!orchestrator) {
-    orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal);
+    orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream));
     orchestrators.set(workstream.id, orchestrator);
   }
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
@@ -618,7 +624,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     }
   }
   const resultText = payload.text?.trim() ?? "";
-  if (sender.role === "pm" && resultText.startsWith("[HUMAN_BLOCKED]")) {
+  const policy = orchestrationPolicyFor(workstream);
+  if (sender.role === policy.leadRole && resultText.startsWith("[HUMAN_BLOCKED]")) {
     const clarification = resultText.replace(/^\[HUMAN_BLOCKED\]\s*/i, "").trim();
     await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     workstream.status = "waiting_for_human";
@@ -658,37 +665,37 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     }
     task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "idle"); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
   }
-  if (sender.role === "pm" && resultText.startsWith("[PROPOSE_COMPLETE]")) {
+  if (sender.role === policy.leadRole && resultText.startsWith("[PROPOSE_COMPLETE]")) {
     const proposal = resultText.replace(/^\[PROPOSE_COMPLETE\]\s*/i, "").trim();
-    await createMessage(workstream, sender.id, ["human"], proposal || "PM proposes completion based on the attached evidence.", "decision", { ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+    await createMessage(workstream, sender.id, ["human"], proposal || `${policy.leadRole} proposes completion based on the attached evidence.`, "decision", { ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
     workstream.status = "waiting_for_human";
     await setAgentStatus(sender, "idle");
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completion_proposed", message: "PM proposed completion for Human review", occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completion_proposed", message: `${policy.leadRole} proposed completion for Human review`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id });
     await persistWorkstreamStatus(workstream);
     return;
   }
-  const orchestrationText = sender.role === "pm" ? resultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : resultText;
-  const eventType = sender.role === "pm" ? "goal.received" : sender.role === "pe" ? "task.decomposed" : ["coder", "backend", "frontend"].includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
+  const orchestrationText = sender.role === policy.leadRole ? resultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : resultText;
+  const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { await setAgentStatus(sender, "idle"); workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
   let handoffTaskId: string | undefined = payload.taskId;
-  if (sender.role === "pm" && action.recipientRole !== "human") {
+  if (sender.role === policy.leadRole && action.recipientRole !== "human") {
     const specs = extractTaskSpecs(orchestrationText);
-    const decomposed = specs.length ? specs : [{ title: "Refine the implementation plan for the Workstream goal", ownerRole: "pe" as Role }];
+    const decomposed = specs.length ? specs : [{ title: `Prepare the ${workstream.flavor} plan`, ownerRole: policy.planningRole }];
     if (decomposed[0] && !decomposed[0].ownerRole) decomposed[0] = { ...decomposed[0], ownerRole: action.recipientRole };
     const created = await createTasks(workstream, decomposed, sender.id);
     handoffTaskId = created[0]?.id;
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.decomposition.persisted", message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from PM output`, occurredAt: new Date().toISOString(), role: sender.role });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.decomposition.persisted", message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from ${policy.leadRole} output`, occurredAt: new Date().toISOString(), role: sender.role });
   } else if (action.recipientRole !== "human") {
-    const targetAgent = workstream.agents.find((candidate) => candidate.role === action.recipientRole) ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role)) : undefined);
+    const targetAgent = workstream.agents.find((candidate) => candidate.role === action.recipientRole);
     const ownerRole = targetAgent?.role;
     const parentTaskId = task?.id;
     if (targetAgent && ownerRole) {
-      const created = await createTasks(workstream, [{ title: action.recipientRole === "qa" ? "Review implementation, tests, and evidence" : action.recipientRole === "coder" ? "Implement the approved design" : action.content.split("\n", 1)[0] ?? "Continue the Workstream", ownerRole, ...(parentTaskId ? { parentTaskId } : {}) }], sender.id);
+      const created = await createTasks(workstream, [{ title: action.content.split("\n", 1)[0] ?? `Continue the ${workstream.flavor} workstream`, ownerRole, ...(parentTaskId ? { parentTaskId } : {}) }], sender.id);
       handoffTaskId = created[0]?.id;
     }
   }
-  const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id ?? (action.recipientRole === "coder" ? workstream.agents.find((candidate) => ["backend", "frontend"].includes(candidate.role))?.id : undefined); if (!recipient) return;
+  const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id; if (!recipient) return;
   await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(handoffTaskId ? { taskId: handoffTaskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   await setAgentStatus(sender, "idle");
   if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Human approval required before completion", occurredAt: new Date().toISOString() }); }
