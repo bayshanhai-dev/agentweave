@@ -89,6 +89,25 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
     ],
     orchestration: { leadRole: "research-lead", planningRole: "researcher", executionRoles: ["synthesizer"], reviewRole: "research-reviewer" },
   },
+  {
+    id: "short-video-creator",
+    name: "Short video creator",
+    description: "Research an audience opportunity, produce a short-form video package, and review it before publishing.",
+    roles: [
+      { id: "creator-lead", label: "Creator lead", authority: "lead", description: "Owns the channel angle, brief, and publish decision." },
+      { id: "trend-researcher", label: "Trend researcher", authority: "executor", description: "Finds audience opportunities, relevant references, and factual support." },
+      { id: "video-producer", label: "Video producer", authority: "executor", description: "Produces the hook, script, storyboard, shot list, and post package." },
+      { id: "audience-reviewer", label: "Audience reviewer", authority: "reviewer", description: "Checks clarity, platform fit, claims, and the strength of the opening hook." },
+    ],
+    taskLanes: [
+      { status: "ready", label: "Brief", color: "gray" },
+      { status: "assigned", label: "Research", color: "blue" },
+      { status: "running", label: "Production", color: "yellow" },
+      { status: "review", label: "Review", color: "violet" },
+      { status: "done", label: "Ready to publish", color: "green" },
+    ],
+    orchestration: { leadRole: "creator-lead", planningRole: "trend-researcher", executionRoles: ["video-producer"], reviewRole: "audience-reviewer" },
+  },
 ];
 
 export function getWorkstreamTemplate(templateId: string): WorkstreamTemplate | undefined {

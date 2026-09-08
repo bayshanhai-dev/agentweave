@@ -36,6 +36,17 @@ describe("provider adapters", () => {
     expect(run.result.structuredResult?.messages[0]?.content).toContain("template=research-synthesis phase=planning recipient=researcher");
   });
 
+  it("drives the short-video creator scenario through its own planning role", async () => {
+    const provider = new MockProviderAdapter();
+    const input = "[agentweave template=short-video-creator phase=lead recipient=creator-lead lead=creator-lead planning=trend-researcher execution=video-producer review=audience-reviewer]\nFrame the audience brief.";
+    const run = await collect(provider.run({ input, idempotencyKey: "creator-lead" }));
+    expect(run.result.structuredResult).toMatchObject({
+      tasks: [{ ownerRole: "trend-researcher" }],
+      messages: [{ recipientRole: "trend-researcher", taskId: "lead-next" }],
+    });
+    expect(run.result.structuredResult?.messages[0]?.content).toContain("template=short-video-creator phase=planning recipient=trend-researcher");
+  });
+
   it("does not duplicate an idempotent completed turn", async () => {
     const provider = new MockProviderAdapter(); const session = await provider.createSession();
     const first = await collect(provider.run({ session, input: "same", idempotencyKey: "key-1" }));

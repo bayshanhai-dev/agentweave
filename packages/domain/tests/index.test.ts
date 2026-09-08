@@ -22,6 +22,12 @@ describe("workstream templates", () => {
 
   it("does not return a template for an unknown id", () => {
     expect(getWorkstreamTemplate("research")).toBeUndefined();
-    expect(workstreamTemplates.map((template) => template.id)).toEqual(["software-development", "research-synthesis"]);
+    expect(workstreamTemplates.map((template) => template.id)).toEqual(["software-development", "research-synthesis", "short-video-creator"]);
+  });
+
+  it("defines a short-video creator workflow with a publish-ready lane", () => {
+    const template = getWorkstreamTemplate("short-video-creator");
+    expect(template?.orchestration).toEqual({ leadRole: "creator-lead", planningRole: "trend-researcher", executionRoles: ["video-producer"], reviewRole: "audience-reviewer" });
+    expect(template?.taskLanes.at(-1)?.label).toBe("Ready to publish");
   });
 });
