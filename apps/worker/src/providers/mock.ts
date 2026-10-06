@@ -6,6 +6,7 @@ export class MockProviderAdapter implements ProviderAdapter {
   readonly name = "mock";
   readonly capabilities: ProviderCapabilities = { streaming: true, toolCalls: true, resume: true, cancellation: true };
   private readonly completed = new Map<string, ProviderRunResult>();
+  private readonly multiturnCounts = new Map<string, number>();
   constructor(private readonly options: { delayMs?: number; fail?: boolean; qa?: "pass" | "fail" } = {}) {}
   async createSession(input: { model?: string } = {}): Promise<ProviderSession> { const now = new Date().toISOString(); return { provider: this.name, ...(input.model ? { model: input.model } : {}), providerSessionId: `mock-${crypto.randomUUID()}`, status: "active", createdAt: now, updatedAt: now }; }
   async resumeSession(session: ProviderSession): Promise<ProviderSession> { return { ...session, status: "active", updatedAt: new Date().toISOString() }; }
@@ -16,11 +17,15 @@ export class MockProviderAdapter implements ProviderAdapter {
     yield { type: "turn.started", turnId, ...(input.correlationId ? { correlationId: input.correlationId } : {}) };
     if (this.options.delayMs) await new Promise((resolve) => setTimeout(resolve, this.options.delayMs));
     if (this.options.fail) { const error = providerError("Mock provider failure", "provider", "retryable", { code: "MOCK_FAILURE" }); yield { type: "turn.failed", turnId, error }; throw new Error(error.message); }
+    const multiturn =
+      input.input.startsWith("[agentweave multiturn=twoturn]") ||
+      (this.multiturnCounts.get(session.providerSessionId) ?? 0) > 0;
+    const multiturnTurn = multiturn ? this.nextMultiturnTurn(session) : 0;
     const collaboration = parseCollaborationScenario(input.input);
     const scenario = parseScenario(input.input);
-    const text = collaboration ? `Mock ${collaboration.stage} insight completed` : this.options.qa === "fail" && scenario?.phase === "review" ? "Mock review failed" : scenario ? `Mock ${scenario.phase} completed for ${scenario.template}` : demoResponse(input.input);
+    const text = multiturn ? `Mock multiturn turn ${multiturnTurn} of 2 completed` : collaboration ? `Mock ${collaboration.stage} insight completed` : this.options.qa === "fail" && scenario?.phase === "review" ? "Mock review failed" : scenario ? `Mock ${scenario.phase} completed for ${scenario.template}` : demoResponse(input.input);
     yield { type: "turn.delta", turnId, text }; yield { type: "turn.completed", turnId, text };
-    const structuredResult = agentTurnResultSchema.parse(collaboration ? collaborationResult(collaboration, input.input, text) : scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
+    const structuredResult = agentTurnResultSchema.parse(multiturn ? multiturnResult(multiturnTurn, text) : collaboration ? collaborationResult(collaboration, input.input, text) : scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
       summary: text,
       insights: [{ id: "editor-model", content: "Keep the markdown document model separate from preview rendering so accessibility and formatting can be reviewed independently." }],
       tasks: [{ id: "design", title: "Define the markdown note document model and accessibility requirements", ownerRole: "pe", acceptanceCriteria: ["Document model and accessibility requirements are explicit"] }],
@@ -29,10 +34,22 @@ export class MockProviderAdapter implements ProviderAdapter {
     const result: ProviderRunResult = { turnId, text, structuredResult, session: { ...session, providerTurnId: turnId, status: "completed" as const, updatedAt: new Date().toISOString() } }; this.completed.set(turnId, result); return result;
   }
   async *cancel(_session: ProviderSession, turnId: string, correlationId?: string): AsyncGenerator<ProviderRunEvent> { yield { type: "turn.cancelled", turnId, ...(correlationId ? { correlationId } : {}) }; }
+
+  /** Deterministic two-turn scenario: turn 1 asks to continue, turn 2 proposes completion. Counted per provider session. */
+  private nextMultiturnTurn(session: ProviderSession): number {
+    const turn = (this.multiturnCounts.get(session.providerSessionId) ?? 0) + 1;
+    this.multiturnCounts.set(session.providerSessionId, turn);
+    return turn;
+  }
 }
 
 type Scenario = { template: string; phase: "lead" | "planning" | "execution" | "review" | "complete"; recipient: string; lead: string; planning: string; execution: string; review: string };
 type CollaborationScenario = { roundId: string; stage: "proposal" | "critique" | "synthesis"; key: string };
+
+function multiturnResult(turn: number, summary: string) {
+  if (turn < 2) return { summary, decision: { action: "continue" as const, reason: "First turn gathered the context; a second turn is needed to finish." } };
+  return { summary, completionProposal: { reason: "Two-turn scenario completed with a verified result." } };
+}
 
 function parseCollaborationScenario(prompt: string): CollaborationScenario | undefined {
   const match = prompt.match(/^\[agentweave collaboration=([^\s]+) stage=(proposal|critique|synthesis) key=([^\]]+)\]/);
