@@ -21,6 +21,7 @@ import { CollaborationPolicy } from "./collaboration-policy.js";
 import { projectRuntime } from "./runtime-projection.js";
 import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
+import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -505,10 +506,30 @@ async function startOrchestration(workstream: Workstream): Promise<void> {
   const policy = orchestrationPolicyFor(workstream);
   const orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal, policy); orchestrators.set(workstream.id, orchestrator);
   workstream.status = "active"; emit(workstream, "workstream.active", "Workflow started");
-  const action = orchestrator.start(); const lead = workstream.agents.find((candidate) => candidate.role === policy.leadRole)!;
-  const existingBootstrap = workstream.tasks.find((task) => task.ownerAgentId === lead.id && task.status !== "done");
-  const bootstrap = existingBootstrap ?? (await createTasks(workstream, [{ title: "Analyze the Workstream goal and coordinate the first actionable plan", ownerRole: policy.leadRole, acceptanceCriteria: ["The goal is decomposed into concrete Agent-owned tasks"] }]))[0];
-  await createMessage(workstream, "human", [lead.id], action.content, action.messageType, bootstrap ? { taskId: bootstrap.id } : {});
+  try {
+    const { round, dispatches } = createCollaborationRound(workstream.id, workstream.goal, workstream.agents);
+    await insightRepository.saveRound(round);
+    emit(workstream, "collaboration.round.started", "Agent-owned collaboration round started");
+    for (const dispatch of dispatches) await dispatchCollaboration(workstream, round.id, dispatch, "human");
+  } catch (error) {
+    app.log.warn({ workstreamId: workstream.id, error }, "Collaboration unavailable; using legacy orchestration");
+    const action = orchestrator.start(); const lead = workstream.agents.find((candidate) => candidate.role === policy.leadRole)!;
+    const existingBootstrap = workstream.tasks.find((task) => task.ownerAgentId === lead.id && task.status !== "done");
+    const bootstrap = existingBootstrap ?? (await createTasks(workstream, [{ title: "Analyze the Workstream goal and coordinate the first actionable plan", ownerRole: policy.leadRole, acceptanceCriteria: ["The goal is decomposed into concrete Agent-owned tasks"] }]))[0];
+    await createMessage(workstream, "human", [lead.id], action.content, action.messageType, bootstrap ? { taskId: bootstrap.id } : {});
+  }
+}
+
+async function dispatchCollaboration(workstream: Workstream, roundId: string, dispatch: CollaborationDispatch, senderId: string): Promise<void> {
+  const taskId = `${roundId}:task:${dispatch.key}`;
+  let task = workstream.tasks.find((candidate) => candidate.id === taskId);
+  if (!task) {
+    const now = new Date().toISOString();
+    task = { id: taskId, workstreamId: workstream.id, title: `[Collaboration:${dispatch.stage}] ${dispatch.title}`, status: "assigned", ownerAgentId: dispatch.agentId, ...(senderId !== "human" ? { createdByAgentId: senderId } : {}), relatedTaskIds: [], acceptanceCriteria: ["Return one valid structured collaboration insight with auditable evidence"], dependencies: [], evidence: [], createdAt: now, updatedAt: now };
+    workstream.tasks.push(task); await persistTask(task);
+    emit(workstream, "task.created", `Collaboration task assigned: ${dispatch.title}`, dispatch.role);
+  }
+  await createMessage(workstream, senderId, [dispatch.agentId], dispatch.prompt, "request", { taskId, correlationId: roundId, causationId: roundId }, `${roundId}:message:${dispatch.key}`);
 }
 
 async function handleWorkerResult(envelope: { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
@@ -588,6 +609,14 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         if (sourceTask) { sourceTask.status = plan.blocked ? "blocked" : "done"; sourceTask.evidence = plan.sourceEvidenceIds; sourceTask.updatedAt = plan.createdAt; }
         sender.status = "idle";
         if (plan.waitingForHuman) workstream.status = "waiting_for_human";
+        if (sourceTask && collaborationStage(sourceTask.title)) {
+          for (const insight of plan.insights) {
+            const decision = await insightRepository.advanceRound(workstream.id, insight.id);
+            emit(workstream, decision.round.status === "completed" ? "collaboration.round.completed" : "collaboration.turn.accepted", decision.reason, sender.role);
+            const next = dispatchForDecision(decision, await insightRepository.listInsights(workstream.id), workstream.agents);
+            if (next) await dispatchCollaboration(workstream, decision.round.id, next, sender.id);
+          }
+        }
         for (const message of plan.messages) {
           if (!workstream.messages.some((item) => item.id === message.id)) workstream.messages.push(message as Message);
           // A retry republishes stable message IDs; receiver execution keys suppress duplicates.

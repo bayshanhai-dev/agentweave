@@ -21,7 +21,9 @@ export class StructuredTurnRepository {
           throw new InvalidStructuredTurn(
             "Turn ID reused with a different result",
           );
-        return previous[0].plan as StructuredTurnPlan;
+        return (typeof previous[0].plan === "string"
+          ? JSON.parse(previous[0].plan)
+          : previous[0].plan) as StructuredTurnPlan;
       }
       if (!rows[0] || !["active", "starting"].includes(String(rows[0].status)))
         throw new InvalidStructuredTurn(

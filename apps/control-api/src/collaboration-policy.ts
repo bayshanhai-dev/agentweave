@@ -20,6 +20,20 @@ const normalized = (content: string) =>
     .trim();
 
 export class CollaborationPolicy {
+  next(existing: Insight[]): CollaborationDecision["next"] {
+    if (existing.some((insight) => insight.kind === "synthesis"))
+      return "stopped";
+    if (existing.filter((insight) => insight.kind === "proposal").length < 2)
+      return "proposal";
+    if (
+      !existing.some((insight) =>
+        ["critique", "contradiction"].includes(insight.kind),
+      )
+    )
+      return "critique";
+    return "synthesis";
+  }
+
   evaluate(
     round: CollaborationRound,
     existing: Insight[],
@@ -131,15 +145,7 @@ export class CollaborationPolicy {
         ),
         accepted: true,
       };
-    const next =
-      all.filter((insight) => insight.kind === "proposal").length < 2
-        ? "proposal"
-        : all.some(
-              (insight) =>
-                insight.kind === "critique" || insight.kind === "contradiction",
-            )
-          ? "synthesis"
-          : "critique";
+    const next = this.next(all);
     return {
       accepted: true,
       next,

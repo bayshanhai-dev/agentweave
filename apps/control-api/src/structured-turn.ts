@@ -130,13 +130,18 @@ export function planStructuredTurn(
   ]);
   const reference = (ref: string) => localInsights.get(ref) ?? ref;
   const insights: Insight[] = result.insights.map((item) => {
-    checkEvidence(item.evidenceIds);
+    const evidenceIds =
+      item.kind === "synthesis" && item.evidenceIds.length === 0
+        ? context.evidenceIds
+        : item.evidenceIds;
+    checkEvidence(evidenceIds);
     const insight: Insight = {
       ...item,
       id: localInsights.get(item.id)!,
       workstreamId: context.workstreamId,
       authorAgentId: context.agentId,
       lifecycle: "proposed",
+      evidenceIds,
       references: item.references.map(reference),
       contradictionOf: item.contradictionOf.map(reference),
       createdAt: context.now,

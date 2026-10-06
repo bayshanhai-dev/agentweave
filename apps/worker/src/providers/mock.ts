@@ -16,10 +16,11 @@ export class MockProviderAdapter implements ProviderAdapter {
     yield { type: "turn.started", turnId, ...(input.correlationId ? { correlationId: input.correlationId } : {}) };
     if (this.options.delayMs) await new Promise((resolve) => setTimeout(resolve, this.options.delayMs));
     if (this.options.fail) { const error = providerError("Mock provider failure", "provider", "retryable", { code: "MOCK_FAILURE" }); yield { type: "turn.failed", turnId, error }; throw new Error(error.message); }
+    const collaboration = parseCollaborationScenario(input.input);
     const scenario = parseScenario(input.input);
-    const text = this.options.qa === "fail" && scenario?.phase === "review" ? "Mock review failed" : scenario ? `Mock ${scenario.phase} completed for ${scenario.template}` : demoResponse(input.input);
+    const text = collaboration ? `Mock ${collaboration.stage} insight completed` : this.options.qa === "fail" && scenario?.phase === "review" ? "Mock review failed" : scenario ? `Mock ${scenario.phase} completed for ${scenario.template}` : demoResponse(input.input);
     yield { type: "turn.delta", turnId, text }; yield { type: "turn.completed", turnId, text };
-    const structuredResult = agentTurnResultSchema.parse(scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
+    const structuredResult = agentTurnResultSchema.parse(collaboration ? collaborationResult(collaboration, input.input, text) : scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
       summary: text,
       insights: [{ id: "editor-model", content: "Keep the markdown document model separate from preview rendering so accessibility and formatting can be reviewed independently." }],
       tasks: [{ id: "design", title: "Define the markdown note document model and accessibility requirements", ownerRole: "pe", acceptanceCriteria: ["Document model and accessibility requirements are explicit"] }],
@@ -31,6 +32,21 @@ export class MockProviderAdapter implements ProviderAdapter {
 }
 
 type Scenario = { template: string; phase: "lead" | "planning" | "execution" | "review" | "complete"; recipient: string; lead: string; planning: string; execution: string; review: string };
+type CollaborationScenario = { roundId: string; stage: "proposal" | "critique" | "synthesis"; key: string };
+
+function parseCollaborationScenario(prompt: string): CollaborationScenario | undefined {
+  const match = prompt.match(/^\[agentweave collaboration=([^\s]+) stage=(proposal|critique|synthesis) key=([^\]]+)\]/);
+  if (!match) return undefined;
+  return { roundId: decodeURIComponent(match[1]!), stage: match[2] as CollaborationScenario["stage"], key: decodeURIComponent(match[3]!) };
+}
+
+function collaborationResult(scenario: CollaborationScenario, prompt: string, summary: string) {
+  const referencesMatch = prompt.match(/references (\[[^\n]+\])/);
+  const references = referencesMatch ? JSON.parse(referencesMatch[1]!) as string[] : [];
+  if (scenario.stage === "proposal") return { summary, insights: [{ id: scenario.key, kind: "proposal" as const, content: `${scenario.key} offers an independent, testable approach with explicit assumptions.`, confidence: 0.72 }] };
+  if (scenario.stage === "critique") return { summary, insights: [{ id: scenario.key, kind: "critique" as const, content: "The proposals need a bounded validation step before execution.", confidence: 0.81, references }] };
+  return { summary, insights: [{ id: scenario.key, kind: "synthesis" as const, content: "Use the strongest proposal, gated by the reviewer's bounded validation step.", confidence: 0.88, references }], completionProposal: { reason: "Independent proposals and reviewer challenge were synthesized with verified runtime evidence." } };
+}
 
 function parseScenario(prompt: string): Scenario | undefined {
   const match = prompt.match(/^\[agentweave template=([^\s]+) phase=(lead|planning|execution|review|complete) recipient=([^\s]+) lead=([^\s]+) planning=([^\s]+) execution=([^\s]+) review=([^\]]+)\]/);

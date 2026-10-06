@@ -104,24 +104,19 @@ test("completes and persists the deterministic Mock workstream", async ({
     `${controlApi}/api/workstreams/${created.id}/insights`,
   );
   expect(insightResponse.ok()).toBeTruthy();
-  const { insights } = await insightResponse.json();
-  expect(insights).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        kind: "proposal",
-        lifecycle: "proposed",
-        workstreamId: created.id,
-        content: expect.stringContaining("insight for software-development"),
-      }),
-    ]),
-  );
-  const proposalId = insights.find((item: { content: string }) =>
-    item.content.includes("insight for software-development"),
-  ).id;
+  const { insights, rounds } = await insightResponse.json();
+  expect(insights.filter((item: { kind: string }) => item.kind === "proposal")).toHaveLength(2);
+  expect(insights).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "critique", lifecycle: "accepted", workstreamId: created.id }),
+    expect.objectContaining({ kind: "synthesis", lifecycle: "accepted", workstreamId: created.id, evidenceIds: expect.arrayContaining([expect.any(String)]) }),
+  ]));
+  expect(insights.every((item: { lifecycle: string }) => item.lifecycle === "accepted")).toBe(true);
+  expect(rounds).toEqual([expect.objectContaining({ status: "completed", insightIds: expect.arrayContaining(insights.map((item: { id: string }) => item.id)) })]);
+  const proposalId = insights.find((item: { kind: string }) => item.kind === "proposal").id;
   expect(
     awaitingApproval.workstream.tasks.filter((task) => task.status === "done")
       .length,
-  ).toBeGreaterThanOrEqual(3);
+  ).toBeGreaterThanOrEqual(4);
 
   await page.getByRole("button", { name: "Approve & complete" }).click();
   await expect(
@@ -151,5 +146,5 @@ test("completes and persists the deterministic Mock workstream", async ({
   expect(persisted.workstream.goal).toBe(demoGoal);
   expect(
     persisted.workstream.tasks.filter((task) => task.status === "done").length,
-  ).toBeGreaterThanOrEqual(3);
+  ).toBeGreaterThanOrEqual(4);
 });
