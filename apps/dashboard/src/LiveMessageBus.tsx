@@ -54,10 +54,15 @@ function displayAgent(value: string | undefined, agents: Agent[]): string {
   return short.toUpperCase();
 }
 
+function stripPromptPrefix(content: string): string {
+  return content.replace(/\[agentweave[^\]]*\]\s*/g, "");
+}
+
 export function LiveMessageBus({ messages, insights = [], agents, draft, onDraftChange, onSend, sendError }: Props) {
   const [agentFilter, setAgentFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [mode, setMode] = useState("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -107,11 +112,16 @@ export function LiveMessageBus({ messages, insights = [], agents, draft, onDraft
         </div>
         <Badge variant="light" color="teal">● live · {visible.length}</Badge>
       </Group>
-      <Group grow mb="md">
-        <Select aria-label="Choose stream mode" value={mode} onChange={(value) => setMode(value ?? "all")} data={[{ value: "all", label: "Messages + insights" }, { value: "message", label: "Messages" }, { value: "insight", label: "Insights" }]} allowDeselect={false} size="xs" />
-        <Select aria-label="Filter messages by agent" value={agentFilter} onChange={(value) => setAgentFilter(value ?? "all")} data={agentOptions} allowDeselect={false} size="xs" />
-        <Select aria-label="Filter messages by type" value={typeFilter} onChange={(value) => setTypeFilter(value ?? "all")} data={typeOptions} allowDeselect={false} size="xs" />
+      <Group mb="md">
+        <Button size="compact-xs" variant="subtle" onClick={() => setFiltersOpen((o) => !o)}>{filtersOpen ? "Hide filters" : "Filters"}</Button>
       </Group>
+      {filtersOpen && (
+        <Group grow mb="md">
+          <Select aria-label="Choose stream mode" value={mode} onChange={(value) => setMode(value ?? "all")} data={[{ value: "all", label: "Messages + insights" }, { value: "message", label: "Messages" }, { value: "insight", label: "Insights" }]} allowDeselect={false} size="xs" />
+          <Select aria-label="Filter messages by agent" value={agentFilter} onChange={(value) => setAgentFilter(value ?? "all")} data={agentOptions} allowDeselect={false} size="xs" />
+          <Select aria-label="Filter messages by type" value={typeFilter} onChange={(value) => setTypeFilter(value ?? "all")} data={typeOptions} allowDeselect={false} size="xs" />
+        </Group>
+      )}
       {!visible.length ? (
         <Center mih={180}><Stack align="center" gap="xs"><ThemeIcon variant="light" radius="xl"><IconMessages size={16} /></ThemeIcon><Text size="sm" c="dimmed">No matching messages yet.</Text></Stack></Center>
       ) : (
@@ -129,12 +139,14 @@ export function LiveMessageBus({ messages, insights = [], agents, draft, onDraft
               const createdAt = item.createdAt;
               const addressedToHuman = recipients.includes("human") || /@human\b/i.test(item.content);
               const neighbors = item.kind === "insight" ? causalNeighbors(item.id, insights) : undefined;
-              return <Box id={`stream-${item.id}`} key={item.id ?? `${sender}-${createdAt}-${index}`} className={`bus-message${addressedToHuman ? " bus-message-to-human" : ""}`}>
+              const insightKind = item.kind === "insight" ? item.category : undefined;
+              const insightColor = insightKind === "proposal" ? "blue" : insightKind === "critique" ? "orange" : insightKind === "synthesis" ? "green" : "violet";
+              return <Box id={`stream-${item.id}`} key={item.id ?? `${sender}-${createdAt}-${index}`} className={`bus-message${addressedToHuman ? " bus-message-to-human" : ""}${insightKind ? ` bus-insight-kind-${insightKind}` : ""}`}>
                 <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
-                  <Group gap="xs" wrap="wrap"><Text size="xs" fw={800} c={addressedToHuman ? "pink" : item.kind === "insight" ? "violet" : "teal"}>{displayAgent(sender, agents)}{item.kind === "message" ? ` → ${recipients.map((recipient) => displayAgent(recipient, agents)).join(", ") || "UNROUTED"}` : " · INSIGHT"}</Text>{addressedToHuman && <Badge size="xs" color="pink">@ HUMAN</Badge>}<Badge size="xs" variant="outline">{item.category.replaceAll(".", " ")}</Badge>{item.lifecycle && <Badge size="xs" variant="light">{item.lifecycle}</Badge>}</Group>
+                  <Group gap="xs" wrap="wrap"><Text size="xs" fw={800} c={addressedToHuman ? "pink" : item.kind === "insight" ? insightColor : "teal"}>{displayAgent(sender, agents)}{item.kind === "message" ? ` → ${recipients.map((recipient) => displayAgent(recipient, agents)).join(", ") || "UNROUTED"}` : " · INSIGHT"}</Text>{addressedToHuman && <Badge size="xs" color="pink">@ HUMAN</Badge>}{insightKind && <Badge size="xs" color={insightColor}>{insightKind.toUpperCase()}</Badge>}<Badge size="xs" variant="outline">{item.category.replaceAll(".", " ")}</Badge>{item.lifecycle && <Badge size="xs" variant="light">{item.lifecycle}</Badge>}</Group>
                   <Text size="xs" c="dimmed" style={{ whiteSpace: "nowrap" }}>{createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}</Text>
                 </Group>
-                <Text size="sm" mt={5} className="bus-message-content">{item.content || "(empty message)"}</Text>
+                <Text size="sm" mt={5} className="bus-message-content">{stripPromptPrefix(item.content || "") || "(empty message)"}</Text>
                 {(item.taskId || item.correlationId || neighbors) && <Group gap="xs" mt={7}><Text size="xs" c="dimmed">{item.taskId ? `Task · ${item.taskId.slice(-8)}` : ""}</Text>{item.correlationId && <Text size="xs" c="dimmed">Trace · {item.correlationId.slice(0, 8)}</Text>}{neighbors && [...neighbors.supporting, ...neighbors.opposing].map((related) => <Button key={related.id} variant="subtle" size="compact-xs" color={neighbors.opposing.includes(related) ? "red" : "blue"} onClick={() => document.getElementById(`stream-${related.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{neighbors.opposing.includes(related) ? "Opposes" : "Supports"} · {related.id.slice(-8)}</Button>)}</Group>}
               </Box>;
             })}

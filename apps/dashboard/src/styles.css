@@ -50,7 +50,7 @@ html[data-theme="light"] .agent-card { background: #f8faf7; border-color: #dce3d
 html[data-theme="light"] .event { border-color: #e7ece3; } html[data-theme="light"] .event p { color: #3f483e; }
 html[data-theme="light"] .theme-toggle { color: #263022; background: #ffffff; border-color: #cbd6c7; }
 .workstream-controls { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid #dce3d8; border-radius: 12px; background: #fff; } .controls-label { color: #667064; font-family: 'DM Mono'; font-size: 10px; text-transform: uppercase; } .control-actions { display: flex; flex-wrap: wrap; gap: 8px; } .control-actions button { border: 1px solid #cbd6c7; border-radius: 7px; padding: 8px 11px; color: #263022; background: #f8faf7; font-size: 11px; cursor: pointer; } .control-actions button:disabled { cursor: not-allowed; opacity: .45; } .control-actions .approve { color: #14200d; border-color: #9acb4e; background: #b8ed5f; font-weight: 800; } .control-actions .danger { color: #8d1f2d; border-color: #e6aeb5; background: #fff4f5; } .summary-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding-top: 14px; border-top: 1px solid #e7ece3; color: #3f483e; font-size: 12px; } .summary-details strong { color: #667064; font-family: 'DM Mono'; font-size: 10px; text-transform: uppercase; } .summary-details p { margin-top: 6px; line-height: 1.5; }
-.macro-plan-board { display: flex; flex-direction: column; min-height: 0; padding: 20px; border: 1px solid #405067; border-radius: 8px; background: radial-gradient(circle at 4px 4px, #405069 1px, transparent 1.5px) 0 0 / 20px 20px, linear-gradient(145deg, #263648, #16202d); color: #eef3f8; }
+.macro-plan-board { display: flex; flex-direction: column; min-height: 0; padding: 20px; border: 1px solid #dfe7ef; border-radius: 14px; background: rgba(255, 255, 255, .92); color: #17212f; box-shadow: 0 12px 28px rgba(24, 48, 73, .16); }
 .macro-plan-board > .mantine-SimpleGrid-root { flex: 1; min-height: 0; }
 .macro-plan-board .mantine-Text-root, .macro-plan-board .mantine-Title-root { color: inherit; }
 .agent-execution-card { min-height: 190px; background: var(--mantine-color-body); transition: border-color .25s ease, box-shadow .25s ease, transform .25s ease; overflow: hidden; }
@@ -68,20 +68,20 @@ html[data-theme="light"] .theme-toggle { color: #263022; background: #ffffff; bo
 @keyframes agent-presence-ring { 0% { opacity: .9; transform: scale(.45); } 75%, 100% { opacity: 0; transform: scale(1.9); } }
 @keyframes agent-card-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .agent-execution-card, .agent-presence-dot, .agent-presence-dot::after { animation: none !important; } }
-.macro-column { min-width: 0; max-height: 280px; padding: 10px; overflow-y: auto; border: 1px solid #627289; border-top: 2px solid var(--mantine-color-teal-4); border-radius: 3px; background: #192635; }
+.macro-column { min-width: 0; max-height: 280px; padding: 10px; overflow-y: auto; border: 1px solid #dfe7ef; border-top: 2px solid var(--mantine-color-teal-4); border-radius: 8px; background: #f8fafc; }
 .macro-column-header { position: sticky; top: -10px; z-index: 1; min-height: 28px; padding: 10px 0 8px; margin-top: -10px; border-bottom: 1px solid var(--mantine-color-default-border); background: #192635; }
-.macro-task-card { min-width: 0; min-height: 0; overflow: hidden; background: #202f40 !important; border-color: #4f6177 !important; border-radius: 3px !important; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.macro-task-card { min-width: 0; min-height: 0; overflow: hidden; background: #ffffff !important; border-color: #dfe7ef !important; border-radius: 7px !important; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .macro-plan-board .macro-column-header .mantine-Text-root,
-.macro-plan-board .macro-task-card .mantine-Text-root { color: #f3f7fb; }
+.macro-plan-board .macro-task-card .mantine-Text-root { color: #17212f; }
 .macro-plan-board .macro-column-header .mantine-Text-root[data-dimmed],
 .macro-plan-board .macro-task-card .mantine-Text-root[data-dimmed],
-.macro-plan-board .macro-empty .mantine-Text-root { color: #b8c6d7; }
-.macro-plan-board .macro-task-card .mantine-Badge-root { color: #d9e7f6; border-color: #6b809a; }
+.macro-plan-board .macro-empty .mantine-Text-root { color: #536273; }
+.macro-plan-board .macro-task-card .mantine-Badge-root { color: #3f5871; border-color: #c3d2e0; }
 .macro-task-card .macro-task-title { display: -webkit-box; min-width: 0; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; font-family: var(--mantine-font-family); font-size: 13px; font-weight: 700; line-height: 1.35; letter-spacing: 0; }
 .macro-task-card .macro-task-meta { min-width: 0; }
 .macro-task-card .mantine-Badge-root { max-width: 100%; }
 .macro-task-card .mantine-Badge-label { overflow: hidden; text-overflow: ellipsis; }
-.macro-task-card:hover, .macro-task-card:focus-visible { border-color: var(--mantine-color-teal-4) !important; box-shadow: 0 0 0 2px rgba(32, 201, 151, .18); outline: none; transform: translateY(-1px); }
+.macro-task-card:hover, .macro-task-card:focus-visible { border-color: #228be6 !important; box-shadow: 0 0 0 2px rgba(34, 139, 230, .18); outline: none; transform: translateY(-1px); }
 .macro-task-detail .mantine-Title-root, .macro-task-detail .mantine-Text-root { overflow-wrap: anywhere; }
 .agent-token-usage { min-height: 38px; padding: 7px 8px; border: 1px solid var(--mantine-color-default-border); border-radius: 6px; background: color-mix(in srgb, var(--mantine-color-blue-0) 42%, transparent); }
 .macro-empty { border-style: dashed !important; background: transparent !important; }
@@ -147,7 +147,7 @@ body { background: #f4f7fb; color: #17212f; }
 .mantine-AppShell-header { border-bottom-color: #dfe7ef !important; background: rgba(255, 255, 255, .9) !important; box-shadow: 0 4px 18px rgba(28, 48, 72, .06); backdrop-filter: blur(14px); }
 .immersive-workspace { max-width: 1680px; padding: 10px 18px 28px; }
 .runtime-workstream-bar { padding: 14px 16px !important; border: 1px solid #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .86) !important; box-shadow: 0 8px 24px rgba(28, 48, 72, .05) !important; }
-.runtime-workstream-bar .mantine-Title-root { max-width: min(980px, 70vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-workstream-bar .mantine-Title-root { max-width: min(980px, 70vw); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .runtime-summary-report { padding: 14px 16px !important; border-color: #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .92) !important; box-shadow: 0 8px 24px rgba(28, 48, 72, .05); }
 .summary-report-compact > .mantine-Group-root:first-child { margin-bottom: -2px; }
 .summary-report-compact .mantine-Card-root { border-color: #e0e8f0; background: #fbfdff; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
@@ -157,7 +157,7 @@ body { background: #f4f7fb; color: #17212f; }
 .runtime-cockpit-main { grid-template-rows: minmax(440px, auto) auto; }
 .runtime-cockpit-main > .macro-plan-board { min-height: 440px; height: auto; }
 .runtime-cockpit-rail { min-height: 720px; }
-.macro-plan-board { padding: 22px; border-radius: 14px; border-color: #314962; background: radial-gradient(circle at 2px 2px, rgba(130, 170, 205, .24) 1px, transparent 1.5px) 0 0 / 20px 20px, linear-gradient(145deg, #263d54, #152333 76%); box-shadow: 0 12px 28px rgba(24, 48, 73, .16); }
+.macro-plan-board { padding: 22px; border-radius: 14px; border: 1px solid #dfe7ef; background: rgba(255, 255, 255, .92); box-shadow: 0 12px 28px rgba(24, 48, 73, .16); }
 .macro-plan-board > .mantine-Group-root:first-child { margin-bottom: 2px; }
 .macro-plan-board .mantine-Title-root { letter-spacing: -.04em; }
 .macro-column { border-color: #58718b; border-radius: 8px; background: rgba(18, 34, 50, .78); box-shadow: inset 0 1px rgba(255,255,255,.04); }
@@ -168,7 +168,7 @@ body { background: #f4f7fb; color: #17212f; }
 .macro-task-card:hover, .macro-task-card:focus-visible { border-color: #7fd6c4 !important; box-shadow: 0 0 0 2px rgba(127, 214, 196, .24), 0 8px 18px rgba(5, 18, 30, .24); transform: translateY(-1px); outline: none; }
 .runtime-agent-panel { padding: 18px !important; border-color: #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .9) !important; box-shadow: 0 8px 24px rgba(28, 48, 72, .05); }
 .runtime-agent-panel .agent-execution-grid { gap: 10px; }
-.agent-execution-card { min-height: 250px; border-color: #dce5ed !important; border-radius: 10px !important; box-shadow: 0 4px 12px rgba(32, 61, 88, .05); }
+.agent-execution-card { min-height: 200px; border-color: #dce5ed !important; border-radius: 10px !important; box-shadow: 0 4px 12px rgba(32, 61, 88, .05); }
 .agent-execution-card:hover { border-color: #a7c4dc !important; box-shadow: 0 10px 22px rgba(32, 61, 88, .1); }
 .agent-execution-card.status-running { box-shadow: 0 0 0 1px var(--mantine-color-yellow-5), 0 10px 26px rgba(245, 159, 0, .14); }
 .live-message-bus { border-color: #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .94) !important; box-shadow: 0 10px 28px rgba(28, 48, 72, .08); }
@@ -177,6 +177,12 @@ body { background: #f4f7fb; color: #17212f; }
 .bus-message { padding: 14px 4px; }
 .bus-message:hover { background: #f8fbfd; border-radius: 8px; }
 .bus-message-content { overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.55; }
+.bus-message.bus-insight-kind-proposal { border-left: 3px solid #228be6; padding-left: 10px; }
+.bus-message.bus-insight-kind-critique { border-left: 3px solid #fd7e14; padding-left: 10px; }
+.bus-message.bus-insight-kind-synthesis { border-left: 3px solid #40c057; padding-left: 10px; }
+.bus-message.bus-insight-kind-proposal .bus-message-content,
+.bus-message.bus-insight-kind-critique .bus-message-content,
+.bus-message.bus-insight-kind-synthesis .bus-message-content { font-size: 15px; font-weight: 500; }
 .bus-message-to-human { background: linear-gradient(90deg, #fff4f8, #fffafd) !important; }
 .bus-composer { background: #fbfdff; margin-inline: -4px; padding-inline: 4px; }
 .bus-composer .mantine-Textarea-input { min-height: 72px; }
