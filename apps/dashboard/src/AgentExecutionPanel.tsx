@@ -69,11 +69,21 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
           <Text size="xs" fw={600}>{projected?.activity ?? (status === "running" ? "Processing a live turn" : status === "failed" ? "Needs attention" : "Listening for work")}</Text>
           <Text size="xs" c={projected?.stale ? "red" : "dimmed"}>· {relativeTime(projected?.lastSignalAt ?? latest?.occurredAt)}{projected?.latencyMs !== undefined ? ` · ${Math.round(projected.latencyMs / 1000)}s` : ""}</Text>
         </div>
-        <Group gap="md" mt="sm" className="agent-token-usage">
-          <div><Text size="xs" c="dimmed">TOKENS</Text><Text size="sm" fw={800}>{usage.reported ? usage.totalTokens.toLocaleString() : "—"}</Text></div>
-          <div><Text size="xs" c="dimmed">IN / OUT</Text><Text size="xs" fw={700}>{usage.reported ? `${usage.inputTokens.toLocaleString()} / ${usage.outputTokens.toLocaleString()}` : "Not reported"}</Text></div>
-        </Group>
-        <Stack gap={4} mt="sm"><Text size="xs" c="dimmed">Current task</Text><Text size="sm">{status === "running" ? latest?.taskId ?? "Active task" : "No active task"}</Text><Text size="xs" c="dimmed" mt="xs">Current tool</Text><Text size="sm">{status === "running" ? latest?.toolName ?? "Preparing provider turn" : "—"}</Text><Text size="xs" c="dimmed" mt="xs">Auditable output</Text><Text size="sm" lineClamp={3}>{output ? eventText(output) : "Monitoring the workstream event bus"}</Text><Text size="xs" c="dimmed" mt="xs">Recent event · {latest?.type ?? "none"}</Text></Stack>
+        {usage.reported && (
+          <Group gap="md" mt="sm" className="agent-token-usage">
+            <div><Text size="xs" c="dimmed">TOKENS</Text><Text size="sm" fw={800}>{usage.totalTokens.toLocaleString()}</Text></div>
+            <div><Text size="xs" c="dimmed">IN / OUT</Text><Text size="xs" fw={700}>{`${usage.inputTokens.toLocaleString()} / ${usage.outputTokens.toLocaleString()}`}</Text></div>
+          </Group>
+        )}
+        <Stack gap={4} mt="sm">
+          <Text size="xs" c="dimmed">Current task</Text>
+          <Text size="xs" c={status === "running" ? undefined : "dimmed"}>{status === "running" ? latest?.taskId ?? "Active task" : "No active task"}</Text>
+          <Text size="xs" c="dimmed" mt="xs">Current tool</Text>
+          <Text size="xs" c={status === "running" ? undefined : "dimmed"}>{status === "running" ? latest?.toolName ?? "Preparing provider turn" : "—"}</Text>
+          <Text size="xs" c="dimmed" mt="xs">Auditable output</Text>
+          <Text size="xs" c="dimmed" lineClamp={3}>{output ? eventText(output) : "Monitoring the workstream event bus"}</Text>
+          <Text size="xs" c="dimmed" mt="xs">Recent event · {latest?.type ?? "none"}</Text>
+        </Stack>
       </Card>)}
     </SimpleGrid>
   </Stack>;

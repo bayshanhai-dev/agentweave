@@ -27,7 +27,6 @@ import {
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import {
   IconActivity,
-  IconArrowsExchange,
   IconBrain,
   IconChevronRight,
   IconCircleDot,
@@ -498,7 +497,6 @@ function App() {
               </Tooltip>
             )}
             {immersiveOverview && <Badge size="xs" color="teal" variant="light">System active</Badge>}
-            {immersiveOverview && <Text size="xs" c="dimmed" ff="monospace">dir: {selected?.workspaceRoot}</Text>}
           </Group>
           <Group gap="sm">
             {immersiveOverview && (
@@ -506,13 +504,7 @@ function App() {
                 New Workstream
               </Button>
             )}
-            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool} · {selected ? providerModelLabel(selected.provider.model) : "—"}</Text>}
-            <Badge
-              variant="light"
-              leftSection={<IconArrowsExchange size={12} />}
-            >
-              Docker runtime
-            </Badge>
+            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : `${selected?.provider.tool} · ${selected ? providerModelLabel(selected.provider.model) : "—"}`}</Text>}
             <Tooltip
               label={colorScheme === "dark" ? "Light mode" : "Dark mode"}
             >
@@ -611,6 +603,7 @@ function App() {
                       agents={selected.agents}
                       messages={messages}
                       events={selected.events}
+                      insights={selected.insights ?? []}
                     />
                   </Paper>
                   <div className="runtime-cockpit-layout">
