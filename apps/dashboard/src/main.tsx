@@ -504,7 +504,7 @@ function App() {
                 New Workstream
               </Button>
             )}
-            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : selected?.provider.tool} · {selected ? providerModelLabel(selected.provider.model) : "—"}</Text>}
+            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : `${selected?.provider.tool} · ${selected ? providerModelLabel(selected.provider.model) : "—"}`}</Text>}
             <Tooltip
               label={colorScheme === "dark" ? "Light mode" : "Dark mode"}
             >

@@ -69,7 +69,7 @@ html[data-theme="light"] .theme-toggle { color: #263022; background: #ffffff; bo
 @keyframes agent-card-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .agent-execution-card, .agent-presence-dot, .agent-presence-dot::after { animation: none !important; } }
 .macro-column { min-width: 0; max-height: 280px; padding: 10px; overflow-y: auto; border: 1px solid #dfe7ef; border-top: 2px solid var(--mantine-color-teal-4); border-radius: 8px; background: #f8fafc; }
-.macro-column-header { position: sticky; top: -10px; z-index: 1; min-height: 28px; padding: 10px 0 8px; margin-top: -10px; border-bottom: 1px solid var(--mantine-color-default-border); background: #192635; }
+.macro-column-header { position: sticky; top: -10px; z-index: 1; min-height: 28px; padding: 10px 0 8px; margin-top: -10px; border-bottom: 1px solid var(--mantine-color-default-border); background: #f8fafc; }
 .macro-task-card { min-width: 0; min-height: 0; overflow: hidden; background: #ffffff !important; border-color: #dfe7ef !important; border-radius: 7px !important; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .macro-plan-board .macro-column-header .mantine-Text-root,
 .macro-plan-board .macro-task-card .mantine-Text-root { color: #17212f; }
@@ -160,12 +160,12 @@ body { background: #f4f7fb; color: #17212f; }
 .macro-plan-board { padding: 22px; border-radius: 14px; border: 1px solid #dfe7ef; background: rgba(255, 255, 255, .92); box-shadow: 0 12px 28px rgba(24, 48, 73, .16); }
 .macro-plan-board > .mantine-Group-root:first-child { margin-bottom: 2px; }
 .macro-plan-board .mantine-Title-root { letter-spacing: -.04em; }
-.macro-column { border-color: #58718b; border-radius: 8px; background: rgba(18, 34, 50, .78); box-shadow: inset 0 1px rgba(255,255,255,.04); }
+.macro-column { border-color: #dfe7ef; border-radius: 8px; background: #f8fafc; box-shadow: inset 0 1px rgba(255,255,255,.04); }
 .macro-plan-board > .mantine-SimpleGrid-root { align-items: stretch; grid-auto-rows: minmax(0, 1fr); }
 .macro-column { align-self: stretch; height: auto; min-height: 250px; }
 .macro-column-header { min-height: 40px; padding: 10px 2px 9px; }
-.macro-task-card { border-radius: 7px !important; background: linear-gradient(145deg, #253b51, #1d3043) !important; border-color: #58708a !important; box-shadow: 0 3px 10px rgba(5, 18, 30, .16); }
-.macro-task-card:hover, .macro-task-card:focus-visible { border-color: #7fd6c4 !important; box-shadow: 0 0 0 2px rgba(127, 214, 196, .24), 0 8px 18px rgba(5, 18, 30, .24); transform: translateY(-1px); outline: none; }
+.macro-task-card { border-radius: 7px !important; background: #ffffff !important; border-color: #dfe7ef !important; box-shadow: 0 3px 10px rgba(5, 18, 30, .08); }
+.macro-task-card:hover, .macro-task-card:focus-visible { border-color: #228be6 !important; box-shadow: 0 0 0 2px rgba(34, 139, 230, .18), 0 8px 18px rgba(5, 18, 30, .12); transform: translateY(-1px); outline: none; }
 .runtime-agent-panel { padding: 18px !important; border-color: #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .9) !important; box-shadow: 0 8px 24px rgba(28, 48, 72, .05); }
 .runtime-agent-panel .agent-execution-grid { gap: 10px; }
 .agent-execution-card { min-height: 200px; border-color: #dce5ed !important; border-radius: 10px !important; box-shadow: 0 4px 12px rgba(32, 61, 88, .05); }
