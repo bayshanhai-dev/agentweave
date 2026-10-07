@@ -1,5 +1,35 @@
 # AgentWeave
 
+**What if AI agents worked like a real team — proposing, debating, and refining
+ideas — instead of each working alone?**
+
+Today's AI agents are brilliant but lonely. Each one works in isolation: no
+colleagues to challenge its assumptions, no second opinion, nobody to ask
+"wait, did you think about…?" For simple tasks that's fine. For complex
+decisions — planning, engineering, strategy — a single agent is one-track-minded
+by design.
+
+AgentWeave is an open-source runtime where multiple AI agents collaborate the
+way good human teams do:
+
+1. **Propose** — agents independently draft competing solutions, no groupthink.
+2. **Critique** — a reviewer agent challenges every proposal and finds the holes.
+3. **Rebut** — proposers defend their ideas and address the criticism.
+4. **Synthesize** — a lead agent combines the best of all sides into one decision.
+5. **Human steer** — at key moments, a human steps in to set direction
+   ("prioritize sustainability", "cap the budget"), and the synthesis must honor it.
+
+The result is more robust than any single agent's answer — not because the
+models are smarter, but because the *process* is: multiple perspectives, honest
+debate, human judgment where it matters most.
+
+> **Status:** pre-1.0 developer preview. The collaboration loop above runs today
+> against a deterministic mock provider (see `demo/` for the recorded 116-second
+> walkthrough); real-provider and autonomous collaboration work is tracked in the
+> [v0.2 roadmap](https://github.com/bayshanhai-dev/agentweave/issues/20).
+
+---
+
 AgentWeave is an open-source **runtime OS for collaborative AI agents**. An
 agent is not an isolated chat session: it is an actor inside a durable,
 observable, and human-steerable system that can coordinate with other actors
