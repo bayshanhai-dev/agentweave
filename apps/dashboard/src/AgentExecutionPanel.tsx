@@ -1,6 +1,7 @@
 import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { tokenUsage } from "./agentUsage";
+import { TokenDonutChart } from "./TokenDonutChart";
 
 type Agent = { id: string; role: string; status: string };
 type ExecutionEvent = {
@@ -59,8 +60,18 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
     const projected = projection?.agents.find((candidate) => candidate.agentId === agent?.id || candidate.role === role);
     return { role, agent, status: projected?.status ?? status, latest, output, usage: projected?.usage.source !== "unknown" ? { reported: true, inputTokens: projected?.usage.inputTokens ?? 0, outputTokens: projected?.usage.outputTokens ?? 0, totalTokens: projected?.usage.totalTokens ?? 0, costUsd: projected?.usage.costUsd ?? 0 } : tokenUsage(agentEvents), projected };
   });
+  const tokenData = cards.map((card) => ({
+    role: card.role,
+    inputTokens: card.usage.inputTokens,
+    outputTokens: card.usage.outputTokens,
+    totalTokens: card.usage.totalTokens,
+  }));
   return <Stack gap="md" className="agent-execution-panel">
     <Group justify="space-between"><div><Text size="xs" c="dimmed" tt="uppercase" fw={700}>Live execution</Text><Title order={3}>Agent execution cards</Title><Text size="xs" c="dimmed">{projection?.headline ?? "Runtime projection is connecting"}</Text></div><Badge variant="light">{cards.filter((card) => card.status === "running").length} active</Badge></Group>
+    <Card withBorder radius="md" padding="md" className="agent-token-donut">
+      <Text size="xs" c="dimmed" tt="uppercase" fw={700} mb="sm">Token usage by agent</Text>
+      <TokenDonutChart data={tokenData} />
+    </Card>
     <SimpleGrid cols={{ base: 1, sm: 2, xl: 6 }} spacing="sm" className="agent-execution-grid">
       {cards.map(({ role, agent, status, latest, output, usage, projected }) => <Card key={agent.id} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
         <Group justify="space-between" align="flex-start"><div><Text fw={800}>{role.toUpperCase()}</Text><Text size="xs" c="dimmed">{agent?.id ?? "Not registered"}</Text></div><Badge size="sm" color={status === "failed" ? "red" : status === "running" ? "yellow" : "gray"}>{status}</Badge></Group>
