@@ -43,6 +43,7 @@ import { SummaryReport } from "./SummaryReport";
 import { TaskBoard, type Task } from "./TaskBoard";
 import { WorkstreamControls } from "./WorkstreamControls";
 import { LiveMessageBus } from "./LiveMessageBus";
+import { TemplateManager } from "./TemplateManager";
 import { providerModelLabel } from "./providerDisplay";
 import type { StreamInsight } from "./unified-stream";
 import "./styles.css";
@@ -536,6 +537,7 @@ function App() {
             {selected && <StatusBadge status={selected.status} />}
           </Group>}
           {!selected ? (
+            <Stack gap="xl">
             <Paper withBorder radius="lg" p={{ base: "xl", sm: 60 }}>
               <Stack align="flex-start" maw={650}>
                 <ThemeIcon size={52} radius="md" variant="light">
@@ -564,6 +566,10 @@ function App() {
                 />
               </Stack>
             </Paper>
+            <Paper withBorder radius="lg" p={{ base: "xl", sm: 40 }}>
+              <TemplateManager api={api} />
+            </Paper>
+            </Stack>
           ) : (
             <Stack gap="lg">
               <Paper withBorder radius={immersiveOverview ? "sm" : "lg"} p={immersiveOverview ? "sm" : "lg"} className={immersiveOverview ? "runtime-workstream-bar" : undefined}>

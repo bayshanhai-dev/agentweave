@@ -110,8 +110,145 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
   },
 ];
 
-export function getWorkstreamTemplate(templateId: string): WorkstreamTemplate | undefined {
-  return workstreamTemplates.find((template) => template.id === templateId);
+export function getWorkstreamTemplate(templateId: string, customTemplates: readonly WorkstreamTemplate[] = []): WorkstreamTemplate | undefined {
+  return workstreamTemplates.find((template) => template.id === templateId) ?? customTemplates.find((template) => template.id === templateId);
+}
+
+export type TemplateValidationResult =
+  | { ok: true; template: WorkstreamTemplate }
+  | { ok: false; errors: string[] };
+
+const templateSlugPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const templateAuthorities: readonly WorkstreamTemplateRole["authority"][] = ["lead", "executor", "reviewer"];
+const templateLaneStatuses: readonly WorkstreamTaskLane["status"][] = [
+  "ready",
+  "assigned",
+  "running",
+  "review",
+  "blocked",
+  "done",
+  "failed",
+  "cancelled",
+];
+
+/**
+ * Validates a user-supplied workstream template. Built-in templates are trusted
+ * (they are code); anything arriving over the API must pass through here.
+ */
+export function validateWorkstreamTemplate(input: unknown): TemplateValidationResult {
+  const errors: string[] = [];
+  if (typeof input !== "object" || input === null) {
+    return { ok: false, errors: ["template must be an object"] };
+  }
+  const value = input as Record<string, unknown>;
+
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id) errors.push("id is required");
+  else if (!templateSlugPattern.test(id)) errors.push("id must be a slug: lowercase letters, digits, '-' or '_'");
+
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  if (!name) errors.push("name is required");
+  const description = typeof value.description === "string" ? value.description : "";
+
+  const roles: WorkstreamTemplateRole[] = [];
+  if (!Array.isArray(value.roles) || value.roles.length < 2) {
+    errors.push("roles must be an array with at least 2 entries");
+  } else {
+    const seen = new Set<string>();
+    value.roles.forEach((entry, index) => {
+      const path = `roles[${index}]`;
+      if (typeof entry !== "object" || entry === null) {
+        errors.push(`${path} must be an object`);
+        return;
+      }
+      const role = entry as Record<string, unknown>;
+      const roleId = typeof role.id === "string" ? role.id.trim() : "";
+      if (!roleId) errors.push(`${path}.id is required`);
+      else if (!templateSlugPattern.test(roleId)) errors.push(`${path}.id must be a slug: lowercase letters, digits, '-' or '_'`);
+      else if (seen.has(roleId)) errors.push(`${path}.id "${roleId}" is duplicated`);
+      else seen.add(roleId);
+      const label = typeof role.label === "string" ? role.label.trim() : "";
+      if (!label) errors.push(`${path}.label is required`);
+      const authority = role.authority;
+      if (!templateAuthorities.includes(authority as WorkstreamTemplateRole["authority"])) {
+        errors.push(`${path}.authority must be one of: lead, executor, reviewer`);
+      }
+      roles.push({
+        id: roleId,
+        label,
+        authority: templateAuthorities.includes(authority as WorkstreamTemplateRole["authority"])
+          ? (authority as WorkstreamTemplateRole["authority"])
+          : "executor",
+        description: typeof role.description === "string" ? role.description : "",
+      });
+    });
+  }
+  const roleIds = new Set(roles.map((role) => role.id));
+
+  const orchestrationInput =
+    typeof value.orchestration === "object" && value.orchestration !== null
+      ? (value.orchestration as Record<string, unknown>)
+      : {};
+  const refField = (field: string): string => {
+    const ref = typeof orchestrationInput[field] === "string" ? (orchestrationInput[field] as string).trim() : "";
+    if (!ref) errors.push(`orchestration.${field} is required`);
+    else if (!roleIds.has(ref)) errors.push(`orchestration.${field} "${ref}" does not match any role id`);
+    return ref;
+  };
+  const leadRole = refField("leadRole");
+  const planningRole = refField("planningRole");
+  const reviewRole = refField("reviewRole");
+  let executionRoles: string[] = [];
+  if (!Array.isArray(orchestrationInput.executionRoles) || orchestrationInput.executionRoles.length === 0) {
+    errors.push("orchestration.executionRoles must be a non-empty array");
+  } else {
+    executionRoles = (orchestrationInput.executionRoles as unknown[]).map((entry) => String(entry).trim());
+    executionRoles.forEach((ref) => {
+      if (!roleIds.has(ref)) errors.push(`orchestration.executionRoles "${ref}" does not match any role id`);
+    });
+  }
+
+  const taskLanes: WorkstreamTaskLane[] = [];
+  if (!Array.isArray(value.taskLanes) || value.taskLanes.length === 0) {
+    errors.push("taskLanes must be a non-empty array");
+  } else {
+    value.taskLanes.forEach((entry, index) => {
+      const path = `taskLanes[${index}]`;
+      if (typeof entry !== "object" || entry === null) {
+        errors.push(`${path} must be an object`);
+        return;
+      }
+      const lane = entry as Record<string, unknown>;
+      const status = lane.status;
+      if (!templateLaneStatuses.includes(status as WorkstreamTaskLane["status"])) {
+        errors.push(`${path}.status must be one of: ${templateLaneStatuses.join(", ")}`);
+      }
+      const label = typeof lane.label === "string" ? lane.label.trim() : "";
+      if (!label) errors.push(`${path}.label is required`);
+      const color = typeof lane.color === "string" ? lane.color.trim() : "";
+      if (!color) errors.push(`${path}.color is required`);
+      taskLanes.push({
+        status: templateLaneStatuses.includes(status as WorkstreamTaskLane["status"])
+          ? (status as WorkstreamTaskLane["status"])
+          : "ready",
+        label,
+        color,
+      });
+    });
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    template: {
+      id,
+      name,
+      description,
+      roles,
+      taskLanes,
+      orchestration: { leadRole, planningRole, executionRoles, reviewRole },
+    },
+  };
 }
 
 const transitions: Record<WorkstreamStatus, readonly WorkstreamStatus[]> = {
