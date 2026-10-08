@@ -53,16 +53,16 @@ test("completes and persists the deterministic Mock workstream", async ({
   expect(createResponse.status()).toBe(201);
   const created = (await createResponse.json()) as { id: string };
 
-  await expect(page.getByRole("heading", { name: demoGoal })).toBeVisible();
+  await expect(page.locator(".cc-goal-text", { hasText: demoGoal })).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Summary report" }),
+    page.getByText("Agents now", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Macro Plan" })).toBeVisible();
+  await expect(page.getByText("Task board", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Agent execution cards" }),
+    page.getByText("Session totals", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Live message bus", { exact: true }),
+    page.getByText("Live events", { exact: true }),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Start Workstream" }).click();
@@ -81,9 +81,9 @@ test("completes and persists the deterministic Mock workstream", async ({
     )
     .toBe(true);
   await expect
-    .poll(() => page.locator(".macro-task-card").count())
+    .poll(() => page.locator(".cc-kanban-card").count())
     .toBeGreaterThanOrEqual(3);
-  await expect(page.locator(".bus-message")).not.toHaveCount(0);
+  await expect(page.locator(".cc-event")).not.toHaveCount(0);
 
   const awaitingApproval = await snapshot(request, created.id);
   expect(awaitingApproval.schemaVersion).toBe(1);
@@ -120,17 +120,13 @@ test("completes and persists the deterministic Mock workstream", async ({
 
   await page.getByRole("button", { name: "Approve & complete" }).click();
   await expect(
-    page
-      .locator(".runtime-summary-report")
-      .getByText("completed", { exact: true }),
+    page.getByText("completed", { exact: true }),
   ).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: demoGoal })).toBeVisible();
+  await expect(page.locator(".cc-goal-text", { hasText: demoGoal })).toBeVisible();
   await expect(
-    page
-      .locator(".runtime-summary-report")
-      .getByText("completed", { exact: true }),
+    page.getByText("completed", { exact: true }),
   ).toBeVisible();
 
   const persisted = await snapshot(request, created.id);
