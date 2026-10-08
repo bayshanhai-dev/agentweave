@@ -58,7 +58,7 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
     const status = latest && activeEvents.has(latest.type ?? "") ? "running" : latest && settledEvents.has(latest.type ?? "") ? (latest.type === "task.failed" || latest.type === "turn.failed" ? "failed" : "idle") : agent?.status ?? "idle";
     const output = [...agentEvents].reverse().find((event) => event.type === "turn.delta" || event.type === "tool.completed" || event.type === "task.completed");
     const projected = projection?.agents.find((candidate) => candidate.agentId === agent?.id || candidate.role === role);
-    return { role, agent, status: projected?.status ?? status, latest, output, usage: projected?.usage.source !== "unknown" ? { reported: true, inputTokens: projected?.usage.inputTokens ?? 0, outputTokens: projected?.usage.outputTokens ?? 0, totalTokens: projected?.usage.totalTokens ?? 0, costUsd: projected?.usage.costUsd ?? 0 } : tokenUsage(agentEvents), projected };
+    return { role, agent, status: projected?.status ?? status, latest, output, usage: projected && projected.usage.source !== "unknown" ? { reported: true, inputTokens: projected?.usage.inputTokens ?? 0, outputTokens: projected?.usage.outputTokens ?? 0, totalTokens: projected?.usage.totalTokens ?? 0, costUsd: projected?.usage.costUsd ?? 0 } : tokenUsage(agentEvents), projected };
   });
   const tokenData = cards.map((card) => ({
     role: card.role,
