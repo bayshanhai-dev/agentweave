@@ -5,6 +5,8 @@ export type TokenDonutDatum = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Optional explicit color; falls back to the hash-based palette. */
+  color?: string;
 };
 
 const PALETTE = [
@@ -50,7 +52,7 @@ export function TokenDonutChart({ data }: { data: TokenDonutDatum[] }) {
     const length = (entry.totalTokens / total) * CIRCUMFERENCE;
     const dashOffset = -consumed;
     consumed += length;
-    return { ...entry, length, dashOffset, color: colorForRole(entry.role) };
+    return { ...entry, length, dashOffset, color: entry.color ?? colorForRole(entry.role) };
   });
 
   return (

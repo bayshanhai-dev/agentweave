@@ -6,7 +6,6 @@ import {
   Box,
   Burger,
   Button,
-  Card,
   Center,
   Divider,
   Group,
@@ -16,7 +15,6 @@ import {
   Paper,
   Pagination,
   ScrollArea,
-  SimpleGrid,
   Stack,
   Text,
   ThemeIcon,
@@ -30,7 +28,6 @@ import {
   IconBrain,
   IconChevronRight,
   IconCircleDot,
-  IconLayoutKanban,
   IconMoon,
   IconPlus,
   IconSun,
@@ -38,8 +35,10 @@ import {
 } from "@tabler/icons-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AgentExecutionPanel } from "./AgentExecutionPanel";
-import { SummaryReport } from "./SummaryReport";
+import { AgentsNow, type SteerMessage } from "./AgentsNow";
+import { GoalBar } from "./GoalBar";
+import { SessionTotals } from "./SessionTotals";
+import { computeAgentCards } from "./agentCards";
 import { TaskBoard, type Task } from "./TaskBoard";
 import { WorkstreamControls } from "./WorkstreamControls";
 import { LiveMessageBus } from "./LiveMessageBus";
@@ -88,7 +87,7 @@ type Workstream = {
   tasks: Task[];
   events: Event[];
   messages?: Event[];
-  template?: { id: string; name: string; taskLanes: Array<{ status: string; label: string; color: string }> };
+  template?: { id: string; name: string; roles: Array<{ id: string; label: string; color?: string; icon?: string }>; taskLanes: Array<{ status: string; label: string; color: string }> };
   insights?: StreamInsight[];
   runtime?: { generatedAt: string; status: string; headline: string; activeAgents: number; degradedAgents: number; lastActivityAt?: string; agents: RuntimeAgent[] };
 };
@@ -224,47 +223,10 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function MacroPlanBoard({ workstream }: { workstream: Workstream }) {
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const defaultColumns = [
-    { status: "ready", label: "Backlog", color: "gray" },
-    { status: "assigned", label: "To Do", color: "blue" },
-    { status: "running", label: "In Progress", color: "yellow" },
-    { status: "review", label: "Review", color: "violet" },
-    { status: "done", label: "Done", color: "green" },
-  ];
-  const columns = workstream.template?.taskLanes.length ? workstream.template.taskLanes : defaultColumns;
-  const priority = (task: Task) => (task as Task & { priority?: string }).priority ?? "normal";
-  const taskOwner = (task: Task) => {
-    if (!task.ownerAgentId) return "Unassigned";
-    const agent = workstream.agents.find((candidate) => candidate.id === task.ownerAgentId);
-    return agent?.role.toUpperCase() ?? task.ownerAgentId.split(":").at(-1)?.replace(/-\d+$/, "").toUpperCase() ?? task.ownerAgentId;
-  };
-  return <Stack gap="md" className="macro-plan-board">
-    <Group justify="space-between" align="flex-end"><div><Group gap="xs"><IconLayoutKanban size={18} /><Title order={2}>Macro Plan</Title></Group><Text size="sm" c="dimmed">A live view of the workstream’s durable task queue.</Text></div><Badge variant="dot" color="teal">{workstream.tasks.length} tasks</Badge></Group>
-        <SimpleGrid cols={{ base: 1, sm: 2, xl: Math.min(columns.length, 5) }} spacing="sm">
-      {columns.map((column) => { const tasks = workstream.tasks.filter((task) => task.status === column.status); return <Stack key={column.status} gap="xs" className="macro-column">
-        <Group justify="space-between" className="macro-column-header"><Group gap="xs"><Badge color={column.color} variant="light" size="sm">{tasks.length}</Badge><Text fw={700} size="sm">{column.label}</Text></Group><Text size="xs" c="dimmed" tt="uppercase">{column.status}</Text></Group>
-        {tasks.length ? tasks.map((task) => <Card key={task.id} withBorder padding="sm" className="macro-task-card" role="button" tabIndex={0} aria-label={`Open task: ${task.title}`} onClick={() => setSelectedTask(task)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedTask(task); } }}><Stack gap="xs"><Text className="macro-task-title">{task.title}</Text><Group gap="xs" wrap="wrap" className="macro-task-meta"><Badge size="xs" variant="outline" color={priority(task) === "high" ? "red" : "gray"}>{priority(task)}</Badge><Badge size="xs" variant="light" color={task.ownerAgentId ? "blue" : "gray"}>Assigned · {taskOwner(task)}</Badge><Text size="xs" c="dimmed">{task.evidence.length} evidence</Text></Group><Text size="xs" c="dimmed" lineClamp={2}>{task.acceptanceCriteria[0] ?? "No acceptance criteria"}</Text></Stack></Card>) : <Card withBorder padding="md" className="macro-empty"><Text size="xs" c="dimmed">No tasks in this lane</Text></Card>}
-      </Stack>; })}
-    </SimpleGrid>
-    <Modal opened={Boolean(selectedTask)} onClose={() => setSelectedTask(null)} title="Task details" size="lg" centered>
-      {selectedTask && <Stack gap="md" className="macro-task-detail">
-        <div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Task</Text><Title order={3}>{selectedTask.title}</Title></div>
-        <Group gap="xs"><StatusBadge status={selectedTask.status} /><Badge variant="light">Assigned · {taskOwner(selectedTask)}</Badge><Badge variant="outline">{priority(selectedTask)}</Badge></Group>
-        <div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Acceptance criteria</Text>{selectedTask.acceptanceCriteria.length ? selectedTask.acceptanceCriteria.map((criterion) => <Text key={criterion} size="sm" mt="xs">✓ {criterion}</Text>) : <Text size="sm" c="dimmed" mt="xs">No acceptance criteria</Text>}</div>
-        <SimpleGrid cols={{ base: 1, sm: 2 }}><div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Dependencies</Text><Text size="sm" mt="xs">{selectedTask.dependencies.length ? selectedTask.dependencies.join(", ") : "None"}</Text></div><div><Text size="xs" tt="uppercase" c="dimmed" fw={700}>Evidence</Text><Text size="sm" mt="xs">{selectedTask.evidence.length ? selectedTask.evidence.join(", ") : "None"}</Text></div></SimpleGrid>
-        <Text size="xs" c="dimmed">Task ID · {selectedTask.id}</Text>
-      </Stack>}
-    </Modal>
-  </Stack>;
-}
 function App() {
   const [items, setItems] = useState<Workstream[]>([]);
   const [selected, setSelected] = useState<Workstream | null>(null);
   const [auditOpen, { open: openAudit, close: closeAudit }] = useDisclosure(false);
-  const [taskPanelOpen, { open: openTaskPanel, close: closeTaskPanel }] = useDisclosure(false);
-  const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [opened, { toggle, close }] = useDisclosure(false);
@@ -353,9 +315,25 @@ function App() {
     selected?.messages ??
     selected?.events.filter((event) => event.type?.startsWith("message.")) ??
     [];
+  const agentCards = useMemo(
+    () => (selected ? computeAgentCards(selected.agents, selected.events, selected.runtime) : []),
+    [selected],
+  );
+  const humanSteers = useMemo<SteerMessage[]>(
+    () =>
+      messages
+        .filter((message) => message.from === "human" || message.senderId === "human")
+        .map((message) => ({
+          id: message.id,
+          content: message.content,
+          message: message.message,
+          createdAt: message.createdAt,
+          occurredAt: message.occurredAt,
+        })),
+    [messages],
+  );
   function choose(item: Workstream) {
     setSelected(item);
-    setDraft("");
     setSendError(null);
     if (immersiveOverview) closeWorkstreams();
     if (mobile) close();
@@ -372,10 +350,11 @@ function App() {
         setCreateOpen(false);
       });
   }
-  async function send() {
-    if (!selected || !draft.trim()) return;
+  async function send(overrideText?: string) {
+    const text = (overrideText ?? "").trim();
+    if (!selected || !text) return;
     const agentRoles = new Set(selected.agents.map((agent) => agent.role.toLowerCase()));
-    const mentions = [...draft.matchAll(/@([a-z][a-z0-9_-]*)\b/gi)]
+    const mentions = [...text.matchAll(/@([a-z][a-z0-9_-]*)\b/gi)]
       .map((match) => match[1].toLowerCase())
       .filter((role) => agentRoles.has(role));
     const recipients = [
@@ -387,7 +366,7 @@ function App() {
       );
       return;
     }
-    const content = draft.replace(/@[a-z][a-z0-9_-]*\b/gi, "").trim();
+    const content = text.replace(/@[a-z][a-z0-9_-]*\b/gi, "").trim();
     try {
       const response = await fetch(
         `${api}/api/workstreams/${selected.id}/messages`,
@@ -409,7 +388,6 @@ function App() {
           ? { ...current, messages: [...(current.messages ?? []), localMessage] }
           : current,
       );
-      setDraft("");
       setSendError(null);
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "Message failed");
@@ -571,81 +549,63 @@ function App() {
             </Paper>
             </Stack>
           ) : (
-            <Stack gap="lg">
-              <Paper withBorder radius={immersiveOverview ? "sm" : "lg"} p={immersiveOverview ? "sm" : "lg"} className={immersiveOverview ? "runtime-workstream-bar" : undefined}>
-                <Group justify="space-between" align="flex-start" gap="md">
-                  <div>
-                    <Text size="xs" c="dimmed" tt="uppercase" fw={700}>{selected.flavor}</Text>
-                    <Title order={2} mt={4}>{selected.goal}</Title>
-                  </div>
-                  <Group gap="xs" className="workstream-utility-actions">
+            <Stack gap="lg" className="cc-workspace">
+              <GoalBar
+                goal={selected.goal}
+                tasks={selected.tasks}
+                workstreams={items.map((item) => ({ id: item.id, goal: item.goal, status: item.status }))}
+                selectedId={selected.id}
+                onSelect={(id) => {
+                  const item = items.find((candidate) => candidate.id === id);
+                  if (item) choose(item);
+                }}
+                controls={
+                  <>
                     <Button size="xs" variant="light" leftSection={<IconActivity size={14} />} onClick={openAudit}>Audit log</Button>
-                    <Button size="xs" variant="light" leftSection={<IconLayoutKanban size={14} />} onClick={openTaskPanel}>Task panel</Button>
-                  </Group>
-                </Group>
-                <Text size="xs" c="dimmed" mt={6}>
-                  Workspace · {selected.workspaceRoot}
-                </Text>
-                <WorkstreamControls
-                  api={api}
-                  workstreamId={selected.id}
-                  status={selected.status}
-                  onStatus={(status) =>
-                    setSelected((current) =>
-                      current?.id === selected.id ? { ...current, status } : current,
-                    )
-                  }
-                  onCreated={addCreated}
-                  openCreate={createOpen}
-                  onCreateOpenChange={setCreateOpen}
-                />
-              </Paper>
-              <Stack gap="lg" className="runtime-cockpit">
-                  <Paper withBorder radius="lg" p="md" className="runtime-summary-report">
-                    <SummaryReport
-                      compact
+                    <WorkstreamControls
+                      api={api}
+                      workstreamId={selected.id}
                       status={selected.status}
-                      tasks={selected.tasks}
-                      agents={selected.agents}
-                      messages={messages}
-                      events={selected.events}
-                      insights={selected.insights ?? []}
+                      onStatus={(status) =>
+                        setSelected((current) =>
+                          current?.id === selected.id ? { ...current, status } : current,
+                        )
+                      }
+                      onCreated={addCreated}
+                      openCreate={createOpen}
+                      onCreateOpenChange={setCreateOpen}
                     />
-                  </Paper>
-                  <div className="runtime-cockpit-layout">
-                    <Stack gap="lg" className="runtime-cockpit-main">
-                      <MacroPlanBoard
-                        workstream={selected}
-                      />
-                      <Paper withBorder radius="lg" p="lg" className="runtime-agent-panel">
-                        <AgentExecutionPanel agents={selected.agents} events={selected.events} projection={selected.runtime} />
-                      </Paper>
-                    </Stack>
-                    <Stack gap="lg" className="runtime-cockpit-rail">
-                      <LiveMessageBus
-                        messages={messages}
-                        insights={selected.insights ?? []}
-                        agents={selected.agents}
-                        draft={draft}
-                        onDraftChange={setDraft}
-                        onSend={() => void send()}
-                        sendError={sendError}
-                      />
-                    </Stack>
-                  </div>
-              </Stack>
+                  </>
+                }
+              />
+              <div className="cc-grid">
+                <AgentsNow
+                  cards={agentCards}
+                  templateRoles={selected.template?.roles}
+                  steers={humanSteers}
+                />
+                <LiveMessageBus
+                  messages={messages}
+                  insights={selected.insights ?? []}
+                  agents={selected.agents}
+                  onSend={(text) => void send(text)}
+                  sendError={sendError}
+                  templateRoles={selected.template?.roles}
+                />
+                <SessionTotals
+                  cards={agentCards}
+                  templateRoles={selected.template?.roles}
+                />
+              </div>
+              <TaskBoard
+                tasks={selected.tasks}
+                lanes={selected.template?.taskLanes}
+                agents={selected.agents}
+              />
               <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
                 <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
                 <ScrollArea h="65vh" type="auto">
                   <Box pr="md"><MessageList events={selected.events} paginated pageSize={10} /></Box>
-                </ScrollArea>
-              </Modal>
-              <Modal opened={taskPanelOpen} onClose={closeTaskPanel} title={<Group gap="sm"><Text fw={800} size="lg">Task panel</Text><Badge variant="light">{selected.tasks.length} tasks</Badge></Group>} size="95%" centered>
-                <Text size="sm" c="dimmed" mb="md">Full task details and status controls for the current Workstream.</Text>
-                <ScrollArea h="72vh" type="auto">
-                  <Box pr="md">
-                    <TaskBoard tasks={selected.tasks} />
-                  </Box>
                 </ScrollArea>
               </Modal>
             </Stack>
@@ -657,7 +617,7 @@ function App() {
 }
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <MantineProvider defaultColorScheme="light">
+    <MantineProvider defaultColorScheme="dark">
       <App />
     </MantineProvider>
   </React.StrictMode>,
