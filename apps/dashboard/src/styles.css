@@ -617,3 +617,8 @@ html[data-mantine-color-scheme="dark"] .mantine-Modal-content {
     animation: none !important;
   }
 }
+
+/* --- workstream switcher select fix --- */
+html[data-mantine-color-scheme="dark"] .cc-workstream-select { flex: 0 0 auto; }
+html[data-mantine-color-scheme="dark"] .cc-workstream-select .mantine-Select-input { font-size: 12px; }
+html[data-mantine-color-scheme="dark"] .cc-workstream-select svg { width: 14px; height: 14px; }
