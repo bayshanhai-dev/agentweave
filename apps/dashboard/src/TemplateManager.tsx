@@ -24,6 +24,8 @@ type TemplateRole = {
   label: string;
   authority: "lead" | "executor" | "reviewer";
   description: string;
+  color?: string;
+  icon?: string;
 };
 
 type TemplateLane = {
@@ -41,6 +43,18 @@ export type WorkstreamTemplateInfo = {
   taskLanes: TemplateLane[];
 };
 
+/** Preset avatar colors for new template roles (dark-friendly, distinct). */
+export const ROLE_COLOR_PRESETS = [
+  "#818cf8",
+  "#22d3ee",
+  "#a78bfa",
+  "#f472b6",
+  "#34d399",
+  "#fbbf24",
+  "#fb923c",
+  "#e879f9",
+];
+
 const AUTHORITIES = [
   { value: "lead", label: "Lead" },
   { value: "executor", label: "Executor" },
@@ -55,7 +69,15 @@ const DEFAULT_LANES: TemplateLane[] = [
   { status: "done", label: "Done", color: "green" },
 ];
 
-const emptyRole = (): TemplateRole => ({ id: "", label: "", authority: "executor", description: "" });
+let roleColorCounter = 0;
+const emptyRole = (): TemplateRole => ({
+  id: "",
+  label: "",
+  authority: "executor",
+  description: "",
+  color: ROLE_COLOR_PRESETS[(roleColorCounter += 1) % ROLE_COLOR_PRESETS.length],
+  icon: "",
+});
 
 function slugify(value: string): string {
   return value
@@ -143,6 +165,8 @@ export function TemplateManager({ api }: { api: string }) {
           label: role.label.trim(),
           authority: role.authority,
           description: role.description.trim(),
+          ...(role.color ? { color: role.color } : {}),
+          ...(role.icon?.trim() ? { icon: role.icon.trim() } : {}),
         })),
         taskLanes: lanes,
         orchestration: { leadRole, planningRole, executionRoles, reviewRole },
@@ -227,9 +251,24 @@ export function TemplateManager({ api }: { api: string }) {
               {template.description && (
                 <Text size="sm" c="dimmed" mt="xs" lineClamp={2}>{template.description}</Text>
               )}
-              <Text size="xs" c="dimmed" mt="sm">
-                {template.roles.length} roles · {template.roles.map((role) => role.label).join(", ")}
-              </Text>
+              <Group gap={6} mt="sm" wrap="wrap">
+                <Text size="xs" c="dimmed">{template.roles.length} roles</Text>
+                {template.roles.map((role) => (
+                  <Group key={role.id} gap={4}>
+                    <span
+                      aria-hidden
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        backgroundColor: role.color ?? "#818cf8",
+                        display: "inline-block",
+                      }}
+                    />
+                    <Text size="xs" c="dimmed">{role.icon ? `${role.icon} ` : ""}{role.label}</Text>
+                  </Group>
+                ))}
+              </Group>
             </Card>
           ))}
         </SimpleGrid>
@@ -246,14 +285,49 @@ export function TemplateManager({ api }: { api: string }) {
           <Divider label="Roles" labelPosition="left" />
           <Stack gap="xs">
             {roles.map((role, index) => (
-              <Group key={index} gap="xs" align="flex-end" wrap="nowrap">
-                <TextInput label={index === 0 ? "ID" : undefined} placeholder="producer" value={role.id} onChange={(e) => updateRole(index, { id: e.currentTarget.value })} style={{ flex: 1 }} />
-                <TextInput label={index === 0 ? "Label" : undefined} placeholder="Producer" value={role.label} onChange={(e) => updateRole(index, { label: e.currentTarget.value })} style={{ flex: 1 }} />
-                <Select label={index === 0 ? "Authority" : undefined} data={AUTHORITIES} value={role.authority} onChange={(value) => updateRole(index, { authority: (value ?? "executor") as TemplateRole["authority"] })} style={{ width: 130 }} />
-                <ActionIcon color="red" variant="subtle" aria-label="Remove role" disabled={roles.length <= 2} onClick={() => removeRole(index)}>
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Group>
+              <Stack key={index} gap={6} p="xs" style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 8 }}>
+                <Group gap="xs" align="flex-end" wrap="nowrap">
+                  <TextInput label={index === 0 ? "ID" : undefined} placeholder="producer" value={role.id} onChange={(e) => updateRole(index, { id: e.currentTarget.value })} style={{ flex: 1 }} />
+                  <TextInput label={index === 0 ? "Label" : undefined} placeholder="Producer" value={role.label} onChange={(e) => updateRole(index, { label: e.currentTarget.value })} style={{ flex: 1 }} />
+                  <Select label={index === 0 ? "Authority" : undefined} data={AUTHORITIES} value={role.authority} onChange={(value) => updateRole(index, { authority: (value ?? "executor") as TemplateRole["authority"] })} style={{ width: 130 }} />
+                  <ActionIcon color="red" variant="subtle" aria-label="Remove role" disabled={roles.length <= 2} onClick={() => removeRole(index)}>
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Group>
+                <Group gap="xs" align="center" wrap="nowrap">
+                  <Text size="xs" c="dimmed" style={{ minWidth: 44 }}>Color</Text>
+                  <Group gap={6}>
+                    {ROLE_COLOR_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        aria-label={`Role color ${preset}`}
+                        title={preset}
+                        onClick={() => updateRole(index, { color: preset })}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: "50%",
+                          border: role.color === preset ? "2px solid white" : "2px solid transparent",
+                          outline: role.color === preset ? `2px solid ${preset}` : "none",
+                          backgroundColor: preset,
+                          cursor: "pointer",
+                          padding: 0,
+                        }}
+                      />
+                    ))}
+                  </Group>
+                  <TextInput
+                    placeholder="🎙️"
+                    aria-label="Role icon (emoji)"
+                    value={role.icon ?? ""}
+                    maxLength={8}
+                    onChange={(e) => updateRole(index, { icon: e.currentTarget.value })}
+                    style={{ width: 64 }}
+                  />
+                  <Text size="xs" c="dimmed">icon</Text>
+                </Group>
+              </Stack>
             ))}
             <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => setRoles((current) => [...current, emptyRole()])} style={{ alignSelf: "flex-start" }}>
               Add role

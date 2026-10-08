@@ -81,6 +81,46 @@ describe("validateWorkstreamTemplate", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors).toContain("taskLanes must be a non-empty array");
   });
+
+  it("accepts optional role color and icon, and passes them through", () => {
+    const result = validateWorkstreamTemplate({
+      ...validTemplate,
+      roles: [
+        { id: "producer", label: "Producer", authority: "lead", color: "#818CF8", icon: "🎙️" },
+        { id: "host", label: "Host", authority: "executor" },
+      ],
+      orchestration: {
+        leadRole: "producer",
+        planningRole: "host",
+        executionRoles: ["host"],
+        reviewRole: "producer",
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.template.roles[0].color).toBe("#818cf8");
+      expect(result.template.roles[0].icon).toBe("🎙️");
+      expect(result.template.roles[1].color).toBeUndefined();
+      expect(result.template.roles[1].icon).toBeUndefined();
+    }
+  });
+
+  it("rejects invalid role color and icon values", () => {
+    const result = validateWorkstreamTemplate({
+      ...validTemplate,
+      roles: [
+        { id: "producer", label: "Producer", authority: "lead", color: "indigo", icon: "" },
+        { id: "host", label: "Host", authority: "executor", color: "#12345", icon: "way too long for an icon" },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.includes("roles[0].color"))).toBe(true);
+      expect(result.errors.some((e) => e.includes("roles[0].icon"))).toBe(true);
+      expect(result.errors.some((e) => e.includes("roles[1].color"))).toBe(true);
+      expect(result.errors.some((e) => e.includes("roles[1].icon"))).toBe(true);
+    }
+  });
 });
 
 describe("getWorkstreamTemplate with custom templates", () => {

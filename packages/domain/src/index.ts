@@ -24,6 +24,10 @@ export type WorkstreamTemplateRole = {
   label: string;
   authority: "lead" | "reviewer" | "executor";
   description: string;
+  /** Optional hex color (e.g. "#818cf8") used for the role's avatar and accents. */
+  color?: string;
+  /** Optional short icon (e.g. an emoji like "🎙️") shown as an avatar accessory. */
+  icon?: string;
 };
 
 export type WorkstreamTaskLane = {
@@ -60,12 +64,12 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
     name: "Software development",
     description: "Plan, implement, verify, and review a software change.",
     roles: [
-      { id: "pm", label: "PM", authority: "lead", description: "Coordinates work and completion review." },
-      { id: "pe", label: "PE", authority: "lead", description: "Refines technical plans and acceptance criteria." },
-      { id: "backend", label: "Backend", authority: "executor", description: "Implements backend changes." },
-      { id: "frontend", label: "Frontend", authority: "executor", description: "Implements user-facing changes." },
-      { id: "qa", label: "QA", authority: "reviewer", description: "Verifies implementation and evidence." },
-      { id: "devops", label: "DevOps", authority: "executor", description: "Supports delivery and runtime operations." },
+      { id: "pm", label: "PM", authority: "lead", description: "Coordinates work and completion review.", color: "#818cf8", icon: "🎯" },
+      { id: "pe", label: "PE", authority: "lead", description: "Refines technical plans and acceptance criteria.", color: "#22d3ee", icon: "🧭" },
+      { id: "backend", label: "Backend", authority: "executor", description: "Implements backend changes.", color: "#a78bfa", icon: "⚙️" },
+      { id: "frontend", label: "Frontend", authority: "executor", description: "Implements user-facing changes.", color: "#f472b6", icon: "🎨" },
+      { id: "qa", label: "QA", authority: "reviewer", description: "Verifies implementation and evidence.", color: "#34d399", icon: "🧪" },
+      { id: "devops", label: "DevOps", authority: "executor", description: "Supports delivery and runtime operations.", color: "#fbbf24", icon: "🚀" },
     ],
     taskLanes: standardTaskLanes,
     orchestration: { leadRole: "pm", planningRole: "pe", executionRoles: ["backend", "frontend"], reviewRole: "qa" },
@@ -75,10 +79,10 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
     name: "Research synthesis",
     description: "Frame a question, gather evidence, synthesize findings, and review the conclusion.",
     roles: [
-      { id: "research-lead", label: "Research lead", authority: "lead", description: "Frames the question and coordinates the investigation." },
-      { id: "researcher", label: "Researcher", authority: "executor", description: "Collects and evaluates source material." },
-      { id: "synthesizer", label: "Synthesizer", authority: "executor", description: "Connects evidence into a coherent answer." },
-      { id: "research-reviewer", label: "Research reviewer", authority: "reviewer", description: "Checks claims, evidence, and uncertainty." },
+      { id: "research-lead", label: "Research lead", authority: "lead", description: "Frames the question and coordinates the investigation.", color: "#818cf8", icon: "🔬" },
+      { id: "researcher", label: "Researcher", authority: "executor", description: "Collects and evaluates source material.", color: "#22d3ee", icon: "📚" },
+      { id: "synthesizer", label: "Synthesizer", authority: "executor", description: "Connects evidence into a coherent answer.", color: "#f472b6", icon: "🧩" },
+      { id: "research-reviewer", label: "Research reviewer", authority: "reviewer", description: "Checks claims, evidence, and uncertainty.", color: "#34d399", icon: "🔍" },
     ],
     taskLanes: [
       { status: "ready", label: "Question", color: "gray" },
@@ -94,10 +98,10 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
     name: "Short video creator",
     description: "Research an audience opportunity, produce a short-form video package, and review it before publishing.",
     roles: [
-      { id: "creator-lead", label: "Creator lead", authority: "lead", description: "Owns the channel angle, brief, and publish decision." },
-      { id: "trend-researcher", label: "Trend researcher", authority: "executor", description: "Finds audience opportunities, relevant references, and factual support." },
-      { id: "video-producer", label: "Video producer", authority: "executor", description: "Produces the hook, script, storyboard, shot list, and post package." },
-      { id: "audience-reviewer", label: "Audience reviewer", authority: "reviewer", description: "Checks clarity, platform fit, claims, and the strength of the opening hook." },
+      { id: "creator-lead", label: "Creator lead", authority: "lead", description: "Owns the channel angle, brief, and publish decision.", color: "#818cf8", icon: "🎬" },
+      { id: "trend-researcher", label: "Trend researcher", authority: "executor", description: "Finds audience opportunities, relevant references, and factual support.", color: "#22d3ee", icon: "📈" },
+      { id: "video-producer", label: "Video producer", authority: "executor", description: "Produces the hook, script, storyboard, shot list, and post package.", color: "#f472b6", icon: "🎥" },
+      { id: "audience-reviewer", label: "Audience reviewer", authority: "reviewer", description: "Checks clarity, platform fit, claims, and the strength of the opening hook.", color: "#34d399", icon: "👀" },
     ],
     taskLanes: [
       { status: "ready", label: "Brief", color: "gray" },
@@ -119,6 +123,7 @@ export type TemplateValidationResult =
   | { ok: false; errors: string[] };
 
 const templateSlugPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const templateHexColorPattern = /^#[0-9a-fA-F]{6}$/;
 const templateAuthorities: readonly WorkstreamTemplateRole["authority"][] = ["lead", "executor", "reviewer"];
 const templateLaneStatuses: readonly WorkstreamTaskLane["status"][] = [
   "ready",
@@ -173,6 +178,22 @@ export function validateWorkstreamTemplate(input: unknown): TemplateValidationRe
       if (!templateAuthorities.includes(authority as WorkstreamTemplateRole["authority"])) {
         errors.push(`${path}.authority must be one of: lead, executor, reviewer`);
       }
+      let color: string | undefined;
+      if (role.color !== undefined) {
+        if (typeof role.color !== "string" || !templateHexColorPattern.test(role.color.trim())) {
+          errors.push(`${path}.color must be a hex color like #818cf8`);
+        } else {
+          color = role.color.trim().toLowerCase();
+        }
+      }
+      let icon: string | undefined;
+      if (role.icon !== undefined) {
+        if (typeof role.icon !== "string" || !role.icon.trim() || [...role.icon.trim()].length > 8) {
+          errors.push(`${path}.icon must be a non-empty short string (e.g. an emoji)`);
+        } else {
+          icon = role.icon.trim();
+        }
+      }
       roles.push({
         id: roleId,
         label,
@@ -180,6 +201,8 @@ export function validateWorkstreamTemplate(input: unknown): TemplateValidationRe
           ? (authority as WorkstreamTemplateRole["authority"])
           : "executor",
         description: typeof role.description === "string" ? role.description : "",
+        ...(color !== undefined ? { color } : {}),
+        ...(icon !== undefined ? { icon } : {}),
       });
     });
   }
