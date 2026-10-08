@@ -15,8 +15,9 @@ import { MessageRepository } from "./repositories/message-repository.js";
 import { RuntimeRepository } from "./repositories/runtime-repository.js";
 import { EvidenceRepository } from "./repositories/evidence-repository.js";
 import { InsightRepository } from "./repositories/insight-repository.js";
+import { TemplateRepository } from "./template-repository.js";
 import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./commands/workstream-lifecycle.js";
-import { getWorkstreamTemplate, validateCollaborationRound, validateInsight, workstreamTemplates, type CollaborationRound, type Insight, type WorkstreamTemplate } from "@agentweave/domain";
+import { getWorkstreamTemplate, validateCollaborationRound, validateInsight, validateWorkstreamTemplate, workstreamTemplates, type CollaborationRound, type Insight, type WorkstreamTemplate } from "@agentweave/domain";
 import { CollaborationPolicy } from "./collaboration-policy.js";
 import { projectRuntime } from "./runtime-projection.js";
 import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
@@ -30,13 +31,14 @@ type Message = { id: string; workstreamId: string; senderId: string; recipientId
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
-type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes">;
-const templateSummary = (template: WorkstreamTemplate): WorkstreamTemplateSummary => ({
+type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes"> & { builtin: boolean };
+const templateSummary = (template: WorkstreamTemplate, builtin: boolean): WorkstreamTemplateSummary => ({
   id: template.id,
   name: template.name,
   description: template.description,
   roles: template.roles,
   taskLanes: template.taskLanes,
+  builtin,
 });
 function jsonArray(value: unknown): string[] { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } } return []; }
 function normalizeLoadedStatus(status: string, events: Array<{ type: unknown }>): string {
@@ -67,12 +69,21 @@ const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://lo
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
+const templateRepository = new TemplateRepository(sql);
+// Custom templates are persisted in PostgreSQL and mirrored in memory so the
+// (synchronous) template resolution used across the control plane keeps working.
+// Single-host deployment: writes go through this process, so the mirror cannot diverge.
+const customTemplates: WorkstreamTemplate[] = [];
+const isBuiltinTemplate = (templateId: string): boolean => workstreamTemplates.some((builtin) => builtin.id === templateId);
+const resolveTemplate = (templateId: string): WorkstreamTemplate | undefined =>
+  getWorkstreamTemplate(templateId, customTemplates);
+const allTemplates = (): WorkstreamTemplate[] => [...workstreamTemplates, ...customTemplates];
 const workstreamResponse = (workstream: Workstream) => {
-  const template = getWorkstreamTemplate(workstream.flavor);
-  return { ...workstream, ...(template ? { template: templateSummary(template) } : {}) };
+  const template = resolveTemplate(workstream.flavor);
+  return { ...workstream, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
 };
 const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => {
-  const template = getWorkstreamTemplate(workstream.flavor);
+  const template = resolveTemplate(workstream.flavor);
   if (!template) throw new Error(`Unknown workstream template: ${workstream.flavor}`);
   return { templateId: template.id, ...template.orchestration };
 };
@@ -80,7 +91,7 @@ const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => 
 app.addHook("onRequest", async (request, reply) => {
   metrics.requests += 1;
   reply.header("access-control-allow-origin", "*");
-  reply.header("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
+  reply.header("access-control-allow-methods", "GET,POST,DELETE,PATCH,OPTIONS");
   reply.header("access-control-allow-headers", "content-type");
   if (request.method === "OPTIONS") return reply.code(204).send();
 });
@@ -102,7 +113,39 @@ app.post("/api/runtime/workers/:workerId/heartbeat", async (request, reply) => {
   const found = await runtimeRepository.heartbeatWorker(workerId, (request.body as { taskId?: string } | undefined)?.taskId);
   return found ? { workerId, status: "online" } : reply.code(404).send({ error: "worker_not_registered" });
 });
-app.get("/api/workstream-templates", async () => workstreamTemplates.map(templateSummary));
+app.get("/api/workstream-templates", async () => allTemplates().map((template) => templateSummary(template, isBuiltinTemplate(template.id))));
+app.post("/api/workstream-templates", async (request, reply) => {
+  const validation = validateWorkstreamTemplate(request.body);
+  if (!validation.ok) return reply.code(400).send({ error: "invalid_template", details: validation.errors });
+  const template = validation.template;
+  if (isBuiltinTemplate(template.id)) return reply.code(409).send({ error: "builtin_template_id", message: `Template id "${template.id}" is reserved by a built-in template` });
+  if (customTemplates.some((existing) => existing.id === template.id)) {
+    return reply.code(409).send({ error: "template_id_conflict", message: `Template id "${template.id}" already exists` });
+  }
+  try {
+    await templateRepository.saveCustom(template);
+  } catch (error) {
+    return reply.code(500).send({ error: "template_persist_failed" });
+  }
+  customTemplates.push(template);
+  app.log.info({ templateId: template.id }, "custom_workstream_template.created");
+  return reply.code(201).send(templateSummary(template, false));
+});
+app.delete("/api/workstream-templates/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  if (isBuiltinTemplate(id)) return reply.code(403).send({ error: "builtin_template_protected", message: "Built-in templates cannot be deleted" });
+  let deleted: boolean;
+  try {
+    deleted = await templateRepository.deleteCustom(id);
+  } catch (error) {
+    return reply.code(500).send({ error: "template_delete_failed" });
+  }
+  if (!deleted) return reply.code(404).send({ error: "template_not_found" });
+  const index = customTemplates.findIndex((template) => template.id === id);
+  if (index >= 0) customTemplates.splice(index, 1);
+  app.log.info({ templateId: id }, "custom_workstream_template.deleted");
+  return reply.code(204).send();
+});
 app.get("/api/workstreams", async () => [...workstreams.values()].map(workstreamResponse));
 app.get("/api/workstreams/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
@@ -301,8 +344,8 @@ app.post("/api/workstreams", async (request, reply) => {
   const body = request.body as { goal?: string; templateId?: string; flavor?: string; tool?: string; model?: string; workspaceRoot?: string } | undefined;
   if (!body?.goal?.trim()) return reply.code(400).send({ error: "goal_required" });
   const flavor = body.templateId ?? body.flavor ?? "software-development";
-  const template = getWorkstreamTemplate(flavor);
-  if (!template) return reply.code(400).send({ error: "unsupported_template", availableTemplates: workstreamTemplates.map((candidate) => candidate.id) });
+  const template = resolveTemplate(flavor);
+  if (!template) return reply.code(400).send({ error: "unsupported_template", availableTemplates: allTemplates().map((candidate) => candidate.id) });
   const id = randomUUID();
   const workstream: Workstream = {
     id, goal: body.goal.trim(), flavor, status: "draft",
@@ -482,6 +525,13 @@ async function loadWorkstreams(): Promise<void> {
 
 const appliedMigrations = await runMigrations(sql);
 if (appliedMigrations.length) app.log.info({ migrations: appliedMigrations }, "database.migrated");
+try {
+  const loaded = await templateRepository.listCustom();
+  customTemplates.push(...loaded);
+  if (loaded.length) app.log.info({ count: loaded.length }, "custom_workstream_templates.loaded");
+} catch (error) {
+  app.log.warn({ error }, "custom_workstream_templates.load_failed");
+}
 await eventBus.connect();
 await loadWorkstreams();
 await eventBus.consumer(subjects.events, async (message) => {
