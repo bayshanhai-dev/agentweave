@@ -1,4 +1,4 @@
-.PHONY: help install up down restart logs doctor check test build typecheck lint clean bridge demo fresh
+.PHONY: help install up down restart logs doctor check test build typecheck lint clean bridge demo demo-codex fresh
 
 help:
 	@printf '%s\n' \
@@ -6,6 +6,7 @@ help:
 	  'make up        Build and start the Docker stack' \
 	  'make bridge    Start the local Codex host bridge (only for provider=codex)' \
 	  'make demo      Start the stack and create a deterministic demo workstream' \
+	  'make demo-codex Start the stack with Codex and create a demo workstream' \
 	  'make fresh     Remove local Docker state after CONFIRM=YES' \
 	  'make down      Stop the Docker stack' \
 	  'make doctor    Check local prerequisites and service health' \
@@ -25,6 +26,11 @@ bridge:
 
 demo:
 	AGENTWEAVE_PROVIDER=mock MOCK_PROVIDER_DELAY_MS=700 docker compose up --build -d
+	docker compose exec -T control-api node /app/scripts/demo.mjs
+
+demo-codex:
+	@echo 'Codex bridge required: run "make bridge" in another terminal first.'
+	AGENTWEAVE_PROVIDER=codex docker compose up --build -d
 	docker compose exec -T control-api node /app/scripts/demo.mjs
 
 down:

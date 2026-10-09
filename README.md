@@ -361,7 +361,9 @@ executes Codex on your host while the Worker stays in Docker.
    same narrow directory that you explicitly allow AgentWeave to access.
 3. Generate a private `CODEX_BRIDGE_TOKEN` and place it only in `.env`.
 4. Start the bridge in a separate terminal with `make bridge`, then run
-   `make up` or `make demo` in another terminal.
+   `make demo-codex` in another terminal. This is the one-command way to start
+   the stack with the real Codex provider and create a demo workstream. To
+   start the Codex-backed stack without creating a demo, run `make up` instead.
 
 To verify the authenticated provider boundary without changing files, run the
 documented read-only smoke turn from another terminal:
