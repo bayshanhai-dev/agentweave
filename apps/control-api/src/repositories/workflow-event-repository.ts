@@ -8,6 +8,10 @@ export class WorkflowEventRepository {
     workstreamId: string,
     event: PersistedWorkflowEvent,
   ): Promise<number> {
+    // This repository is the SOLE allocator of event sequences. Callers must NOT pre-compute
+    // event.sequence: the FOR UPDATE row lock below serializes concurrent appends for the same
+    // workstream, but only when every writer goes through this MAX(sequence)+1 path. A
+    // pre-computed value bypasses the lock and causes duplicate-key crashes (see #53 e2e).
     return this.sql.begin(async (transaction) => {
       await transaction`select id from workstreams where id = ${workstreamId} for update`;
       const next = event.sequence ?? Number((await transaction`select coalesce(max(sequence), 0) + 1 as sequence from workflow_events where workstream_id = ${workstreamId}`)[0]?.sequence ?? 1);
