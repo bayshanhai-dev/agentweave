@@ -17,6 +17,7 @@ type SinkEvent = {
   turnId?: string;
   text?: string;
   structuredResult?: { completionProposal?: { reason?: string }; messages?: unknown[] };
+  turns?: Array<{ turnId: string; text: string; structuredResult?: { completionProposal?: { reason?: string } } }>;
   turnBudgetExhausted?: boolean;
 };
 
@@ -70,6 +71,31 @@ describe("agent-owned multi-turn execution", () => {
     expect(completed?.turnBudgetExhausted).toBeUndefined();
   });
 
+  it("renews the session lease after every completed turn", async () => {
+    const repository = sessions();
+    const sink = vi.fn(async () => {});
+    await new AgentTaskExecutor(new MockProviderAdapter(), repository, "worker", sink).execute({
+      taskId: "lease-renewal",
+      agentId: "pm",
+      prompt: "[agentweave multiturn=twoturn]\nFinish in two turns.",
+    });
+    expect(repository.acquireLease).toHaveBeenCalledTimes(4);
+  });
+
+  it("fails cleanly when the session lease is lost between turns", async () => {
+    const repository = sessions();
+    vi.mocked(repository.acquireLease).mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const sink = vi.fn(async () => {});
+    await expect(new AgentTaskExecutor(new MockProviderAdapter(), repository, "worker", sink).execute({
+      taskId: "lease-lost",
+      agentId: "pm",
+      prompt: "[agentweave multiturn=twoturn]\nFinish in two turns.",
+    })).rejects.toThrow("Session lease lost");
+    expect(eventsOf(sink, "task.failed")).toHaveLength(1);
+    expect(eventsOf(sink, "task.completed")).toHaveLength(0);
+    expect(vi.mocked(repository.save).mock.calls.every(([record]) => record.status === "active")).toBe(true);
+  });
+
   it("runs a second turn and stops on the completion signal", async () => {
     const sink = vi.fn(async () => {});
     await new AgentTaskExecutor(
@@ -88,6 +114,11 @@ describe("agent-owned multi-turn execution", () => {
       completionProposal: {
         reason: "Two-turn scenario completed with a verified result.",
       },
+    });
+    expect(completed?.turns).toHaveLength(2);
+    expect(completed?.turns?.[0]?.structuredResult).toBeDefined();
+    expect(completed?.turns?.[1]?.structuredResult).toMatchObject({
+      completionProposal: { reason: "Two-turn scenario completed with a verified result." },
     });
     expect(completed?.turnBudgetExhausted).toBeUndefined();
   });
