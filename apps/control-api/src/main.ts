@@ -391,7 +391,10 @@ function emit(workstream: Workstream, type: string, message: string, role?: Role
 }
 
 function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void {
-  event.sequence = Math.max(0, ...workstream.events.map((item) => item.sequence ?? 0)) + 1;
+  // Sequence is allocated atomically by WorkflowEventRepository.append (SELECT ... FOR UPDATE
+  // on the workstream row + MAX(sequence)+1 in one transaction). Never pre-compute it here:
+  // concurrent emitters derive the same value from a stale in-memory list and violate the
+  // (workstream_id, sequence) unique constraint, crashing the process (e2e red on #53).
   workstream.events.push(event);
   void persistEvent(workstream.id, event);
   void persistWorkstreamStatus(workstream);
@@ -409,9 +412,11 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
 }
 
 async function createMessageEvent(workstream: Workstream, from: string, to: string, content: string, intent: string): Promise<WorkflowEvent> {
-  const event: WorkflowEvent = { id: randomUUID(), sequence: Math.max(0, ...workstream.events.map((item) => item.sequence ?? 0)) + 1, type: "message.sent", message: content, from, to, occurredAt: new Date().toISOString() };
+  const event: WorkflowEvent = { id: randomUUID(), type: "message.sent", message: content, from, to, occurredAt: new Date().toISOString() };
   workstream.events.push(event);
-  await workflowEventRepository.append(workstream.id, { ...event, role: intent });
+  // Let the repository allocate the sequence atomically (see recordWorkflowEvent); passing a
+  // pre-computed value here would bypass the row lock and risk duplicate sequences.
+  event.sequence = await workflowEventRepository.append(workstream.id, { ...event, role: intent });
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, from, to, intent }, "message.sent");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
@@ -497,7 +502,8 @@ async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<vo
 }
 
 async function persistEvent(workstreamId: string, event: WorkflowEvent): Promise<void> {
-  await workflowEventRepository.append(workstreamId, event);
+  // Backfill the atomically allocated sequence onto the in-memory event for consistency.
+  event.sequence = await workflowEventRepository.append(workstreamId, event);
 }
 
 async function loadWorkstreams(): Promise<void> {
