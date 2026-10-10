@@ -180,6 +180,12 @@ export const runtimeExecutionPayloadSchema = z
     turnId: z.string().min(1).optional(),
     text: z.string().optional(),
     structuredResult: agentTurnResultSchema.optional(),
+    turns: z.array(z.object({
+      turnId: z.string().min(1),
+      text: z.string(),
+      structuredResult: agentTurnResultSchema.optional(),
+      usage: providerUsageSchema.optional(),
+    })).optional(),
     error: z.union([z.string().min(1), providerErrorSchema]).optional(),
     evidenceIds: z.array(z.string().min(1)).optional(),
     elapsedMs: z.number().nonnegative().optional(),

@@ -10,7 +10,12 @@ import { parseAgentTurnResult } from "../providers/agent-turn-result.js";
 
 export type AgentTask = { taskId: string; executionKey?: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string; collectEvidence?: boolean };
 type ExecutionContext = { taskId: string; agentId?: string; workstreamId?: string; provider?: string; model?: string; usage?: ProviderUsage };
-export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; error?: string; evidenceIds?: string[]; turnBudgetExhausted?: boolean; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
+export type ExecutionTurnSummary = { turnId: string; text: string; structuredResult?: AgentTurnResult; usage?: ProviderUsage };
+export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; turns?: ExecutionTurnSummary[]; error?: string; evidenceIds?: string[]; turnBudgetExhausted?: boolean; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
+
+class SessionLeaseLostError extends Error {
+  constructor() { super("Session lease lost"); }
+}
 
 const DEFAULT_MAX_TURNS = 5;
 const MAX_OBSERVATION_CHARS = 4000;
@@ -112,6 +117,7 @@ export class AgentTaskExecutor {
       let result: ProviderRunResult | undefined;
       let structuredResult: AgentTurnResult | undefined;
       let totalUsage: ProviderUsage | undefined;
+      const turns: ExecutionTurnSummary[] = [];
       let turnBudgetExhausted = false;
       while (true) {
         turn += 1;
@@ -137,8 +143,13 @@ export class AgentTaskExecutor {
         structuredResult = turnResult.structuredResult !== undefined
           ? agentTurnResultSchema.parse(turnResult.structuredResult)
           : /^\s*(?:\{|```json\b)/.test(turnResult.text) ? parseAgentTurnResult(turnResult.text) : undefined;
+        const usage = turnResult.usage ?? turnUsage;
+        turns.push({ turnId: turnResult.turnId, text: turnResult.text, ...(structuredResult ? { structuredResult } : {}), ...(usage ? { usage } : {}) });
         record.currentTurnId = turnResult.turnId;
         record.lastCheckpoint = await this.provider.checkpoint(turnResult.session);
+        const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
+        if (!(await this.sessions.acquireLease(id, this.workerId, leaseExpiresAt))) throw new SessionLeaseLostError();
+        record.leaseExpiresAt = leaseExpiresAt;
         record.updatedAt = new Date().toISOString();
         await this.sessions.save(record);
         if (!wantsAnotherTurn(structuredResult)) break;
@@ -155,9 +166,9 @@ export class AgentTaskExecutor {
           const collected = await this.evidence.collect({ taskId: task.taskId, workspacePath, ...(process.env.TEST_COMMAND ? { commands: [process.env.TEST_COMMAND] } : {}) });
           for (const evidence of collected) evidenceIds.push(await persistWorkspaceEvidence(evidence));
         }
-        await this.sink({ type: "task.completed", turnId: result.turnId, ...(structuredResult ? { structuredResult } : {}), taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: result.session.provider, ...(result.session.model ? { model: result.session.model } : {}), ...(totalUsage ? { usage: totalUsage } : {}), text: result.text, ...(evidenceIds.length ? { evidenceIds } : {}), ...(turnBudgetExhausted ? { turnBudgetExhausted: true } : {}) });
+        await this.sink({ type: "task.completed", turnId: result.turnId, ...(structuredResult ? { structuredResult } : {}), taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: result.session.provider, ...(result.session.model ? { model: result.session.model } : {}), ...(totalUsage ? { usage: totalUsage } : {}), text: result.text, turns, ...(evidenceIds.length ? { evidenceIds } : {}), ...(turnBudgetExhausted ? { turnBudgetExhausted: true } : {}) });
       }
-    } catch (error) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) }); throw error; }
+    } catch (error) { if (!(error instanceof SessionLeaseLostError)) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); } await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) }); throw error; }
     finally { if (heartbeat) clearInterval(heartbeat); await this.sessions.releaseLease(id, this.workerId); if (task.workstreamId && this.controls.get(task.workstreamId) === control) this.controls.delete(task.workstreamId); }
   }
   private async emitProviderEvent(event: ProviderRunEvent, task: AgentTask, session: ProviderSession): Promise<void> {
