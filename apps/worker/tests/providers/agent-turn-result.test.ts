@@ -20,7 +20,7 @@ describe("AgentTurnResult parsing", () => {
   it("extracts JSON embedded in prose (real LLM style)", () => {
     // Real LLMs often add explanatory text before/after the JSON.
     const result = parseAgentTurnResult(
-      `Here's my proposal:\n{"schemaVersion":1,"summary":"Use haiku","insights":[{"id":"p1","kind":"proposal","confidence":0.9}],"tasks":[],"messages":[]}\nLet me know what you think.`
+      `Here's my proposal:\n{"schemaVersion":1,"summary":"Use haiku","insights":[{"id":"p1","kind":"proposal","content":"Use a 5-7-5 haiku","confidence":0.9}],"tasks":[],"messages":[]}\nLet me know what you think.`
     );
     expect(result.summary).toBe("Use haiku");
     expect(result.insights).toHaveLength(1);
