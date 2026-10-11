@@ -98,8 +98,18 @@ export class CollaborationPolicy {
       !candidate.contradictionOf?.some((id) =>
         proposals.some((proposal) => proposal.id === id),
       )
-    )
-      throw new Error("A critique must target a proposal");
+    ) {
+      // Real LLMs often drop or garble the exact proposal insight IDs even when
+      // the prompt lists them. The critique stage exists to challenge this
+      // round's proposals, so link them explicitly instead of killing the round
+      // on a mechanical linkage failure (which previously deadlocked the
+      // workstream silently: the throw escaped as a plain Error and no workflow
+      // event was ever emitted).
+      candidate.references = [
+        ...candidate.references,
+        ...proposals.map((proposal) => proposal.id),
+      ];
+    }
 
     const all = [...existing, candidate];
     const updated: CollaborationRound = {

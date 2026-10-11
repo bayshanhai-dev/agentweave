@@ -718,8 +718,12 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         return;
       }
     } catch (error) {
-      if (!(error instanceof InvalidStructuredTurn)) throw error;
-      app.log.warn({ event: "agent.turn.rejected", workstreamId: workstream.id, agentId: sender.id, error: error.message }, "Structured result rejected");
+      // Any failure while applying a structured turn — an invalid shape OR a
+      // collaboration-policy rejection — must go loud. Rethrowing here used to
+      // leave the workstream "active" forever with no workflow event at all
+      // (silent round deadlock), which is strictly worse than a visible error.
+      const message = error instanceof Error ? error.message : String(error);
+      app.log.warn({ event: "agent.turn.rejected", workstreamId: workstream.id, agentId: sender.id, error: message }, "Structured result rejected");
       if (["active", "starting"].includes(workstream.status)) {
         const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId && task.ownerAgentId === sender.id);
         if (sourceTask && !["done", "failed", "cancelled"].includes(sourceTask.status)) {
@@ -729,7 +733,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         workstream.status = "waiting_for_human";
         await persistWorkstreamStatus(workstream);
       }
-      emit(workstream, "agent.turn.rejected", error.message, sender.role);
+      emit(workstream, "agent.turn.rejected", message, sender.role);
       return;
     }
   }
