@@ -142,7 +142,7 @@ export class AgentTaskExecutor {
         result = turnResult;
         structuredResult = turnResult.structuredResult !== undefined
           ? agentTurnResultSchema.parse(turnResult.structuredResult)
-          : /^\s*(?:\{|```json\b)/.test(turnResult.text) ? parseAgentTurnResult(turnResult.text) : undefined;
+          : parseAgentTurnResult(turnResult.text);
         const usage = turnResult.usage ?? turnUsage;
         turns.push({ turnId: turnResult.turnId, text: turnResult.text, ...(structuredResult ? { structuredResult } : {}), ...(usage ? { usage } : {}) });
         record.currentTurnId = turnResult.turnId;
