@@ -71,9 +71,17 @@ await bus.consumer(subjects.inbox, async (message) => {
       inFlightTasks.add(executionKey);
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }
-      console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, occurredAt: new Date().toISOString() }));
+      // Agent-owned autonomy (#25 slice 1): an "agent.probe" message lets the agent decide
+      // its own actions based on inbox context, instead of executing a dispatched task.
+      // The LLM receives the trigger content and returns structured actions (messages,
+      // tasks, etc.) or nothing if no action is needed.
+      const isProbe = payload.messageType === "agent.probe";
+      const prompt = isProbe
+        ? `[agentweave autonomy probe]\nYou are ${targetAgentId}. Review the context below and decide what to do.\nYou may: send messages to other agents, propose tasks, or take no action.\nReturn a JSON object with schemaVersion 1, summary, insights, tasks, and messages.\nIf no action is needed, return empty arrays.\n\nContext:\n${payload.content}`
+        : payload.content;
+      console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, autonomous: isProbe, occurredAt: new Date().toISOString() }));
       try {
-        await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt: payload.content, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
+        await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
         await executor.finishTask(executionKey, "completed");
       } catch (error) {
         await executor.finishTask(executionKey, "failed");
