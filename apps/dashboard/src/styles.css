@@ -622,3 +622,24 @@ html[data-mantine-color-scheme="dark"] .mantine-Modal-content {
 html[data-mantine-color-scheme="dark"] .cc-workstream-select { flex: 0 0 auto; }
 html[data-mantine-color-scheme="dark"] .cc-workstream-select .mantine-Select-input { font-size: 12px; }
 html[data-mantine-color-scheme="dark"] .cc-workstream-select svg { width: 14px; height: 14px; }
+
+/* --- trace debugger --- */
+.trace-debugger { font-size: 13px; }
+.trace-debugger-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.trace-debugger-header h3 { margin: 0; font-size: 15px; }
+.trace-debugger-filter { flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: inherit; }
+.trace-debugger-count { opacity: 0.6; font-size: 12px; white-space: nowrap; }
+.trace-group { margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; overflow: hidden; }
+.trace-group-header { display: flex; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.04); font-family: monospace; font-size: 12px; }
+.trace-corr-id { color: #7dd3fc; }
+.trace-event-count { opacity: 0.6; }
+.trace-event { border-top: 1px solid rgba(255,255,255,0.05); }
+.trace-event-summary { display: flex; gap: 10px; width: 100%; text-align: left; padding: 8px 12px; background: none; border: none; color: inherit; cursor: pointer; font-size: 12px; }
+.trace-event-summary:hover { background: rgba(255,255,255,0.03); }
+.trace-seq { opacity: 0.5; font-family: monospace; min-width: 36px; }
+.trace-type { font-weight: 600; color: #fbbf24; min-width: 140px; }
+.trace-msg { flex: 1; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace-time { opacity: 0.5; font-size: 11px; }
+.trace-payload { margin: 0; padding: 12px; background: rgba(0,0,0,0.3); font-size: 11px; overflow-x: auto; max-height: 300px; overflow-y: auto; }
+.trace-empty { padding: 24px; text-align: center; opacity: 0.5; }
+.trace-debugger.error { color: #f87171; padding: 16px; }

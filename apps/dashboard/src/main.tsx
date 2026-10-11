@@ -40,6 +40,7 @@ import { GoalBar } from "./GoalBar";
 import { SessionTotals } from "./SessionTotals";
 import { computeAgentCards } from "./agentCards";
 import { TaskBoard, type Task } from "./TaskBoard";
+import { TraceDebugger } from "./TraceDebugger";
 import { WorkstreamControls } from "./WorkstreamControls";
 import { LiveMessageBus } from "./LiveMessageBus";
 import { TemplateManager } from "./TemplateManager";
@@ -227,6 +228,7 @@ function App() {
   const [items, setItems] = useState<Workstream[]>([]);
   const [selected, setSelected] = useState<Workstream | null>(null);
   const [auditOpen, { open: openAudit, close: closeAudit }] = useDisclosure(false);
+  const [traceOpen, { open: openTrace, close: closeTrace }] = useDisclosure(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [opened, { toggle, close }] = useDisclosure(false);
@@ -562,6 +564,7 @@ function App() {
                 controls={
                   <>
                     <Button size="xs" variant="light" leftSection={<IconActivity size={14} />} onClick={openAudit}>Audit log</Button>
+                    <Button size="xs" variant="light" onClick={openTrace}>Trace debug</Button>
                     <WorkstreamControls
                       api={api}
                       workstreamId={selected.id}
@@ -606,6 +609,12 @@ function App() {
                 <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
                 <ScrollArea h="65vh" type="auto">
                   <Box pr="md"><MessageList events={selected.events} paginated pageSize={10} /></Box>
+                </ScrollArea>
+              </Modal>
+              <Modal opened={traceOpen} onClose={closeTrace} title={<Group gap="sm"><Text fw={800} size="lg">Trace Debugger</Text><Badge variant="light">correlationId chains</Badge></Group>} size="xl" centered>
+                <Text size="sm" c="dimmed" mb="md">Follow a collaboration round end-to-end via correlationId. Click an event to expand its full JSON payload.</Text>
+                <ScrollArea h="65vh" type="auto">
+                  <Box pr="md"><TraceDebugger workstreamId={selected.id} apiBase={api} /></Box>
                 </ScrollArea>
               </Modal>
             </Stack>
