@@ -649,7 +649,32 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   }
   if (payload.structuredResult !== undefined) {
     try {
-      const result = parseStructuredTurn(payload.structuredResult);
+      let result = parseStructuredTurn(payload.structuredResult);
+      // Real LLMs sometimes answer collaboration prompts with prose instead of the
+      // required JSON contract. The worker then wraps the prose as a summary-only
+      // result with zero insights, and without this fallback the collaboration
+      // round never advances: no insight means advanceRound is never called and the
+      // workstream sits "active" forever with no error. Wrap a substantive prose
+      // summary as the stage's insight so the loop keeps moving with real content.
+      const fallbackTask = workstream.tasks.find((task) => task.id === payload.taskId);
+      const fallbackStage = fallbackTask ? collaborationStage(fallbackTask.title) : undefined;
+      const fallbackSummary = result.summary.trim();
+      if (fallbackStage && !hasStructuredActions(result) && fallbackSummary.length >= 40) {
+        result = {
+          ...result,
+          insights: [
+            {
+              id: `${fallbackStage}-prose`,
+              content: fallbackSummary,
+              kind: fallbackStage,
+              confidence: 0.5,
+              references: [],
+              contradictionOf: [],
+              evidenceIds: [],
+            },
+          ],
+        };
+      }
       if (hasStructuredActions(result)) {
         const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId);
         const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
