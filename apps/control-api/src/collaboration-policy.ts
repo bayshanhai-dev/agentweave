@@ -123,6 +123,28 @@ export class CollaborationPolicy {
         throw new Error(
           "Only the configured synthesizer may complete the round",
         );
+      // Same mechanical-linkage repair as critique above: LLMs fumble exact
+      // insight IDs, so link the round's proposals and challenges explicitly
+      // instead of throwing "Synthesis must cite supporting and opposing
+      // insights plus evidence" on a reference typo.
+      const proposalIds = all
+        .filter((insight) => insight.kind === "proposal")
+        .map((insight) => insight.id);
+      const challengeIds = all
+        .filter((insight) =>
+          ["critique", "contradiction"].includes(insight.kind),
+        )
+        .map((insight) => insight.id);
+      if (
+        !candidate.references.some((id) => proposalIds.includes(id))
+      ) {
+        candidate.references = [...candidate.references, ...proposalIds];
+      }
+      if (
+        !candidate.references.some((id) => challengeIds.includes(id))
+      ) {
+        candidate.references = [...candidate.references, ...challengeIds];
+      }
       const supporting = candidate.references.some((id) =>
         all.some((insight) => insight.id === id && insight.kind === "proposal"),
       );
