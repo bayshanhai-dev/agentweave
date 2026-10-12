@@ -704,9 +704,26 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         if (sourceTask && collaborationStage(sourceTask.title)) {
           for (const insight of plan.insights) {
             const decision = await insightRepository.advanceRound(workstream.id, insight.id);
-            emit(workstream, decision.round.status === "completed" ? "collaboration.round.completed" : "collaboration.turn.accepted", decision.reason, sender.role);
+            const roundCompleted = decision.round.status === "completed";
+            emit(workstream, roundCompleted ? "collaboration.round.completed" : "collaboration.turn.accepted", decision.reason, sender.role);
             const next = dispatchForDecision(decision, await insightRepository.listInsights(workstream.id), workstream.agents);
             if (next) await dispatchCollaboration(workstream, decision.round.id, next, sender.id);
+            // After the collaboration round completes, automatically trigger the
+            // implementation phase: prompt the PM lead to decompose the synthesis
+            // into concrete implementation tasks via the orchestration decision API.
+            // Without this, the workstream stalls — the PM does not know to delegate.
+            if (roundCompleted) {
+              const policy = orchestrationPolicyFor(workstream);
+              const lead = workstream.agents.find((candidate) => candidate.role === policy.leadRole);
+              const synthesis = plan.insights.find((candidate) => candidate.kind === "synthesis") ?? plan.insights[plan.insights.length - 1];
+              if (lead && synthesis) {
+                const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
+                await createMessage(workstream, "human", [lead.id],
+                  `[agentweave implementation-trigger] The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}\n\nDecompose this into concrete implementation tasks. For each task, submit an orchestration decision via POST /api/workstreams/${workstream.id}/orchestration-decision with action "create_task", specifying the targetRole (e.g. backend, frontend) and taskTitle. Do not write the code yourself — delegate to the execution roles.`,
+                  "directive", {});
+                emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
+              }
+            }
           }
         }
         for (const message of plan.messages) {
