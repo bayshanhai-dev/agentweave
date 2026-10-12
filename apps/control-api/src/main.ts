@@ -673,6 +673,17 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
               evidenceIds: [],
             },
           ],
+          // A prose synthesis still needs human approval: without a
+          // completionProposal the round completes but the workstream never
+          // reaches waiting_for_human.
+          ...(fallbackStage === "synthesis"
+            ? {
+                completionProposal: {
+                  reason: fallbackSummary.slice(0, 500),
+                  evidenceIds: [],
+                },
+              }
+            : {}),
         };
       }
       if (hasStructuredActions(result)) {
