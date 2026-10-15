@@ -23,6 +23,7 @@ import { projectRuntime } from "./runtime-projection.js";
 import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
+import { republishImplementationTriggerAfterResume } from "./approval-implementation-trigger.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -273,7 +274,18 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   const workstream = workstreams.get(id);
   const body = (request.body ?? {}) as CommandBody;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  try { return await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message)); }
+  try {
+    const response = await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message));
+    if (body.decision === "resume") {
+      await republishImplementationTriggerAfterResume(workstream, {
+        listRounds: (workstreamId) => insightRepository.listRounds(workstreamId),
+        createMessage: (senderId, recipientIds, content, messageType, causationId) =>
+          createMessage(workstream, senderId, recipientIds, content, messageType, { causationId }),
+        emit: (type, message, role) => emit(workstream, type, message, role),
+      });
+    }
+    return response;
+  }
   catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
 });
 app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => {
