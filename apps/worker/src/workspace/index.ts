@@ -1,4 +1,4 @@
-import { access, stat } from "node:fs/promises";
+import { access, mkdir, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ export function validateWorkspacePath(workspacePath: string, root = process.env.
   if (!isAbsolute(resolved) || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Workspace path is outside WORKSPACE_ROOT: ${workspacePath}`);
   return resolved;
 }
+export async function ensureWorkspace(workspacePath: string): Promise<void> { await mkdir(workspacePath, { recursive: true }); }
 export async function assertWorkspace(workspacePath: string): Promise<void> { await access(workspacePath); if (!(await stat(workspacePath)).isDirectory()) throw new Error(`Workspace is not a directory: ${workspacePath}`); }
 export async function collectWorkspaceEvidence(taskId: string, workspacePath: string, testCommand?: string): Promise<WorkspaceEvidence> {
   const diff = await exec("git", ["diff", "--no-ext-diff", "--binary"], { cwd: workspacePath, maxBuffer: 4 * 1024 * 1024 });

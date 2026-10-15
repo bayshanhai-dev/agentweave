@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ProviderAdapter, ProviderRunEvent, ProviderSession, ProviderUsage } from "../providers/index.js";
 import type { AgentSessionRecord, AgentSessionRepository } from "../providers/session-repository.js";
 import { ExecutionControl } from "./execution-control.js";
-import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
+import { ensureWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "@agentweave/protocol";
 import type { ProviderRunResult } from "../providers/types.js";
@@ -88,7 +88,7 @@ export class AgentTaskExecutor {
     let record!: AgentSessionRecord;
     try {
       workspacePath = task.workspacePath ? validateWorkspacePath(task.workspacePath) : undefined;
-      if (workspacePath) await assertWorkspace(workspacePath);
+      if (workspacePath) await ensureWorkspace(workspacePath);
       const existing = (await this.sessions.listUnfinished(this.workerId)).find((candidate) => candidate.id === id || candidate.providerSessionId === id);
       const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
       const acquired = await this.sessions.acquireLease(existing?.id ?? id, this.workerId, leaseExpiresAt);
