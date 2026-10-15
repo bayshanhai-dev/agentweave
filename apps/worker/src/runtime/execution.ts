@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ProviderAdapter, ProviderRunEvent, ProviderSession, ProviderUsage } from "../providers/index.js";
 import type { AgentSessionRecord, AgentSessionRepository } from "../providers/session-repository.js";
 import { ExecutionControl } from "./execution-control.js";
-import { assertWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
+import { ensureWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "@agentweave/protocol";
 import type { ProviderRunResult } from "../providers/types.js";
@@ -88,12 +88,13 @@ export class AgentTaskExecutor {
     let record!: AgentSessionRecord;
     try {
       workspacePath = task.workspacePath ? validateWorkspacePath(task.workspacePath) : undefined;
-      if (workspacePath) await assertWorkspace(workspacePath);
+      if (workspacePath) await ensureWorkspace(workspacePath);
       const existing = (await this.sessions.listUnfinished(this.workerId)).find((candidate) => candidate.id === id || candidate.providerSessionId === id);
       const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
       const acquired = await this.sessions.acquireLease(existing?.id ?? id, this.workerId, leaseExpiresAt);
       if (existing && !acquired) throw new Error(`Session lease unavailable: ${id}`);
-      session = existing ? await this.provider.resumeSession(this.toProviderSession(existing, workspacePath, task.model), task.correlationId) : await this.provider.createSession({ ...(task.model ? { model: task.model } : {}), ...(workspacePath ? { workspacePath } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}) });
+      const resumable = existing?.providerSessionId ? existing : undefined;
+      session = resumable ? await this.provider.resumeSession(this.toProviderSession(resumable, workspacePath, task.model), task.correlationId) : await this.provider.createSession({ ...(task.model ? { model: task.model } : {}), ...(workspacePath ? { workspacePath } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}) });
       record = { id, agentId: task.agentId, provider: session.provider, providerSessionId: session.providerSessionId, status: "active", lastEventSequence: existing?.lastEventSequence ?? 0, workerId: this.workerId, leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(), updatedAt: new Date().toISOString() };
       await this.sessions.save(record);
       if (!existing && !(await this.sessions.acquireLease(id, this.workerId, leaseExpiresAt))) throw new Error(`Session lease unavailable: ${id}`);

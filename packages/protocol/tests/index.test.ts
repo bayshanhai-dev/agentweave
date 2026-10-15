@@ -4,12 +4,25 @@ import {
   agentMessageSchema,
   eventEnvelopeSchema,
   governedOutputSchema,
+  parseRuntimeEventPayload,
   roleTemplateSchema,
   scalingRecommendationSchema,
   taskLeaseSchema,
 } from "../src/index.js";
 
 describe("scaling contracts", () => {
+  it("accepts implementation-triggered workflow events", () => {
+    const now = new Date().toISOString();
+    expect(
+      parseRuntimeEventPayload("orchestration.implementation_triggered", {
+        id: "event-1",
+        type: "orchestration.implementation_triggered",
+        message: "Implementation triggered",
+        occurredAt: now,
+      }),
+    ).toMatchObject({ type: "orchestration.implementation_triggered" });
+  });
+
   it("normalizes the canonical runtime event envelope", () => {
     const event = eventEnvelopeSchema.parse({
       id: "event-1",

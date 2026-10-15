@@ -23,6 +23,7 @@ import { projectRuntime } from "./runtime-projection.js";
 import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
+import { republishImplementationTriggerAfterResume } from "./approval-implementation-trigger.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -273,7 +274,18 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   const workstream = workstreams.get(id);
   const body = (request.body ?? {}) as CommandBody;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  try { return await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message)); }
+  try {
+    const response = await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message));
+    if (body.decision === "resume") {
+      await republishImplementationTriggerAfterResume(workstream, {
+        listRounds: (workstreamId) => insightRepository.listRounds(workstreamId),
+        createMessage: (senderId, recipientIds, content, messageType, causationId) =>
+          createMessage(workstream, senderId, recipientIds, content, messageType, { causationId }),
+        emit: (type, message, role) => emit(workstream, type, message, role),
+      });
+    }
+    return response;
+  }
   catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
 });
 app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => {
@@ -396,8 +408,12 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
   // concurrent emitters derive the same value from a stale in-memory list and violate the
   // (workstream_id, sequence) unique constraint, crashing the process (e2e red on #53).
   workstream.events.push(event);
-  void persistEvent(workstream.id, event);
-  void persistWorkstreamStatus(workstream);
+  void persistEvent(workstream.id, event).catch((error) => {
+    app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.event.persist_failed");
+  });
+  void persistWorkstreamStatus(workstream).catch((error) => {
+    app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.status.persist_failed");
+  });
   metrics.eventsEmitted += 1;
   if (event.type === "run.started") metrics.runsStarted += 1;
   if (event.type === "usage.updated" && event.usage) {
@@ -649,7 +665,43 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   }
   if (payload.structuredResult !== undefined) {
     try {
-      const result = parseStructuredTurn(payload.structuredResult);
+      let result = parseStructuredTurn(payload.structuredResult);
+      // Real LLMs sometimes answer collaboration prompts with prose instead of the
+      // required JSON contract. The worker then wraps the prose as a summary-only
+      // result with zero insights, and without this fallback the collaboration
+      // round never advances: no insight means advanceRound is never called and the
+      // workstream sits "active" forever with no error. Wrap a substantive prose
+      // summary as the stage's insight so the loop keeps moving with real content.
+      const fallbackTask = workstream.tasks.find((task) => task.id === payload.taskId);
+      const fallbackStage = fallbackTask ? collaborationStage(fallbackTask.title) : undefined;
+      const fallbackSummary = result.summary.trim();
+      if (fallbackStage && !hasStructuredActions(result) && fallbackSummary.length >= 40) {
+        result = {
+          ...result,
+          insights: [
+            {
+              id: `${fallbackStage}-prose`,
+              content: fallbackSummary,
+              kind: fallbackStage,
+              confidence: 0.5,
+              references: [],
+              contradictionOf: [],
+              evidenceIds: [],
+            },
+          ],
+          // A prose synthesis still needs human approval: without a
+          // completionProposal the round completes but the workstream never
+          // reaches waiting_for_human.
+          ...(fallbackStage === "synthesis"
+            ? {
+                completionProposal: {
+                  reason: fallbackSummary.slice(0, 500),
+                  evidenceIds: [],
+                },
+              }
+            : {}),
+        };
+      }
       if (hasStructuredActions(result)) {
         const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId);
         const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
@@ -668,9 +720,26 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         if (sourceTask && collaborationStage(sourceTask.title)) {
           for (const insight of plan.insights) {
             const decision = await insightRepository.advanceRound(workstream.id, insight.id);
-            emit(workstream, decision.round.status === "completed" ? "collaboration.round.completed" : "collaboration.turn.accepted", decision.reason, sender.role);
+            const roundCompleted = decision.round.status === "completed";
+            emit(workstream, roundCompleted ? "collaboration.round.completed" : "collaboration.turn.accepted", decision.reason, sender.role);
             const next = dispatchForDecision(decision, await insightRepository.listInsights(workstream.id), workstream.agents);
             if (next) await dispatchCollaboration(workstream, decision.round.id, next, sender.id);
+            // After the collaboration round completes, automatically trigger the
+            // implementation phase: prompt the PM lead to decompose the synthesis
+            // into concrete implementation tasks via the orchestration decision API.
+            // Without this, the workstream stalls — the PM does not know to delegate.
+            if (roundCompleted) {
+              const policy = orchestrationPolicyFor(workstream);
+              const lead = workstream.agents.find((candidate) => candidate.role === policy.leadRole);
+              const synthesis = plan.insights.find((candidate) => candidate.kind === "synthesis") ?? plan.insights[plan.insights.length - 1];
+              if (lead && synthesis) {
+                const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
+                await createMessage(workstream, "human", [lead.id],
+                  `[agentweave implementation-trigger] The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}\n\nDecompose this into concrete implementation tasks. For each task, submit an orchestration decision via POST /api/workstreams/${workstream.id}/orchestration-decision with action "create_task", specifying the targetRole (e.g. backend, frontend) and taskTitle. Do not write the code yourself — delegate to the execution roles.`,
+                  "directive", {});
+                emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
+              }
+            }
           }
         }
         for (const message of plan.messages) {
@@ -693,8 +762,12 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         return;
       }
     } catch (error) {
-      if (!(error instanceof InvalidStructuredTurn)) throw error;
-      app.log.warn({ event: "agent.turn.rejected", workstreamId: workstream.id, agentId: sender.id, error: error.message }, "Structured result rejected");
+      // Any failure while applying a structured turn — an invalid shape OR a
+      // collaboration-policy rejection — must go loud. Rethrowing here used to
+      // leave the workstream "active" forever with no workflow event at all
+      // (silent round deadlock), which is strictly worse than a visible error.
+      const message = error instanceof Error ? error.message : String(error);
+      app.log.warn({ event: "agent.turn.rejected", workstreamId: workstream.id, agentId: sender.id, error: message }, "Structured result rejected");
       if (["active", "starting"].includes(workstream.status)) {
         const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId && task.ownerAgentId === sender.id);
         if (sourceTask && !["done", "failed", "cancelled"].includes(sourceTask.status)) {
@@ -704,7 +777,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         workstream.status = "waiting_for_human";
         await persistWorkstreamStatus(workstream);
       }
-      emit(workstream, "agent.turn.rejected", error.message, sender.role);
+      emit(workstream, "agent.turn.rejected", message, sender.role);
       return;
     }
   }
