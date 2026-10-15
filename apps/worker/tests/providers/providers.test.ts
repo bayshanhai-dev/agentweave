@@ -110,6 +110,20 @@ describe("provider adapters", () => {
     expect(run.events.at(-2)).toMatchObject({ type: "usage.updated", usage: { totalTokens: 150 } });
   });
 
+  it("fails and cancels a Codex turn when its event stream stalls", async () => {
+    let cancelled: { sessionId: string; turnId: string; correlationId: string } | undefined;
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-stalled" } } } : { result: { turnId: "turn-stalled" } }; },
+      async *events() { await new Promise(() => undefined); },
+      async cancel(sessionId, turnId, correlationId) { cancelled = { sessionId, turnId, correlationId }; },
+    };
+    const stream = new CodexAppServerAdapter(transport, { inactivityTimeoutMs: 10 }).run({ input: "inspect", correlationId: "corr-stalled" });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.started" }, done: false });
+    expect(await stream.next()).toMatchObject({ value: { type: "provider.error", error: { code: "CODEX_TURN_INACTIVITY_TIMEOUT", category: "provider", retry: "retryable" } }, done: false });
+    await expect(stream.next()).rejects.toMatchObject({ code: "CODEX_TURN_INACTIVITY_TIMEOUT", category: "provider", retry: "retryable" });
+    expect(cancelled).toEqual({ sessionId: "thread-stalled", turnId: "turn-stalled", correlationId: "corr-stalled" });
+  });
+
   it("streams Claude stdout, exposes stderr, and uses argv safely", async () => {
     let command = ""; let args: string[] = [];
     const runner = (receivedCommand: string, receivedArgs: string[]): ProcessResult => { command = receivedCommand; args = receivedArgs; return { code: Promise.resolve(0), stdout: chunks(["hello", " world"]), stderr: chunks(["diagnostic"]), kill: () => undefined }; };
