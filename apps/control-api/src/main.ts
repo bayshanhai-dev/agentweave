@@ -408,8 +408,12 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
   // concurrent emitters derive the same value from a stale in-memory list and violate the
   // (workstream_id, sequence) unique constraint, crashing the process (e2e red on #53).
   workstream.events.push(event);
-  void persistEvent(workstream.id, event);
-  void persistWorkstreamStatus(workstream);
+  void persistEvent(workstream.id, event).catch((error) => {
+    app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.event.persist_failed");
+  });
+  void persistWorkstreamStatus(workstream).catch((error) => {
+    app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.status.persist_failed");
+  });
   metrics.eventsEmitted += 1;
   if (event.type === "run.started") metrics.runsStarted += 1;
   if (event.type === "usage.updated" && event.usage) {
