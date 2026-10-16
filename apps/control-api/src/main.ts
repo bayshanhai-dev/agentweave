@@ -23,7 +23,13 @@ import { projectRuntime } from "./runtime-projection.js";
 import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
-import { republishImplementationTriggerAfterResume } from "./approval-implementation-trigger.js";
+import {
+  implementationTriggerInstruction,
+  implementationTriggerInstructionSeparator,
+  implementationTriggerMarker,
+  isImplementationTriggerResult,
+  republishImplementationTriggerAfterResume,
+} from "./approval-implementation-trigger.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -726,7 +732,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
             if (next) await dispatchCollaboration(workstream, decision.round.id, next, sender.id);
             // After the collaboration round completes, automatically trigger the
             // implementation phase: prompt the PM lead to decompose the synthesis
-            // into concrete implementation tasks via the orchestration decision API.
+            // into concrete implementation tasks through the native turn-result path.
             // Without this, the workstream stalls — the PM does not know to delegate.
             if (roundCompleted) {
               const policy = orchestrationPolicyFor(workstream);
@@ -734,8 +740,11 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
               const synthesis = plan.insights.find((candidate) => candidate.kind === "synthesis") ?? plan.insights[plan.insights.length - 1];
               if (lead && synthesis) {
                 const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
+                const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
+                  "Decompose this into concrete implementation tasks.".length,
+                );
                 await createMessage(workstream, "human", [lead.id],
-                  `[agentweave implementation-trigger] The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}\n\nDecompose this into concrete implementation tasks. For each task, submit an orchestration decision via POST /api/workstreams/${workstream.id}/orchestration-decision with action "create_task", specifying the targetRole (e.g. backend, frontend) and taskTitle. Do not write the code yourself — delegate to the execution roles.`,
+                  `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`,
                   "directive", {});
                 emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
               }
@@ -801,12 +810,20 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     return;
   }
   const durableTask = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  const triggerDecomposition = !durableTask && isImplementationTriggerResult({
+    messages: workstream.messages.map((message) => ({ ...message, correlationId: message.correlationId ?? "" })),
+    tasks: workstream.tasks,
+    senderId: sender.id,
+    senderRole: sender.role,
+    leadRole: policy.leadRole,
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+  });
   // Worker execution IDs are not necessarily durable task IDs. Only a task
   // that exists in this Workstream may advance orchestration; all other turns
   // are direct Human ↔ Agent conversation and belong in the Intercom.
   // It must come back to the Intercom as a reply, rather than being interpreted
   // as an orchestration handoff or disappearing into lifecycle events.
-  if (!durableTask) {
+  if (!durableTask && !triggerDecomposition) {
     await createMessage(workstream, sender.id, ["human"], resultText, "reply", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     await setAgentStatus(sender, "idle");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "agent.reply.created", message: `${sender.role} replied to Human`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
@@ -832,7 +849,14 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     await persistWorkstreamStatus(workstream);
     return;
   }
-  const orchestrationText = sender.role === policy.leadRole ? resultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : resultText;
+  const triggerResultText = triggerDecomposition
+    ? (() => {
+        const marker = "[READY_FOR_DECOMPOSITION]";
+        const markerIndex = resultText.lastIndexOf(marker);
+        return markerIndex === -1 ? resultText : resultText.slice(markerIndex).replace(marker, `${marker}\n`);
+      })()
+    : resultText;
+  const orchestrationText = sender.role === policy.leadRole ? triggerResultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : triggerResultText;
   const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { await setAgentStatus(sender, "idle"); workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
