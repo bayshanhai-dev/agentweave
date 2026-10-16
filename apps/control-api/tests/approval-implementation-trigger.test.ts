@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   implementationTriggerInstructionSeparator,
+  implementationTriggerMarker,
+  isImplementationTriggerResult,
   republishImplementationTriggerAfterResume,
 } from "../src/approval-implementation-trigger.js";
 
@@ -122,5 +124,49 @@ describe("approval implementation trigger recovery", () => {
     expect(await republishImplementationTriggerAfterResume(workstream, dependencies)).toBe(false);
     expect(createMessage).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe("implementation trigger result detection", () => {
+  const input = {
+    messages: [
+      {
+        correlationId: "trigger-correlation",
+        content: `${implementationTriggerMarker} implement the synthesis`,
+        recipientIds: ["pm-1"],
+      },
+    ],
+    tasks: [{ title: "[Collaboration:synthesis] Synthesize findings" }],
+    senderId: "pm-1",
+    senderRole: "product_manager",
+    leadRole: "product_manager",
+    correlationId: "trigger-correlation",
+  };
+
+  it("detects a correlated implementation trigger result from the lead", () => {
+    expect(isImplementationTriggerResult(input)).toBe(true);
+  });
+
+  it("rejects a correlation ID mismatch", () => {
+    expect(isImplementationTriggerResult({ ...input, correlationId: "different" })).toBe(false);
+  });
+
+  it("rejects a result when a non-collaboration task already exists", () => {
+    expect(isImplementationTriggerResult({ ...input, tasks: [{ title: "Implement the API" }] })).toBe(false);
+  });
+
+  it("rejects a result from a non-lead sender", () => {
+    expect(isImplementationTriggerResult({ ...input, senderRole: "backend" })).toBe(false);
+  });
+
+  it("rejects a trigger addressed to a different agent", () => {
+    expect(isImplementationTriggerResult({
+      ...input,
+      messages: [{ ...input.messages[0]!, recipientIds: ["pm-2"] }],
+    })).toBe(false);
+  });
+
+  it("rejects a result without a correlation ID", () => {
+    expect(isImplementationTriggerResult({ ...input, correlationId: undefined })).toBe(false);
   });
 });

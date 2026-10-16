@@ -27,6 +27,7 @@ import {
   implementationTriggerInstruction,
   implementationTriggerInstructionSeparator,
   implementationTriggerMarker,
+  isImplementationTriggerResult,
   republishImplementationTriggerAfterResume,
 } from "./approval-implementation-trigger.js";
 
@@ -809,12 +810,20 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     return;
   }
   const durableTask = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  const triggerDecomposition = !durableTask && isImplementationTriggerResult({
+    messages: workstream.messages.map((message) => ({ ...message, correlationId: message.correlationId ?? "" })),
+    tasks: workstream.tasks,
+    senderId: sender.id,
+    senderRole: sender.role,
+    leadRole: policy.leadRole,
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+  });
   // Worker execution IDs are not necessarily durable task IDs. Only a task
   // that exists in this Workstream may advance orchestration; all other turns
   // are direct Human ↔ Agent conversation and belong in the Intercom.
   // It must come back to the Intercom as a reply, rather than being interpreted
   // as an orchestration handoff or disappearing into lifecycle events.
-  if (!durableTask) {
+  if (!durableTask && !triggerDecomposition) {
     await createMessage(workstream, sender.id, ["human"], resultText, "reply", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     await setAgentStatus(sender, "idle");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "agent.reply.created", message: `${sender.role} replied to Human`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
@@ -840,7 +849,14 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     await persistWorkstreamStatus(workstream);
     return;
   }
-  const orchestrationText = sender.role === policy.leadRole ? resultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : resultText;
+  const triggerResultText = triggerDecomposition
+    ? (() => {
+        const marker = "[READY_FOR_DECOMPOSITION]";
+        const markerIndex = resultText.lastIndexOf(marker);
+        return markerIndex === -1 ? resultText : resultText.slice(markerIndex).replace(marker, `${marker}\n`);
+      })()
+    : resultText;
+  const orchestrationText = sender.role === policy.leadRole ? triggerResultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : triggerResultText;
   const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { await setAgentStatus(sender, "idle"); workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
