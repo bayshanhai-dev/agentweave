@@ -2,6 +2,11 @@ import type { CollaborationRound } from "@agentweave/domain";
 import { collaborationStage } from "./collaboration-runtime.js";
 
 export const implementationTriggerMarker = "[agentweave implementation-trigger]";
+export const implementationTriggerInstructionSeparator =
+  "\n\nDecompose this into concrete implementation tasks.";
+
+export const implementationTriggerInstruction = (_workstreamId: string): string =>
+  "Decompose this into concrete implementation tasks and return them as your reply — the platform creates and assigns the tasks from your reply automatically. Begin your reply with [READY_FOR_DECOMPOSITION], then one line per task in exactly this format: - [role] Task title (role is one of: backend, frontend, pe, qa, devops). Do NOT call any API or URL, do NOT use tools to submit decisions, and do not write the code yourself — delegate to the execution roles.";
 
 type TriggerMessage = {
   id: string;
@@ -9,6 +14,7 @@ type TriggerMessage = {
   recipientIds: string[];
   messageType: string;
   content: string;
+  createdAt: string;
   causationId?: string;
 };
 
@@ -16,6 +22,7 @@ type ApprovalWorkstream = {
   id: string;
   tasks: Array<{ title: string }>;
   messages: TriggerMessage[];
+  events: Array<{ type: string; occurredAt: string }>;
 };
 
 type TriggerDependencies = {
@@ -43,26 +50,42 @@ export async function republishImplementationTriggerAfterResume(
   const triggers = workstream.messages.filter((message) =>
     message.content.includes(implementationTriggerMarker),
   );
-  const original = triggers.at(-1);
-  if (!original) return false;
+  const latestTrigger = triggers.at(-1);
+  if (!latestTrigger) return false;
 
-  // A copied trigger points back to the skipped message. This is a durable marker
-  // that prevents another resume from publishing a third copy before tasks exist.
-  if (
-    triggers.some(
-      (message) =>
-        message.causationId !== undefined &&
-        triggers.some((candidate) => candidate.id === message.causationId),
+  const copies = triggers.filter(
+    (message) =>
+      message.causationId !== undefined &&
+      triggers.some((candidate) => candidate.id === message.causationId),
+  );
+  if (copies.length > 0) {
+    const latestCopy = copies.reduce((latest, copy) =>
+      copy.createdAt > latest.createdAt ? copy : latest,
+    );
+    if (
+      !workstream.events.some(
+        (event) => event.type === "task.failed" && event.occurredAt > latestCopy.createdAt,
+      )
     )
-  )
-    return false;
+      return false;
+  }
+
+  const separatorIndex = latestTrigger.content.indexOf(implementationTriggerInstructionSeparator);
+  const content =
+    separatorIndex === -1
+      ? latestTrigger.content
+      : latestTrigger.content.slice(0, separatorIndex) +
+        implementationTriggerInstructionSeparator +
+        implementationTriggerInstruction(workstream.id).slice(
+          "Decompose this into concrete implementation tasks.".length,
+        );
 
   await dependencies.createMessage(
-    original.senderId,
-    original.recipientIds,
-    original.content,
-    original.messageType,
-    original.id,
+    latestTrigger.senderId,
+    latestTrigger.recipientIds,
+    content,
+    latestTrigger.messageType,
+    latestTrigger.id,
   );
   dependencies.emit(
     "orchestration.implementation_triggered",
