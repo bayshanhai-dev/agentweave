@@ -30,6 +30,7 @@ import {
   isImplementationTriggerResult,
   republishImplementationTriggerAfterResume,
 } from "./approval-implementation-trigger.js";
+import { publishWithRetry, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -62,6 +63,7 @@ const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const decompositionReprompts = new Map<string, number>();
 const maxDecompositionReprompts = 2;
+const triggerDispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const commandRepository = new WorkstreamCommandRepository(sql);
 const workstreamRepository = new WorkstreamRepository(sql);
@@ -405,6 +407,9 @@ app.get("/events", { websocket: true }, async (socket, request) => {
 });
 
 function emit(workstream: Workstream, type: string, message: string, role?: Role): void {
+  if (["workstream.completed", "workstream.emergency_stopped", "workstream.archived", "workstream.waiting_for_human", "orchestration.decomposition_failed"].includes(type)) {
+    triggerDispatchWatchdog.clear(workstream.id);
+  }
   const event: WorkflowEvent = { id: randomUUID(), type, message, occurredAt: new Date().toISOString(), ...(role ? { role } : {}) };
   recordWorkflowEvent(workstream, event);
   void eventBus.publish(subjects.events.replace("*", workstream.id), { id: event.id, type, workstreamId: workstream.id, occurredAt: event.occurredAt, payload: event });
@@ -463,9 +468,48 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   await messageRepository.create(message);
   workstream.messages.push(message);
   emitMessage(workstream, "message.created", message);
+  const failedRecipients: Array<{ recipientId: string; error: unknown }> = [];
+  for (const recipientId of message.recipientIds) {
+    try {
+      await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipientId), {
+        id: `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
+        occurredAt: message.createdAt, correlationId: message.correlationId,
+        ...(message.causationId ? { causationId: message.causationId } : {}), payload: message,
+      }));
+    } catch (error) {
+      failedRecipients.push({ recipientId, error });
+      await messageRepository.updateDelivery(message.id, recipientId, "failed");
+      emit(workstream, "message.dispatch_failed", `Inbox dispatch failed for recipient ${recipientId}, message ${message.id}`);
+      app.log.error({ error, workstreamId: workstream.id, recipientId, messageId: message.id }, "message.dispatch_failed");
+    }
+  }
+  if (failedRecipients.length) {
+    message.deliveryStatus = "failed";
+    const policy = orchestrationPolicyFor(workstream);
+    const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+    const leadTriggerFailed = lead && message.content.includes(implementationTriggerMarker) && failedRecipients.some(({ recipientId }) => recipientId === lead.id);
+    if (lead && leadTriggerFailed) {
+      await setAgentStatus(lead, "idle");
+      await recoverDecomposition(workstream, lead, { id: message.id, correlationId: message.correlationId }, { reason: `inbox dispatch failed for message ${message.id}` });
+    }
+    return message;
+  }
   message.deliveryStatus = "delivered";
   await messageRepository.markDelivered(message.id);
   emitMessage(workstream, "message.delivered", message);
+  const policy = orchestrationPolicyFor(workstream);
+  const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+  if (lead && message.recipientIds.includes(lead.id) && message.content.includes(implementationTriggerMarker)) {
+    triggerDispatchWatchdog.arm(workstream.id, message.correlationId, async () => {
+      try {
+        app.log.error({ workstreamId: workstream.id, recipientId: lead.id, messageId: message.id, correlationId: message.correlationId }, "implementation trigger dispatch timed out");
+        await setAgentStatus(lead, "idle");
+        await recoverDecomposition(workstream, lead, { id: message.id, correlationId: message.correlationId }, { reason: `no turn.started or result within 180 seconds for message ${message.id}` });
+      } catch (error) {
+        app.log.error({ error, workstreamId: workstream.id, recipientId: lead.id, messageId: message.id }, "implementation trigger recovery failed");
+      }
+    });
+  }
   return message;
 }
 
@@ -473,7 +517,6 @@ function emitMessage(workstream: Workstream, type: string, message: Message): vo
   const payload = JSON.stringify({ workstreamId: workstream.id, type, message, occurredAt: new Date().toISOString() });
   for (const socket of sockets) socket.send(payload);
   void eventBus.publish(subjects.events.replace("*", workstream.id), { id: `${message.id}:${type}`, type, workstreamId: workstream.id, occurredAt: message.createdAt, correlationId: message.correlationId, ...(message.causationId ? { causationId: message.causationId } : {}), payload: message });
-  for (const recipientId of message.recipientIds) void eventBus.publish(subjects.inbox.replace("*", recipientId), { id: `${message.id}:${recipientId}`, type, workstreamId: workstream.id, occurredAt: message.createdAt, correlationId: message.correlationId, ...(message.causationId ? { causationId: message.causationId } : {}), payload: message });
   metrics.eventsEmitted += 1;
 }
 
@@ -637,9 +680,10 @@ async function recoverDecomposition(
       triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
     }
     const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] on its own line, followed by one line per task; each task line starts with a dash, then the owner role in square brackets, then the task title.";
-    await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
+    const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
+    if (reprompt.deliveryStatus !== "delivered") return;
     emit(workstream, "orchestration.decomposition_reprompted", `PM decomposition re-prompted (attempt ${nextAttempt})`, "human");
     await setAgentStatus(sender, "idle");
     return;
@@ -661,6 +705,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (["turn.started", "turn.delta", "turn.completed", "tool.started", "tool.completed", "turn.cancelled", "turn.failed", "usage.updated"].includes(envelope.type)) {
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
     const payload = envelope.payload as { agentId?: string; taskId?: string; turnId?: string; text?: string; toolName?: string; output?: string; error?: { message?: string }; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage };
+    if (envelope.type === "turn.started") triggerDispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId ?? payload.correlationId);
     const agent = payload.agentId ? workstream.agents.find((candidate) => candidate.id === payload.agentId) : undefined;
     const message = envelope.type === "turn.delta" ? payload.text ?? "" : envelope.type === "tool.started" ? `${payload.toolName ?? "tool"} started` : envelope.type === "tool.completed" ? `${payload.toolName ?? "tool"} completed` : envelope.type === "turn.failed" ? payload.error?.message ?? "Provider turn failed" : envelope.type === "usage.updated" ? "Provider usage updated" : envelope.type.replaceAll(".", " ");
     if (!message) return;
@@ -694,6 +739,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
+  triggerDispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId);
   // The API can restart while a durable Worker turn is still in flight. Rebuild
   // the lightweight orchestration state from the persisted Workstream instead
   // of silently dropping that result.
@@ -704,6 +750,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   }
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
   const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string };
+  triggerDispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId ?? (payload as { correlationId?: string }).correlationId);
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
   const policy = orchestrationPolicyFor(workstream);
@@ -806,10 +853,12 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
                 const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
                   "Decompose this into concrete implementation tasks.".length,
                 );
-                await createMessage(workstream, "human", [lead.id],
+                const trigger = await createMessage(workstream, "human", [lead.id],
                   `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`,
                   "directive", {});
-                emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
+                if (trigger.deliveryStatus === "delivered") {
+                  emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
+                }
               }
             }
           }
@@ -817,10 +866,18 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         for (const message of plan.messages) {
           if (!workstream.messages.some((item) => item.id === message.id)) workstream.messages.push(message as Message);
           // A retry republishes stable message IDs; receiver execution keys suppress duplicates.
-          for (const recipient of message.recipientIds) await eventBus.publish(subjects.inbox.replace("*", recipient), {
-            id: `${message.id}:${recipient}`, type: "message.created", workstreamId: workstream.id,
-            correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: message,
-          });
+          for (const recipient of message.recipientIds) {
+            try {
+              await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipient), {
+                id: `${message.id}:${recipient}`, type: "message.created", workstreamId: workstream.id,
+                correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: message,
+              }));
+            } catch (error) {
+              await messageRepository.updateDelivery(message.id, recipient, "failed");
+              emit(workstream, "message.dispatch_failed", `Inbox dispatch failed for recipient ${recipient}, message ${message.id}`);
+              app.log.error({ error, workstreamId: workstream.id, recipientId: recipient, messageId: message.id }, "message.dispatch_failed");
+            }
+          }
           const notification = JSON.stringify({ workstreamId: workstream.id, type: "message.created", message, occurredAt: message.createdAt });
           for (const socket of sockets) socket.send(notification);
         }
