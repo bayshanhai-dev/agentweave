@@ -857,7 +857,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       })()
     : resultText;
   const orchestrationText = sender.role === policy.leadRole ? triggerResultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : triggerResultText;
-  const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
+  const qaMarker = resultText.split(/\r?\n/, 1)[0]?.trim().match(/^\[(QA_PASSED|QA_FAILED)\]/i)?.[1]?.toUpperCase();
+  const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : qaMarker === "QA_PASSED" ? "qa.passed" : qaMarker === "QA_FAILED" ? "qa.failed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { await setAgentStatus(sender, "idle"); workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
   let handoffTaskId: string | undefined = payload.taskId;
