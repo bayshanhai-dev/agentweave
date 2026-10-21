@@ -160,6 +160,22 @@ describe("provider adapters", () => {
     expect(cancelled).toEqual({ sessionId: "thread-stalled", turnId: "turn-stalled", correlationId: "corr-stalled" });
   });
 
+  it("fails and cancels a Codex turn at its total-duration cap despite streaming events", async () => {
+    let cancelled: { sessionId: string; turnId: string; correlationId: string } | undefined;
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-long" } } } : { result: { turnId: "turn-long" } }; },
+      async *events() { for (;;) { await new Promise((resolve) => setTimeout(resolve, 5)); yield { type: "turn.delta", text: "." }; } },
+      async cancel(sessionId, turnId, correlationId) { cancelled = { sessionId, turnId, correlationId }; },
+    };
+    const stream = new CodexAppServerAdapter(transport, { inactivityTimeoutMs: 100, maxDurationMs: 20 }).run({ input: "inspect", correlationId: "corr-long" });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.started" }, done: false });
+    let event = await stream.next();
+    while (!event.done && event.value.type === "turn.delta") event = await stream.next();
+    expect(event).toMatchObject({ value: { type: "provider.error", error: { code: "CODEX_TURN_MAX_DURATION", category: "provider", retry: "retryable" } }, done: false });
+    await expect(stream.next()).rejects.toMatchObject({ code: "CODEX_TURN_MAX_DURATION", category: "provider", retry: "retryable" });
+    expect(cancelled).toEqual({ sessionId: "thread-long", turnId: "turn-long", correlationId: "corr-long" });
+  });
+
   it("streams Claude stdout, exposes stderr, and uses argv safely", async () => {
     let command = ""; let args: string[] = [];
     const runner = (receivedCommand: string, receivedArgs: string[]): ProcessResult => { command = receivedCommand; args = receivedArgs; return { code: Promise.resolve(0), stdout: chunks(["hello", " world"]), stderr: chunks(["diagnostic"]), kill: () => undefined }; };

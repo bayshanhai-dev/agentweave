@@ -37,7 +37,7 @@ function usageFrom(value: unknown): ProviderUsage | undefined {
 
 export class CodexAppServerAdapter implements ProviderAdapter {
   readonly name = "codex"; readonly capabilities: ProviderCapabilities = { streaming: true, toolCalls: true, resume: true, cancellation: true };
-  constructor(private readonly transport?: CodexTransport, private readonly config: { url?: string; command?: string; model?: string; inactivityTimeoutMs?: number } = {}) {}
+  constructor(private readonly transport?: CodexTransport, private readonly config: { url?: string; command?: string; model?: string; inactivityTimeoutMs?: number; maxDurationMs?: number } = {}) {}
   private requireTransport(): CodexTransport { if (!this.transport) throw new Error("Codex App Server transport is not configured"); return this.transport; }
   async createSession(input: { model?: string; workspacePath?: string } = {}): Promise<ProviderSession> { const c = crypto.randomUUID(); const model = usableCodexModel(input.model ?? this.config.model); const r = await this.requireTransport().request("thread/start", { ...(model ? { model } : {}), ...(input.workspacePath ? { cwd: input.workspacePath } : {}), approvalPolicy: process.env.AGENTWEAVE_CODEX_APPROVAL_POLICY ?? "never", sandbox: process.env.AGENTWEAVE_CODEX_SANDBOX ?? "workspace-write" }, c); const thread = r.result?.thread as Record<string, unknown> | undefined; const sessionId = thread?.id ?? r.result?.threadId; if (r.error || !sessionId) throw new Error(r.error?.message ?? "Codex thread creation failed"); const now = new Date().toISOString(); return { provider: this.name, ...(model ? { model } : {}), providerSessionId: String(sessionId), status: "active", createdAt: now, updatedAt: now }; }
   async resumeSession(session: ProviderSession): Promise<ProviderSession> { const r = await this.requireTransport().request("thread/resume", { threadId: session.providerSessionId, ...(session.workspacePath ? { cwd: session.workspacePath } : {}), ...(session.model ? { model: session.model } : {}), approvalPolicy: process.env.AGENTWEAVE_CODEX_APPROVAL_POLICY ?? "never", sandbox: process.env.AGENTWEAVE_CODEX_SANDBOX ?? "workspace-write" }, crypto.randomUUID()); if (r.error) throw new Error(r.error.message); return { ...session, status: "active", updatedAt: new Date().toISOString() }; }
@@ -46,16 +46,28 @@ export class CodexAppServerAdapter implements ProviderAdapter {
     if (t.events) {
       const iterator = t.events(session.providerSessionId)[Symbol.asyncIterator]();
       const inactivityTimeoutMs = this.config.inactivityTimeoutMs ?? Number(process.env.AGENTWEAVE_TURN_INACTIVITY_TIMEOUT_MS ?? 600_000);
+      const maxDurationMs = this.config.maxDurationMs ?? Number(process.env.AGENTWEAVE_TURN_MAX_DURATION_MS ?? 900_000);
+      const deadline = Date.now() + maxDurationMs;
       for (;;) {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), inactivityTimeoutMs); });
-        let next: IteratorResult<Record<string, unknown>> | "timeout";
-        try { next = await Promise.race([iterator.next(), timeout]); }
-        finally { if (timer) clearTimeout(timer); }
-        if (next === "timeout") {
+        const remainingDurationMs = deadline - Date.now();
+        let next: IteratorResult<Record<string, unknown>> | "inactivity" | "max-duration";
+        if (remainingDurationMs <= 0) {
+          next = "max-duration";
+        } else {
+          const timeoutKind = remainingDurationMs <= inactivityTimeoutMs ? "max-duration" : "inactivity";
+          const timeoutMs = Math.min(inactivityTimeoutMs, remainingDurationMs);
+          const timeout = new Promise<"inactivity" | "max-duration">((resolve) => { timer = setTimeout(() => resolve(timeoutKind), timeoutMs); });
+          try { next = await Promise.race([iterator.next(), timeout]); }
+          finally { if (timer) clearTimeout(timer); }
+        }
+        if (next === "inactivity" || next === "max-duration") {
           void iterator.return?.();
           void t.cancel?.(session.providerSessionId, turnId, correlationId).catch(() => undefined);
-          const error = providerError(`Codex turn produced no events for ${inactivityTimeoutMs}ms`, "provider", "retryable", { code: "CODEX_TURN_INACTIVITY_TIMEOUT", provider: this.name, correlationId });
+          const maxDurationExpired = next === "max-duration";
+          const error = providerError(maxDurationExpired
+            ? `Codex turn exceeded maximum duration of ${maxDurationMs}ms`
+            : `Codex turn produced no events for ${inactivityTimeoutMs}ms`, "provider", "retryable", { code: maxDurationExpired ? "CODEX_TURN_MAX_DURATION" : "CODEX_TURN_INACTIVITY_TIMEOUT", provider: this.name, correlationId });
           yield { type: "provider.error", error, correlationId };
           throw Object.assign(new Error(error.message), error);
         }
