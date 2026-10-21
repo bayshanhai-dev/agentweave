@@ -124,6 +124,7 @@ export function extractTaskSpecs(text: string): TaskSpec[] {
     const match = raw.trim().match(/^(?:[-*]|\d+[.)])\s+(?:\[([a-z][a-z0-9_-]*)\]\s*)?(.+)$/i);
     if (!match) continue;
     const title = match[2]!.replace(/\s+—\s+.*$/, "").replace(/\s+-\s+acceptance:.*$/i, "").trim();
+    if (match[1]?.toLowerCase() === "role" || title.toLowerCase() === "task title") continue;
     if (title.length < 4 || title.length > 240) continue;
     const ownerRole = match[1]?.toLowerCase();
     specs.push({ title, ...(ownerRole ? { ownerRole } : {}) });

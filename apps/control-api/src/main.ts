@@ -872,7 +872,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         );
         triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
       }
-      const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] followed by one line per task:\n- [role] Task title";
+      const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] on its own line, followed by one line per task; each task line starts with a dash, then the owner role in square brackets, then the task title.";
       await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
         ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
       });

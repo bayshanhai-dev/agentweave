@@ -93,6 +93,26 @@ describe("WorkstreamOrchestrator", () => {
     ]);
   });
 
+  it("rejects the protocol placeholder example", () => {
+    expect(extractTaskSpecs("- [role] Task title")).toEqual([]);
+  });
+
+  it("rejects the placeholder title with a real role", () => {
+    expect(extractTaskSpecs("- [backend] Task title")).toEqual([]);
+  });
+
+  it("continues to parse a normal task", () => {
+    expect(extractTaskSpecs("- [frontend] Build the dashboard")).toEqual([
+      { title: "Build the dashboard", ownerRole: "frontend" },
+    ]);
+  });
+
+  it("keeps only real tasks when placeholders and real tasks are mixed", () => {
+    expect(extractTaskSpecs("- [role] Task title\n- [backend] Implement the API\n- [frontend] Task title")).toEqual([
+      { title: "Implement the API", ownerRole: "backend" },
+    ]);
+  });
+
   it("selects lead-created tasks, prefers the recipient's owner role, and reuses the last task for a fix-up", () => {
     const tasks = [
       { id: "pe-pseudo", status: "assigned", ownerAgentId: "frontend-agent", createdByAgentId: "pe" },
