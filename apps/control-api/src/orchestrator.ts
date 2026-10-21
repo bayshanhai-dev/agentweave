@@ -19,9 +19,14 @@ export const softwareDevelopmentPolicy: OrchestrationPolicy = {
 export class WorkstreamOrchestrator {
   stage: OrchestratorStage = "lead";
   attempt = 0;
+  /** Counts review outcomes that restarted orchestration; the next outcome beyond the configured limit parks the Workstream. */
+  round = 0;
+  readonly maxRounds: number;
   readonly executionRole: string;
   constructor(readonly workstreamId: string, readonly goal: string, readonly policy: OrchestrationPolicy = softwareDevelopmentPolicy) {
     this.executionRole = policy.executionRoles[0] ?? policy.planningRole;
+    const configuredMaxRounds = Number.parseInt(process.env.AGENTWEAVE_MAX_ORCHESTRATION_ROUNDS ?? "6", 10);
+    this.maxRounds = Number.isFinite(configuredMaxRounds) && configuredMaxRounds >= 0 ? configuredMaxRounds : 6;
   }
 
   /**
@@ -48,8 +53,15 @@ export class WorkstreamOrchestrator {
     if (event.type === "goal.received" && this.stage === "lead") { this.stage = "planning"; return this.action(this.policy.planningRole, "planning", event.content); }
     if (event.type === "task.decomposed" && this.stage === "planning") { this.stage = "execution"; return this.action(this.executionRole, "execution", event.content); }
     if ((event.type === "design.completed" || event.type === "implementation.completed") && this.stage === "execution") { this.stage = "review"; return this.action(this.policy.reviewRole, "review", event.content, event.evidenceIds); }
-    if (event.type === "qa.failed" && this.stage === "review") { this.attempt += 1; this.stage = "execution"; return this.action(this.executionRole, "execution", event.content, event.evidenceIds); }
-    if (event.type === "qa.passed" && this.stage === "review") { this.stage = "lead"; return this.action(this.policy.leadRole, "lead", event.content); }
+    if ((event.type === "qa.failed" || event.type === "qa.passed") && this.stage === "review") {
+      if (this.round >= this.maxRounds) {
+        this.stage = "waiting_for_human";
+        return this.action("human", "lead", `The orchestration round limit of ${this.maxRounds} was reached without convergence. Human review is required before more agent work is dispatched.`);
+      }
+      this.round += 1;
+      if (event.type === "qa.failed") { this.attempt += 1; this.stage = "execution"; return this.action(this.executionRole, "execution", event.content, event.evidenceIds); }
+      this.stage = "lead"; return this.action(this.policy.leadRole, "lead", event.content);
+    }
     if (event.type === "human.approved" && this.stage === "waiting_for_human") { this.stage = "completed"; return undefined; }
     if (event.type === "human.rejected" && this.stage === "waiting_for_human") { this.attempt += 1; this.stage = "lead"; return this.action(this.policy.leadRole, "lead", event.content); }
     if (event.type === "human.clarification.replied" && this.stage === "waiting_for_human") { this.stage = "lead"; return this.action(this.policy.leadRole, "lead", event.content); }
@@ -58,7 +70,12 @@ export class WorkstreamOrchestrator {
 
   private action(recipientRole: string | "human", phase: Exclude<OrchestratorStage, "waiting_for_human" | "completed">, body: string, evidenceIds?: string[]): OrchestratorAction {
     const marker = `[agentweave template=${this.policy.templateId} phase=${phase} recipient=${recipientRole} lead=${this.policy.leadRole} planning=${this.policy.planningRole} execution=${this.executionRole} review=${this.policy.reviewRole}]`;
-    return { stage: this.stage as Exclude<OrchestratorStage, "completed">, recipientRole, messageType: recipientRole === "human" ? "decision" : "request", content: `${marker}\n${body}`, attempt: this.attempt, ...(evidenceIds?.length ? { evidenceIds } : {}) };
+    const protocol = recipientRole === "human" ? "" : phase === "lead"
+      ? "\n\nCompletion protocol:\nWhen the Workstream goal is achieved and review has passed, your reply MUST begin with [PROPOSE_COMPLETE] followed by a short evidence summary.\nIf progress is genuinely blocked on human input, your reply MUST begin with [HUMAN_BLOCKED] followed by the question. Otherwise, reply with the next tasks as a bullet list."
+      : phase === "review"
+        ? "\n\nReview protocol:\nYour reply MUST begin with [QA_PASSED] when the implementation satisfies the goal and acceptance criteria, or [QA_FAILED] followed by the concrete failures otherwise."
+        : "";
+    return { stage: this.stage as Exclude<OrchestratorStage, "completed">, recipientRole, messageType: recipientRole === "human" ? "decision" : "request", content: `${marker}\n${body}${protocol}`, attempt: this.attempt, ...(evidenceIds?.length ? { evidenceIds } : {}) };
   }
 }
 

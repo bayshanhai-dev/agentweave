@@ -4,10 +4,16 @@ import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationPolicy } fr
 describe("WorkstreamOrchestrator", () => {
   it("routes the software-development policy through its declared responsibilities", () => {
     const flow = new WorkstreamOrchestrator("ws-1", "process the paper");
-    expect(flow.start().recipientRole).toBe("pm");
+    const leadAction = flow.start();
+    expect(leadAction.recipientRole).toBe("pm");
+    expect(leadAction.content).toContain("[PROPOSE_COMPLETE]");
+    expect(leadAction.content).toContain("[HUMAN_BLOCKED]");
     expect(flow.apply({ type: "goal.received", content: "process the paper" })?.recipientRole).toBe("pe");
     expect(flow.apply({ type: "task.decomposed", content: "task" })?.recipientRole).toBe("backend");
-    expect(flow.apply({ type: "design.completed", content: "design" })?.recipientRole).toBe("qa");
+    const reviewAction = flow.apply({ type: "design.completed", content: "design" });
+    expect(reviewAction?.recipientRole).toBe("qa");
+    expect(reviewAction?.content).toContain("[QA_PASSED]");
+    expect(reviewAction?.content).toContain("[QA_FAILED]");
     expect(flow.apply({ type: "qa.passed", content: "pass" })?.recipientRole).toBe("pm");
     expect(flow.stage).toBe("lead");
   });
@@ -28,6 +34,26 @@ describe("WorkstreamOrchestrator", () => {
     expect(flow.apply({ type: "qa.failed", content: "missing evidence" })?.recipientRole).toBe("backend");
     expect(flow.attempt).toBe(1);
     expect(flow.stage).toBe("execution");
+  });
+
+  it("parks for Human review when another review outcome would exceed the round limit", () => {
+    const previous = process.env.AGENTWEAVE_MAX_ORCHESTRATION_ROUNDS;
+    process.env.AGENTWEAVE_MAX_ORCHESTRATION_ROUNDS = "1";
+    try {
+      const flow = new WorkstreamOrchestrator("ws-1", "goal");
+      flow.start(); flow.apply({ type: "goal.received", content: "goal" }); flow.apply({ type: "task.decomposed", content: "task" }); flow.apply({ type: "implementation.completed", content: "implementation" });
+      expect(flow.apply({ type: "qa.passed", content: "pass" })?.recipientRole).toBe("pm");
+      flow.apply({ type: "goal.received", content: "more work" }); flow.apply({ type: "task.decomposed", content: "task" }); flow.apply({ type: "implementation.completed", content: "implementation" });
+
+      const action = flow.apply({ type: "qa.passed", content: "pass again" });
+
+      expect(action?.recipientRole).toBe("human");
+      expect(action?.content).toContain("round limit of 1 was reached without convergence");
+      expect(flow.stage).toBe("waiting_for_human");
+    } finally {
+      if (previous === undefined) delete process.env.AGENTWEAVE_MAX_ORCHESTRATION_ROUNDS;
+      else process.env.AGENTWEAVE_MAX_ORCHESTRATION_ROUNDS = previous;
+    }
   });
 
   it("validates intelligent PM orchestration decisions without hardcoding the next role", () => {
