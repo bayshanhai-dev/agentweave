@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
+import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, sliceFromDecompositionMarker, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
+
+describe("sliceFromDecompositionMarker", () => {
+  it("slices from a marker at the start of the reply", () => {
+    expect(sliceFromDecompositionMarker("[READY_FOR_DECOMPOSITION] - [backend] Build API")).toBe(
+      "[READY_FOR_DECOMPOSITION]\n - [backend] Build API",
+    );
+  });
+
+  it("slices from the last marker at a later line start", () => {
+    expect(sliceFromDecompositionMarker("preface\n[READY_FOR_DECOMPOSITION]\n- [backend] First\n[READY_FOR_DECOMPOSITION]\n- [qa] Test"))
+      .toBe("[READY_FOR_DECOMPOSITION]\n\n- [qa] Test");
+  });
+
+  it("does not slice an inline marker in echoed instruction text", () => {
+    const text = "Begin your reply with [READY_FOR_DECOMPOSITION], then one line per task";
+    expect(sliceFromDecompositionMarker(text)).toBe(text);
+  });
+
+  it("returns text without a marker unchanged", () => {
+    expect(sliceFromDecompositionMarker("No decomposition marker here")).toBe("No decomposition marker here");
+  });
+});
 
 describe("WorkstreamOrchestrator", () => {
   it("routes the software-development policy through its declared responsibilities", () => {

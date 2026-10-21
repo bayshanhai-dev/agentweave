@@ -36,6 +36,20 @@ export function deriveHandoffTitle(content: string, fallback: string): string {
   return firstLine && !firstLine.toLowerCase().startsWith("[agentweave") ? firstLine : fallback;
 }
 
+/** Slices from the last decomposition marker that starts a line, ignoring echoed inline instructions. */
+export function sliceFromDecompositionMarker(resultText: string): string {
+  const marker = "[READY_FOR_DECOMPOSITION]";
+  let markerIndex = resultText.startsWith(marker) ? 0 : -1;
+  let searchFrom = 0;
+  while ((searchFrom = resultText.indexOf(`\n${marker}`, searchFrom)) !== -1) {
+    markerIndex = searchFrom + 1;
+    searchFrom = markerIndex + marker.length;
+  }
+  return markerIndex === -1
+    ? resultText
+    : resultText.slice(markerIndex).replace(marker, `${marker}\n`);
+}
+
 export const softwareDevelopmentPolicy: OrchestrationPolicy = {
   templateId: "software-development", leadRole: "pm", planningRole: "pe", executionRoles: ["backend", "frontend"], reviewRole: "qa",
 };

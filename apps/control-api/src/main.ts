@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, sliceFromDecompositionMarker, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -60,6 +60,8 @@ const app = Fastify({ logger: true });
 await app.register(websocket);
 const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
+const decompositionReprompts = new Map<string, number>();
+const maxDecompositionReprompts = 2;
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const commandRepository = new WorkstreamCommandRepository(sql);
 const workstreamRepository = new WorkstreamRepository(sql);
@@ -849,14 +851,46 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     await persistWorkstreamStatus(workstream);
     return;
   }
-  const triggerResultText = triggerDecomposition
-    ? (() => {
-        const marker = "[READY_FOR_DECOMPOSITION]";
-        const markerIndex = resultText.lastIndexOf(marker);
-        return markerIndex === -1 ? resultText : resultText.slice(markerIndex).replace(marker, `${marker}\n`);
-      })()
-    : resultText;
+  const triggerResultText = triggerDecomposition ? sliceFromDecompositionMarker(resultText) : resultText;
   const orchestrationText = sender.role === policy.leadRole ? triggerResultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : triggerResultText;
+  const triggerSpecs = triggerDecomposition ? extractTaskSpecs(orchestrationText) : undefined;
+  if (triggerDecomposition && triggerSpecs?.length === 0) {
+    const attempt = decompositionReprompts.get(workstream.id) ?? 0;
+    if (attempt < maxDecompositionReprompts) {
+      const nextAttempt = attempt + 1;
+      decompositionReprompts.set(workstream.id, nextAttempt);
+      const latestTrigger = [...workstream.messages].reverse().find((message) =>
+        message.content.includes(implementationTriggerMarker) && message.recipientIds.includes(sender.id)
+      );
+      let triggerContent = latestTrigger?.content;
+      if (!triggerContent) {
+        const insights = await insightRepository.listInsights(workstream.id);
+        const synthesis = [...insights].reverse().find((candidate) => candidate.kind === "synthesis") ?? insights.at(-1);
+        const synthesisText = synthesis?.content.slice(0, 2000) ?? "No collaboration synthesis was available.";
+        const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
+          "Decompose this into concrete implementation tasks.".length,
+        );
+        triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
+      }
+      const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] followed by one line per task:\n- [role] Task title";
+      await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
+        ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
+      });
+      emit(workstream, "orchestration.decomposition_reprompted", `PM decomposition re-prompted (attempt ${nextAttempt})`, "human");
+      await setAgentStatus(sender, "idle");
+      return;
+    }
+    decompositionReprompts.delete(workstream.id);
+    await createMessage(workstream, sender.id, ["human"], `Implementation decomposition failed after ${maxDecompositionReprompts} retries. The PM's last reply began:\n\n${JSON.stringify(resultText.slice(0, 500))}`, "decision", {
+      ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+    });
+    workstream.status = "waiting_for_human";
+    emit(workstream, "orchestration.decomposition_failed", `PM decomposition failed after ${maxDecompositionReprompts} retries`, sender.role);
+    await persistWorkstreamStatus(workstream);
+    await setAgentStatus(sender, "idle");
+    return;
+  }
+  if (triggerDecomposition) decompositionReprompts.delete(workstream.id);
   const qaMarker = resultText.split(/\r?\n/, 1)[0]?.trim().match(/^\[(QA_PASSED|QA_FAILED)\]/i)?.[1]?.toUpperCase();
   const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : qaMarker === "QA_PASSED" ? "qa.passed" : qaMarker === "QA_FAILED" ? "qa.failed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
@@ -871,7 +905,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     message.taskId && plannedTaskIds.has(message.taskId) && message.recipientIds.some((recipientId) => executionAgentIds.has(recipientId))
   )?.taskId;
   if (sender.role === policy.leadRole && action.recipientRole !== "human") {
-    const specs = extractTaskSpecs(orchestrationText);
+    const specs = triggerSpecs ?? extractTaskSpecs(orchestrationText);
     const decomposed = specs.length ? specs : [{ title: `Prepare the ${workstream.flavor} plan`, ownerRole: policy.planningRole }];
     if (decomposed[0] && !decomposed[0].ownerRole) decomposed[0] = { ...decomposed[0], ownerRole: action.recipientRole };
     const created = await createTasks(workstream, decomposed, sender.id);
