@@ -101,13 +101,19 @@ export async function republishImplementationTriggerAfterResume(
           "Decompose this into concrete implementation tasks.".length,
         );
 
-  await dependencies.createMessage(
+  const created = await dependencies.createMessage(
     latestTrigger.senderId,
     latestTrigger.recipientIds,
     content,
     latestTrigger.messageType,
     latestTrigger.id,
   );
+  if (
+    typeof created === "object" &&
+    created !== null &&
+    "deliveryStatus" in created &&
+    created.deliveryStatus !== "delivered"
+  ) return false;
   dependencies.emit(
     "orchestration.implementation_triggered",
     "PM prompted to decompose synthesis into implementation tasks",
