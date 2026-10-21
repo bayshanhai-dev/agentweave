@@ -612,6 +612,51 @@ async function dispatchCollaboration(workstream: Workstream, roundId: string, di
   await createMessage(workstream, senderId, [dispatch.agentId], dispatch.prompt, "request", { taskId, correlationId: roundId, causationId: roundId }, `${roundId}:message:${dispatch.key}`);
 }
 
+async function recoverDecomposition(
+  workstream: Workstream,
+  sender: Agent,
+  envelope: { id?: string; correlationId?: string },
+  failure?: { reason: string },
+  resultText = "",
+): Promise<void> {
+  const attempt = decompositionReprompts.get(workstream.id) ?? 0;
+  if (attempt < maxDecompositionReprompts) {
+    const nextAttempt = attempt + 1;
+    decompositionReprompts.set(workstream.id, nextAttempt);
+    const latestTrigger = [...workstream.messages].reverse().find((message) =>
+      message.content.includes(implementationTriggerMarker) && message.recipientIds.includes(sender.id)
+    );
+    let triggerContent = latestTrigger?.content;
+    if (!triggerContent) {
+      const insights = await insightRepository.listInsights(workstream.id);
+      const synthesis = [...insights].reverse().find((candidate) => candidate.kind === "synthesis") ?? insights.at(-1);
+      const synthesisText = synthesis?.content.slice(0, 2000) ?? "No collaboration synthesis was available.";
+      const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
+        "Decompose this into concrete implementation tasks.".length,
+      );
+      triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
+    }
+    const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] on its own line, followed by one line per task; each task line starts with a dash, then the owner role in square brackets, then the task title.";
+    await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
+      ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
+    });
+    emit(workstream, "orchestration.decomposition_reprompted", `PM decomposition re-prompted (attempt ${nextAttempt})`, "human");
+    await setAgentStatus(sender, "idle");
+    return;
+  }
+  decompositionReprompts.delete(workstream.id);
+  const detail = failure
+    ? `The PM's turn failed or timed out: ${failure.reason}`
+    : `The PM's last reply began:\n\n${JSON.stringify(resultText.slice(0, 500))}`;
+  await createMessage(workstream, sender.id, ["human"], `Implementation decomposition failed after ${maxDecompositionReprompts} retries. ${detail}`, "decision", {
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+  });
+  workstream.status = "waiting_for_human";
+  emit(workstream, "orchestration.decomposition_failed", `PM decomposition failed after ${maxDecompositionReprompts} retries`, sender.role);
+  await persistWorkstreamStatus(workstream);
+  await setAgentStatus(sender, "idle");
+}
+
 async function handleWorkerResult(envelope: { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
   if (["turn.started", "turn.delta", "turn.completed", "tool.started", "tool.completed", "turn.cancelled", "turn.failed", "usage.updated"].includes(envelope.type)) {
     const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
@@ -622,6 +667,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     const isActiveTurn = ["turn.started", "turn.delta", "tool.started", "tool.completed"].includes(envelope.type);
     if (agent && isActiveTurn) await setAgentStatus(agent, "running");
+    if (agent && envelope.type === "turn.failed") await setAgentStatus(agent, "idle");
     if (task && isActiveTurn && !["done", "failed", "cancelled"].includes(task.status)) {
       task.status = "running";
       task.updatedAt = new Date().toISOString();
@@ -660,11 +706,26 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string };
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
+  const policy = orchestrationPolicyFor(workstream);
+  const durableTask = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  const triggerDecomposition = !durableTask && isImplementationTriggerResult({
+    messages: workstream.messages.map((message) => ({ ...message, correlationId: message.correlationId ?? "" })),
+    tasks: workstream.tasks,
+    senderId: sender.id,
+    senderRole: sender.role,
+    leadRole: policy.leadRole,
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+  });
   if (envelope.type === "task.failed") {
-    const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    const task = durableTask;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
-    await setAgentStatus(sender, "failed");
     const reason = payload.error?.trim() || "provider execution failed";
+    if (triggerDecomposition) {
+      recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+      await recoverDecomposition(workstream, sender, envelope, { reason });
+      return;
+    }
+    await setAgentStatus(sender, "idle");
     workstream.status = "waiting_for_human";
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() });
@@ -793,7 +854,6 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     }
   }
   const resultText = payload.text?.trim() ?? "";
-  const policy = orchestrationPolicyFor(workstream);
   if (sender.role === policy.leadRole && resultText.startsWith("[HUMAN_BLOCKED]")) {
     const clarification = resultText.replace(/^\[HUMAN_BLOCKED\]\s*/i, "").trim();
     await createMessage(workstream, sender.id, ["human"], clarification, "clarification", { ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
@@ -811,15 +871,6 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
     return;
   }
-  const durableTask = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
-  const triggerDecomposition = !durableTask && isImplementationTriggerResult({
-    messages: workstream.messages.map((message) => ({ ...message, correlationId: message.correlationId ?? "" })),
-    tasks: workstream.tasks,
-    senderId: sender.id,
-    senderRole: sender.role,
-    leadRole: policy.leadRole,
-    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
-  });
   // Worker execution IDs are not necessarily durable task IDs. Only a task
   // that exists in this Workstream may advance orchestration; all other turns
   // are direct Human ↔ Agent conversation and belong in the Intercom.
@@ -855,39 +906,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   const orchestrationText = sender.role === policy.leadRole ? triggerResultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : triggerResultText;
   const triggerSpecs = triggerDecomposition ? extractTaskSpecs(orchestrationText) : undefined;
   if (triggerDecomposition && triggerSpecs?.length === 0) {
-    const attempt = decompositionReprompts.get(workstream.id) ?? 0;
-    if (attempt < maxDecompositionReprompts) {
-      const nextAttempt = attempt + 1;
-      decompositionReprompts.set(workstream.id, nextAttempt);
-      const latestTrigger = [...workstream.messages].reverse().find((message) =>
-        message.content.includes(implementationTriggerMarker) && message.recipientIds.includes(sender.id)
-      );
-      let triggerContent = latestTrigger?.content;
-      if (!triggerContent) {
-        const insights = await insightRepository.listInsights(workstream.id);
-        const synthesis = [...insights].reverse().find((candidate) => candidate.kind === "synthesis") ?? insights.at(-1);
-        const synthesisText = synthesis?.content.slice(0, 2000) ?? "No collaboration synthesis was available.";
-        const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
-          "Decompose this into concrete implementation tasks.".length,
-        );
-        triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
-      }
-      const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] on its own line, followed by one line per task; each task line starts with a dash, then the owner role in square brackets, then the task title.";
-      await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
-        ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
-      });
-      emit(workstream, "orchestration.decomposition_reprompted", `PM decomposition re-prompted (attempt ${nextAttempt})`, "human");
-      await setAgentStatus(sender, "idle");
-      return;
-    }
-    decompositionReprompts.delete(workstream.id);
-    await createMessage(workstream, sender.id, ["human"], `Implementation decomposition failed after ${maxDecompositionReprompts} retries. The PM's last reply began:\n\n${JSON.stringify(resultText.slice(0, 500))}`, "decision", {
-      ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
-    });
-    workstream.status = "waiting_for_human";
-    emit(workstream, "orchestration.decomposition_failed", `PM decomposition failed after ${maxDecompositionReprompts} retries`, sender.role);
-    await persistWorkstreamStatus(workstream);
-    await setAgentStatus(sender, "idle");
+    await recoverDecomposition(workstream, sender, envelope, undefined, resultText);
     return;
   }
   if (triggerDecomposition) decompositionReprompts.delete(workstream.id);
