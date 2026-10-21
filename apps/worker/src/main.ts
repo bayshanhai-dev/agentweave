@@ -6,6 +6,7 @@ import { AgentRuntime } from "./runtime/agent-runtime.js";
 import { PostgresAgentSessionRepository } from "./providers/postgres-session-repository.js";
 import { createHash } from "node:crypto";
 import { executionKeyForDelivery } from "./runtime/execution-key.js";
+import { inboxStatusGateDecision } from "./inbox-status-gate.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
 const provider = createProviderFromEnv();
@@ -41,9 +42,10 @@ await bus.consumer(subjects.inbox, async (message) => {
       if (!statusResponse?.ok) return "retry";
       const workstream = await statusResponse.json() as { status?: string; workspaceRoot?: string; provider?: { model?: string } };
       const status = workstream.status;
-      if (["paused", "waiting_for_human", "completed", "completing", "emergency_stopped", "archived"].includes(status ?? "")) return "ack";
-      const targetFromSubject = message.subject.split(".")[2];
       const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
+      const gateDecision = inboxStatusGateDecision(status, payload.content);
+      if (gateDecision) return gateDecision;
+      const targetFromSubject = message.subject.split(".")[2];
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
       if (!targetAgentId) return "dead-letter";
       // Human is a durable message endpoint, not an executable Agent runtime.

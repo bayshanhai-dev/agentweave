@@ -30,7 +30,7 @@ import {
   isImplementationTriggerResult,
   republishImplementationTriggerAfterResume,
 } from "./approval-implementation-trigger.js";
-import { publishWithRetry, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, publishWithRetry, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -468,6 +468,8 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   await messageRepository.create(message);
   workstream.messages.push(message);
   emitMessage(workstream, "message.created", message);
+  const policy = orchestrationPolicyFor(workstream);
+  const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
   const failedRecipients: Array<{ recipientId: string; error: unknown }> = [];
   for (const recipientId of message.recipientIds) {
     try {
@@ -476,6 +478,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
         occurredAt: message.createdAt, correlationId: message.correlationId,
         ...(message.causationId ? { causationId: message.causationId } : {}), payload: message,
       }));
+      armTriggerWatchdogAfterPublish(workstream, message, recipientId, lead);
     } catch (error) {
       failedRecipients.push({ recipientId, error });
       await messageRepository.updateDelivery(message.id, recipientId, "failed");
@@ -485,8 +488,6 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   }
   if (failedRecipients.length) {
     message.deliveryStatus = "failed";
-    const policy = orchestrationPolicyFor(workstream);
-    const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
     const leadTriggerFailed = lead && message.content.includes(implementationTriggerMarker) && failedRecipients.some(({ recipientId }) => recipientId === lead.id);
     if (lead && leadTriggerFailed) {
       await setAgentStatus(lead, "idle");
@@ -497,10 +498,12 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   message.deliveryStatus = "delivered";
   await messageRepository.markDelivered(message.id);
   emitMessage(workstream, "message.delivered", message);
-  const policy = orchestrationPolicyFor(workstream);
-  const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
-  if (lead && message.recipientIds.includes(lead.id) && message.content.includes(implementationTriggerMarker)) {
-    triggerDispatchWatchdog.arm(workstream.id, message.correlationId, async () => {
+  return message;
+}
+
+function armTriggerWatchdogAfterPublish(workstream: Workstream, message: Message, recipientId: string, lead: Agent | undefined): void {
+  if (lead) {
+    armTriggerWatchdogForDispatch(triggerDispatchWatchdog, workstream.id, message.correlationId, message.content, recipientId, lead.id, async () => {
       try {
         app.log.error({ workstreamId: workstream.id, recipientId: lead.id, messageId: message.id, correlationId: message.correlationId }, "implementation trigger dispatch timed out");
         await setAgentStatus(lead, "idle");
@@ -510,7 +513,6 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
       }
     });
   }
-  return message;
 }
 
 function emitMessage(workstream: Workstream, type: string, message: Message): void {
@@ -872,6 +874,9 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
                 id: `${message.id}:${recipient}`, type: "message.created", workstreamId: workstream.id,
                 correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: message,
               }));
+              const policy = orchestrationPolicyFor(workstream);
+              const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+              armTriggerWatchdogAfterPublish(workstream, message as Message, recipient, lead);
             } catch (error) {
               await messageRepository.updateDelivery(message.id, recipient, "failed");
               emit(workstream, "message.dispatch_failed", `Inbox dispatch failed for recipient ${recipient}, message ${message.id}`);
