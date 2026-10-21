@@ -25,7 +25,13 @@ export class MockProviderAdapter implements ProviderAdapter {
     const scenario = parseScenario(input.input);
     const text = multiturn ? `Mock multiturn turn ${multiturnTurn} of 2 completed` : collaboration ? `Mock ${collaboration.stage} insight completed` : this.options.qa === "fail" && scenario?.phase === "review" ? "Mock review failed" : scenario ? `Mock ${scenario.phase} completed for ${scenario.template}` : demoResponse(input.input);
     yield { type: "turn.delta", turnId, text }; yield { type: "turn.completed", turnId, text };
-    const structuredResult = agentTurnResultSchema.parse(multiturn ? multiturnResult(multiturnTurn, text) : collaboration ? collaborationResult(collaboration, input.input, text) : scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
+    const structuredResult = agentTurnResultSchema.parse(multiturn ? multiturnResult(multiturnTurn, text) : collaboration ? collaborationResult(collaboration, input.input, text) : scenario ? scenarioResult(scenario, text, this.options.qa) : input.input.includes("[agentweave implementation-trigger]") && this.options.qa !== "fail" ? {
+      schemaVersion: 1,
+      summary: text,
+      insights: [],
+      tasks: [{ id: "design", title: "Define the markdown note document model and accessibility requirements", ownerRole: "pe", acceptanceCriteria: ["Document model and accessibility requirements are explicit"] }],
+      messages: [],
+    } : input.input.includes("You are the PM and intelligent orchestrator") && this.options.qa !== "fail" ? {
       summary: text,
       insights: [{ id: "editor-model", content: "Keep the markdown document model separate from preview rendering so accessibility and formatting can be reviewed independently." }],
       tasks: [{ id: "design", title: "Define the markdown note document model and accessibility requirements", ownerRole: "pe", acceptanceCriteria: ["Document model and accessibility requirements are explicit"] }],

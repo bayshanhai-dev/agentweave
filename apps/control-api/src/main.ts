@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, sliceFromDecompositionMarker, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -20,7 +20,7 @@ import { WorkstreamCommandError, WorkstreamLifecycleCommandHandler } from "./com
 import { getWorkstreamTemplate, validateCollaborationRound, validateInsight, validateWorkstreamTemplate, workstreamTemplates, type CollaborationRound, type Insight, type WorkstreamTemplate } from "@agentweave/domain";
 import { CollaborationPolicy } from "./collaboration-policy.js";
 import { projectRuntime } from "./runtime-projection.js";
-import { hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
+import { extractStructuredTaskSpecs, hasStructuredActions, InvalidStructuredTurn, parseStructuredTurn, planStructuredTurn } from "./structured-turn.js";
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
 import {
@@ -688,7 +688,7 @@ async function recoverDecomposition(
       );
       triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
     }
-    const prefix = "Your previous reply did not contain a parseable task list. Reply ONLY with [READY_FOR_DECOMPOSITION] on its own line, followed by one line per task; each task line starts with a dash, then the owner role in square brackets, then the task title.";
+    const prefix = "Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from backend, frontend, pe, qa, or devops, and acceptanceCriteria as an array of strings. Do not write code yourself; delegate the work, and do not call any API.";
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
@@ -788,7 +788,20 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     await persistWorkstreamStatus(workstream);
     return;
   }
-  if (payload.structuredResult !== undefined) {
+  let triggerSpecs: TaskSpec[] | undefined;
+  let triggerSummary: string | undefined;
+  if (triggerDecomposition) {
+    try {
+      const result = parseStructuredTurn(payload.structuredResult);
+      triggerSpecs = extractStructuredTaskSpecs(result);
+      triggerSummary = result.summary.trim();
+    } catch (error) {
+      const reason = error instanceof InvalidStructuredTurn ? error.message : String(error);
+      await recoverDecomposition(workstream, sender, envelope, { reason }, payload.text?.trim() ?? "");
+      return;
+    }
+  }
+  if (!triggerDecomposition && payload.structuredResult !== undefined) {
     try {
       let result = parseStructuredTurn(payload.structuredResult);
       // Real LLMs sometimes answer collaboration prompts with prose instead of the
@@ -942,7 +955,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     await persistWorkstreamStatus(workstream);
     return;
   }
-  if (!resultText) {
+  if (!resultText && !triggerDecomposition) {
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "failed");
@@ -981,13 +994,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     await persistWorkstreamStatus(workstream);
     return;
   }
-  const triggerResultText = triggerDecomposition ? sliceFromDecompositionMarker(resultText) : resultText;
-  const orchestrationText = sender.role === policy.leadRole ? triggerResultText.replace(/^\[READY_FOR_DECOMPOSITION\]\s*/i, "").trim() : triggerResultText;
-  const triggerSpecs = triggerDecomposition ? extractTaskSpecs(orchestrationText) : undefined;
-  if (triggerDecomposition && triggerSpecs?.length === 0) {
-    await recoverDecomposition(workstream, sender, envelope, undefined, resultText);
-    return;
-  }
+  const orchestrationText = triggerDecomposition ? triggerSummary ?? "" : resultText;
   if (triggerDecomposition) decompositionReprompts.delete(workstream.id);
   const qaMarker = resultText.split(/\r?\n/, 1)[0]?.trim().match(/^\[(QA_PASSED|QA_FAILED)\]/i)?.[1]?.toUpperCase();
   const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : qaMarker === "QA_PASSED" ? "qa.passed" : qaMarker === "QA_FAILED" ? "qa.failed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
@@ -1003,7 +1010,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     message.taskId && plannedTaskIds.has(message.taskId) && message.recipientIds.some((recipientId) => executionAgentIds.has(recipientId))
   )?.taskId;
   if (sender.role === policy.leadRole && action.recipientRole !== "human") {
-    const specs = triggerSpecs ?? extractTaskSpecs(orchestrationText);
+    const specs = triggerDecomposition ? triggerSpecs! : extractTaskSpecs(orchestrationText);
     const decomposed = specs.length ? specs : [{ title: `Prepare the ${workstream.flavor} plan`, ownerRole: policy.planningRole }];
     if (decomposed[0] && !decomposed[0].ownerRole) decomposed[0] = { ...decomposed[0], ownerRole: action.recipientRole };
     const created = await createTasks(workstream, decomposed, sender.id);
