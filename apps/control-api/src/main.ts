@@ -27,8 +27,10 @@ import {
   implementationTriggerInstruction,
   implementationTriggerInstructionSeparator,
   implementationTriggerMarker,
+  implementationTriggerExists,
   isImplementationTriggerResult,
   republishImplementationTriggerAfterResume,
+  shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
 import { armTriggerWatchdogForDispatch, publishWithRetry, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 
@@ -468,6 +470,11 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   await messageRepository.create(message);
   workstream.messages.push(message);
   emitMessage(workstream, "message.created", message);
+  if (!shouldDispatchMessage(message.senderId, message.content)) {
+    const senderRole = workstream.agents.find((agent) => agent.id === message.senderId)?.role;
+    emit(workstream, "orchestration.agent_directive_suppressed", `Agent-authored implementation directive suppressed for message ${message.id}`, senderRole);
+    return message;
+  }
   const policy = orchestrationPolicyFor(workstream);
   const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
   const failedRecipients: Array<{ recipientId: string; error: unknown }> = [];
@@ -851,15 +858,19 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
               const lead = workstream.agents.find((candidate) => candidate.role === policy.leadRole);
               const synthesis = plan.insights.find((candidate) => candidate.kind === "synthesis") ?? plan.insights[plan.insights.length - 1];
               if (lead && synthesis) {
-                const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
-                const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
-                  "Decompose this into concrete implementation tasks.".length,
-                );
-                const trigger = await createMessage(workstream, "human", [lead.id],
-                  `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`,
-                  "directive", {});
-                if (trigger.deliveryStatus === "delivered") {
-                  emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
+                if (implementationTriggerExists({ messages: workstream.messages, tasks: workstream.tasks, leadAgentId: lead.id })) {
+                  emit(workstream, "orchestration.implementation_trigger_exists", "PM implementation trigger already exists", "human");
+                } else {
+                  const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
+                  const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
+                    "Decompose this into concrete implementation tasks.".length,
+                  );
+                  const trigger = await createMessage(workstream, "human", [lead.id],
+                    `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`,
+                    "directive", {});
+                  if (trigger.deliveryStatus === "delivered") {
+                    emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
+                  }
                 }
               }
             }
@@ -867,6 +878,12 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         }
         for (const message of plan.messages) {
           if (!workstream.messages.some((item) => item.id === message.id)) workstream.messages.push(message as Message);
+          if (!shouldDispatchMessage(message.senderId, message.content)) {
+            emit(workstream, "orchestration.agent_directive_suppressed", `Agent-authored implementation directive suppressed for message ${message.id}`, sender.role);
+            const notification = JSON.stringify({ workstreamId: workstream.id, type: "message.created", message, occurredAt: message.createdAt });
+            for (const socket of sockets) socket.send(notification);
+            continue;
+          }
           // A retry republishes stable message IDs; receiver execution keys suppress duplicates.
           for (const recipient of message.recipientIds) {
             try {
