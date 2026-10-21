@@ -12,6 +12,30 @@ export type OrchestrationDecision = {
   reason: string;
 };
 
+type RoutableTask = { id: string; status: string; ownerAgentId?: string; createdByAgentId?: string };
+
+const terminalTaskStatuses = new Set(["done", "failed", "cancelled"]);
+
+export function selectPlannedTask<T extends RoutableTask>(
+  tasks: readonly T[],
+  leadAgentId: string | undefined,
+  options: { fixUp: boolean; recipientAgentId?: string; lastExecutedTaskId?: string },
+): T | undefined {
+  if (!leadAgentId) return undefined;
+  const planned = tasks.filter((task) => task.createdByAgentId === leadAgentId);
+  if (options.fixUp && options.lastExecutedTaskId) {
+    const lastExecuted = planned.find((task) => task.id === options.lastExecutedTaskId);
+    if (lastExecuted) return lastExecuted;
+  }
+  const nonTerminal = planned.filter((task) => !terminalTaskStatuses.has(task.status));
+  return nonTerminal.find((task) => task.ownerAgentId === options.recipientAgentId) ?? nonTerminal[0];
+}
+
+export function deriveHandoffTitle(content: string, fallback: string): string {
+  const firstLine = content.split(/\r?\n/, 1)[0]?.trim();
+  return firstLine && !firstLine.toLowerCase().startsWith("[agentweave") ? firstLine : fallback;
+}
+
 export const softwareDevelopmentPolicy: OrchestrationPolicy = {
   templateId: "software-development", leadRole: "pm", planningRole: "pe", executionRoles: ["backend", "frontend"], reviewRole: "qa",
 };
