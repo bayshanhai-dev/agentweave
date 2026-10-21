@@ -31,7 +31,14 @@ export class CodexStdioTransport implements CodexTransport {
   async cancel(sessionId: string, turnId: string, correlationId: string): Promise<void> { await this.request("turn/interrupt", { threadId: sessionId, turnId }, correlationId); }
   private receive(line: string): void {
     let message: Record<string, unknown>; try { message = JSON.parse(line) as Record<string, unknown>; } catch { return; }
-    if (typeof message.id === "string" && this.pending.has(message.id)) { const pending = this.pending.get(message.id)!; this.pending.delete(message.id); if (message.error) pending.resolve({ id: message.id, error: message.error as { message: string; code?: string } }); else pending.resolve({ id: message.id, result: (message.result ?? {}) as Record<string, unknown> }); return; }
+    const pendingId = typeof message.id === "string" || typeof message.id === "number" ? String(message.id) : undefined;
+    if (pendingId !== undefined && this.pending.has(pendingId)) { const pending = this.pending.get(pendingId)!; this.pending.delete(pendingId); if (message.error) pending.resolve({ id: pendingId, error: message.error as { message: string; code?: string } }); else pending.resolve({ id: pendingId, result: (message.result ?? {}) as Record<string, unknown> }); return; }
+    if (typeof message.method === "string" && pendingId !== undefined) {
+      const supported = message.method === "item/commandExecution/requestApproval" || message.method === "item/fileChange/requestApproval";
+      const response = supported ? { jsonrpc: "2.0", id: message.id, result: { decision: "accept" } } : { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `unsupported client request: ${message.method}` } };
+      this.child.stdin.write(`${JSON.stringify(response)}\n`);
+      return;
+    }
     const params = (message.params ?? {}) as Record<string, unknown>; const threadId = String(params.threadId ?? params.thread_id ?? "");
     if (!threadId) return;
     const type = String(message.method ?? ""); const event = type === "item/agentMessage/delta" ? { type: "turn.delta", text: String(params.delta ?? params.text ?? "") } : type === "item/completed" || type === "item/agentMessage/completed" ? { type: "item.completed", item: params.item ?? params } : type === "turn/completed" ? { type: "turn.completed", text: params.text ?? params.output_text ?? params.result } : type === "turn/failed" ? { type: "turn.failed", error: params.error } : type === "item/started" ? { type: "tool.started", toolName: String(params.itemType ?? "tool") } : undefined;

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeAdapter, type ProcessResult } from "../../src/providers/claude-code.js";
 import { CodexAppServerAdapter, type CodexTransport } from "../../src/providers/codex-app-server.js";
+import { CodexStdioTransport } from "../../src/providers/codex-stdio-transport.js";
 import { providerError, redactSecrets } from "../../src/providers/errors.js";
 import { MockProviderAdapter } from "../../src/providers/mock.js";
 import { createProviderFromEnv } from "../../src/providers/registry.js";
@@ -14,6 +15,8 @@ async function collect<T>(stream: AsyncGenerator<ProviderRunEvent, T>) {
 }
 
 async function* chunks(values: string[]) { for (const value of values) yield value; }
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("provider adapters", () => {
   it("keeps a deterministic mock happy path and normalized event shape", async () => {
@@ -85,6 +88,39 @@ describe("provider adapters", () => {
     expect(run.events.map((event) => event.type)).toEqual(["turn.started", "turn.delta", "tool.started", "tool.completed", "turn.delta", "turn.completed"]);
     expect(run.events.every((event) => "correlationId" in event)).toBe(true);
     expect(run.result.text).toBe("hello world");
+  });
+
+  it("configures Codex thread approval and sandbox defaults and env overrides", async () => {
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const transport: CodexTransport = { async request(method, params) { requests.push({ method, params }); return { result: { thread: { id: "thread-1" } } }; } };
+    const provider = new CodexAppServerAdapter(transport);
+    const session = await provider.createSession();
+    await provider.resumeSession(session);
+    expect(requests.map(({ params }) => params)).toEqual([
+      expect.objectContaining({ approvalPolicy: "never", sandbox: "workspace-write" }),
+      expect.objectContaining({ approvalPolicy: "never", sandbox: "workspace-write" }),
+    ]);
+
+    vi.stubEnv("AGENTWEAVE_CODEX_APPROVAL_POLICY", "on-request");
+    vi.stubEnv("AGENTWEAVE_CODEX_SANDBOX", "danger-full-access");
+    await provider.createSession();
+    await provider.resumeSession(session);
+    expect(requests.slice(2).map(({ params }) => params)).toEqual([
+      expect.objectContaining({ approvalPolicy: "on-request", sandbox: "danger-full-access" }),
+      expect.objectContaining({ approvalPolicy: "on-request", sandbox: "danger-full-access" }),
+    ]);
+  });
+
+  it("accepts file-change approval requests and rejects unknown client requests", () => {
+    const writes: string[] = [];
+    const receiver = (CodexStdioTransport.prototype as unknown as { receive(this: unknown, line: string): void }).receive;
+    const transport = { child: { stdin: { write: (line: string) => writes.push(line) } }, pending: new Map(), queues: new Map(), waiters: new Map() };
+    receiver.call(transport, JSON.stringify({ jsonrpc: "2.0", id: 7, method: "item/fileChange/requestApproval", params: {} }));
+    receiver.call(transport, JSON.stringify({ jsonrpc: "2.0", id: "unknown-1", method: "custom/unknown", params: {} }));
+    expect(writes.map((line) => JSON.parse(line))).toEqual([
+      { jsonrpc: "2.0", id: 7, result: { decision: "accept" } },
+      { jsonrpc: "2.0", id: "unknown-1", error: { code: -32601, message: "unsupported client request: custom/unknown" } },
+    ]);
   });
 
   it("keeps final App Server item text when no delta was emitted", async () => {
