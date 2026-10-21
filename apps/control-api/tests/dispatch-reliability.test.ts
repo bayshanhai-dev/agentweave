@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { publishWithRetry, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, publishWithRetry, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
 
 describe("publishWithRetry", () => {
   it("retries a failed publish with the configured backoff", async () => {
@@ -25,6 +25,20 @@ describe("publishWithRetry", () => {
 });
 
 describe("TriggerDispatchWatchdog", () => {
+  it("arms for a decomposition re-prompt dispatched to the lead", () => {
+    const reprompt = "Reply with a task list.\n\n[agentweave implementation-trigger] Original trigger";
+    const watchdog = new TriggerDispatchWatchdog();
+    const arm = vi.spyOn(watchdog, "arm");
+
+    expect(armTriggerWatchdogForDispatch(watchdog, "workstream-1", "correlation-1", reprompt, "lead-1", "lead-1", vi.fn())).toBe(true);
+    expect(arm).toHaveBeenCalledOnce();
+    watchdog.clear("workstream-1");
+
+    expect(armTriggerWatchdogForDispatch(watchdog, "workstream-1", "correlation-2", reprompt, "worker-1", "lead-1", vi.fn())).toBe(false);
+    expect(armTriggerWatchdogForDispatch(watchdog, "workstream-1", "correlation-3", "ordinary task", "lead-1", "lead-1", vi.fn())).toBe(false);
+    expect(arm).toHaveBeenCalledOnce();
+  });
+
   it("expires an armed trigger and can be cleared by correlation", async () => {
     vi.useFakeTimers();
     try {

@@ -2,6 +2,32 @@ export const inboxPublishAttempts = 3;
 export const inboxPublishBackoffsMs = [250, 1_000] as const;
 export const implementationTriggerWatchdogMs = 180_000;
 
+export function shouldArmTriggerWatchdog(
+  content: string,
+  recipientId: string,
+  leadAgentId: string | undefined,
+): boolean {
+  return Boolean(
+    leadAgentId &&
+    recipientId === leadAgentId &&
+    content.includes("[agentweave implementation-trigger]"),
+  );
+}
+
+export function armTriggerWatchdogForDispatch(
+  watchdog: TriggerDispatchWatchdog,
+  workstreamId: string,
+  correlationId: string,
+  content: string,
+  recipientId: string,
+  leadAgentId: string | undefined,
+  onExpired: () => void | Promise<void>,
+): boolean {
+  if (!shouldArmTriggerWatchdog(content, recipientId, leadAgentId)) return false;
+  watchdog.arm(workstreamId, correlationId, onExpired);
+  return true;
+}
+
 type TimerHandle = ReturnType<typeof setTimeout>;
 
 export async function publishWithRetry(
