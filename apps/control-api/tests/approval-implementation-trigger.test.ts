@@ -75,8 +75,9 @@ describe("approval implementation trigger recovery", () => {
 
     expect(createMessage).toHaveBeenCalledOnce();
     const content = createMessage.mock.calls[0]?.[2];
-    expect(content).toContain("[READY_FOR_DECOMPOSITION]");
-    expect(content).toContain("- [role] Task title");
+    expect(content).toContain("return ONLY one JSON object");
+    expect(content).toContain("schemaVersion");
+    expect(content).not.toContain("[READY_FOR_DECOMPOSITION]");
     expect(content).not.toContain("orchestration-decision");
     expect(createMessage.mock.calls[0]?.[4]).toBe("trigger-1");
     expect(emit).toHaveBeenCalledOnce();
@@ -105,8 +106,9 @@ describe("approval implementation trigger recovery", () => {
     expect(await republishImplementationTriggerAfterResume(workstream, dependencies)).toBe(true);
     const content = createMessage.mock.calls[0]?.[2];
     expect(createMessage.mock.calls[0]?.[4]).toBe("trigger-2");
-    expect(content).toContain("[READY_FOR_DECOMPOSITION]");
-    expect(content).toContain("- [role] Task title");
+    expect(content).toContain("return ONLY one JSON object");
+    expect(content).toContain("acceptanceCriteria");
+    expect(content).not.toContain("[READY_FOR_DECOMPOSITION]");
     expect(content).not.toContain("old instruction");
   });
 
