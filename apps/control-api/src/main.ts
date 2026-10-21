@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -862,24 +862,53 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   const action = orchestrator.apply({ type: eventType, content: orchestrationText, ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   if (!action) { await setAgentStatus(sender, "idle"); workstream.status = "completed"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completed", message: "Orchestrator completed the workflow", occurredAt: new Date().toISOString() }); await persistWorkstreamStatus(workstream); return; }
   let handoffTaskId: string | undefined = payload.taskId;
+  let dispatchContent = action.content;
+  const leadAgent = workstream.agents.find((candidate) => candidate.role === policy.leadRole);
+  const dispatchRecipient = workstream.agents.find((candidate) => candidate.role === action.recipientRole);
+  const executionAgentIds = new Set(workstream.agents.filter((candidate) => policy.executionRoles.includes(candidate.role)).map((candidate) => candidate.id));
+  const plannedTaskIds = new Set(workstream.tasks.filter((candidate) => candidate.createdByAgentId === leadAgent?.id).map((candidate) => candidate.id));
+  const lastExecutedPlannedTaskId = [...workstream.messages].reverse().find((message) =>
+    message.taskId && plannedTaskIds.has(message.taskId) && message.recipientIds.some((recipientId) => executionAgentIds.has(recipientId))
+  )?.taskId;
   if (sender.role === policy.leadRole && action.recipientRole !== "human") {
     const specs = extractTaskSpecs(orchestrationText);
     const decomposed = specs.length ? specs : [{ title: `Prepare the ${workstream.flavor} plan`, ownerRole: policy.planningRole }];
     if (decomposed[0] && !decomposed[0].ownerRole) decomposed[0] = { ...decomposed[0], ownerRole: action.recipientRole };
     const created = await createTasks(workstream, decomposed, sender.id);
-    handoffTaskId = created[0]?.id;
+    if (policy.executionRoles.includes(action.recipientRole)) {
+      const selected = selectPlannedTask(workstream.tasks, leadAgent?.id, { fixUp: false, ...(dispatchRecipient ? { recipientAgentId: dispatchRecipient.id } : {}) });
+      handoffTaskId = selected?.id ?? created[0]?.id;
+      if (selected) dispatchContent = `${action.content}\n\nPlanned task:\n${selected.title}\n\nAcceptance criteria:\n${selected.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+    } else {
+      handoffTaskId = created[0]?.id;
+    }
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.decomposition.persisted", message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from ${policy.leadRole} output`, occurredAt: new Date().toISOString(), role: sender.role });
   } else if (action.recipientRole !== "human") {
     const targetAgent = workstream.agents.find((candidate) => candidate.role === action.recipientRole);
     const ownerRole = targetAgent?.role;
     const parentTaskId = task?.id;
     if (targetAgent && ownerRole) {
-      const created = await createTasks(workstream, [{ title: action.content.split("\n", 1)[0] ?? `Continue the ${workstream.flavor} workstream`, ownerRole, ...(parentTaskId ? { parentTaskId } : {}) }], sender.id);
-      handoffTaskId = created[0]?.id;
+      if (policy.executionRoles.includes(action.recipientRole)) {
+        const selected = selectPlannedTask(workstream.tasks, leadAgent?.id, { fixUp: eventType === "qa.failed", recipientAgentId: targetAgent.id, ...(lastExecutedPlannedTaskId ? { lastExecutedTaskId: lastExecutedPlannedTaskId } : {}) });
+        if (selected) {
+          handoffTaskId = selected.id;
+          dispatchContent = `${action.content}\n\nPlanned task:\n${selected.title}\n\nAcceptance criteria:\n${selected.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+        } else {
+          const created = await createTasks(workstream, [{ title: deriveHandoffTitle(action.content, `Continue the ${workstream.flavor} workstream`), ownerRole, ...(parentTaskId ? { parentTaskId } : {}) }], sender.id);
+          handoffTaskId = created[0]?.id;
+        }
+      } else {
+        const executedTask = task && policy.executionRoles.includes(sender.role) ? task : undefined;
+        const title = action.recipientRole === policy.reviewRole
+          ? executedTask ? `Review: ${executedTask.title}` : "Review the implementation"
+          : deriveHandoffTitle(action.content, `Continue the ${workstream.flavor} workstream`);
+        const created = await createTasks(workstream, [{ title, ownerRole, ...(parentTaskId ? { parentTaskId } : {}), ...(executedTask ? { relatedTaskIds: [executedTask.id] } : {}) }], sender.id);
+        handoffTaskId = created[0]?.id;
+      }
     }
   }
   const recipient = action.recipientRole === "human" ? "human" : workstream.agents.find((candidate) => candidate.role === action.recipientRole)?.id; if (!recipient) return;
-  await createMessage(workstream, sender.id, [recipient], action.content, action.messageType, { ...(handoffTaskId ? { taskId: handoffTaskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
+  await createMessage(workstream, sender.id, [recipient], dispatchContent, action.messageType, { ...(handoffTaskId ? { taskId: handoffTaskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
   await setAgentStatus(sender, "idle");
   if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Human approval required before completion", occurredAt: new Date().toISOString() }); }
 }

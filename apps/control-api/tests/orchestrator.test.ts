@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractTaskSpecs, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
+import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
 
 describe("WorkstreamOrchestrator", () => {
   it("routes the software-development policy through its declared responsibilities", () => {
@@ -69,5 +69,26 @@ describe("WorkstreamOrchestrator", () => {
       { title: "Implement the parser", ownerRole: "coder" },
       { title: "Add regression coverage", ownerRole: "qa" },
     ]);
+  });
+
+  it("selects lead-created tasks, prefers the recipient's owner role, and reuses the last task for a fix-up", () => {
+    const tasks = [
+      { id: "pe-pseudo", status: "assigned", ownerAgentId: "frontend-agent", createdByAgentId: "pe" },
+      { id: "backend-pseudo", status: "ready", ownerAgentId: "backend-agent", createdByAgentId: "backend" },
+      { id: "qa-pseudo", status: "assigned", ownerAgentId: "frontend-agent", createdByAgentId: "qa" },
+      { id: "done", status: "done", ownerAgentId: "frontend-agent", createdByAgentId: "lead" },
+      { id: "backend-first", status: "assigned", ownerAgentId: "backend-agent", createdByAgentId: "lead" },
+      { id: "frontend-match", status: "ready", ownerAgentId: "frontend-agent", createdByAgentId: "lead" },
+    ];
+
+    expect(selectPlannedTask(tasks, "lead", { fixUp: false, recipientAgentId: "frontend-agent" })?.id).toBe("frontend-match");
+    expect(selectPlannedTask(tasks, "lead", { fixUp: false, recipientAgentId: "devops-agent" })?.id).toBe("backend-first");
+    expect(selectPlannedTask(tasks, "lead", { fixUp: true, recipientAgentId: "backend-agent", lastExecutedTaskId: "done" })?.id).toBe("done");
+  });
+
+  it("never derives a task title from an agentweave marker", () => {
+    const title = deriveHandoffTitle("[agentweave template=software-development phase=review]\nReview this", "Review the implementation");
+    expect(title).toBe("Review the implementation");
+    expect(title.toLowerCase().startsWith("[agentweave")).toBe(false);
   });
 });
