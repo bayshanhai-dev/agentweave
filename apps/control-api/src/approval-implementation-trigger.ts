@@ -8,6 +8,26 @@ export const implementationTriggerInstructionSeparator =
 export const implementationTriggerInstruction = (_workstreamId: string): string =>
   "Decompose this into concrete implementation tasks and return them as your reply — the platform creates and assigns the tasks from your reply automatically. Begin your reply with [READY_FOR_DECOMPOSITION], then one line per task in exactly this format: - [role] Task title (role is one of: backend, frontend, pe, qa, devops). Do NOT call any API or URL, do NOT use tools to submit decisions, and do not write the code yourself — delegate to the execution roles.";
 
+export function shouldDispatchMessage(senderId: string, content: string): boolean {
+  return senderId === "human" || !content.includes(implementationTriggerMarker);
+}
+
+export function implementationTriggerExists(input: {
+  messages: Array<{ senderId: string; recipientIds: string[]; content: string }>;
+  tasks: Array<{ title: string }>;
+  leadAgentId: string;
+}): boolean {
+  return (
+    !input.tasks.some((task) => !collaborationStage(task.title)) &&
+    input.messages.some(
+      (message) =>
+        message.senderId === "human" &&
+        message.recipientIds.includes(input.leadAgentId) &&
+        message.content.includes(implementationTriggerMarker),
+    )
+  );
+}
+
 export function isImplementationTriggerResult(input: {
   messages: Array<{ correlationId: string; content: string; recipientIds: string[] }>;
   tasks: Array<{ title: string }>;

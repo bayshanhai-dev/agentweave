@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   implementationTriggerInstructionSeparator,
   implementationTriggerMarker,
+  implementationTriggerExists,
   isImplementationTriggerResult,
   republishImplementationTriggerAfterResume,
+  shouldDispatchMessage,
 } from "../src/approval-implementation-trigger.js";
 
 const completedRound = {
@@ -168,5 +170,51 @@ describe("implementation trigger result detection", () => {
 
   it("rejects a result without a correlation ID", () => {
     expect(isImplementationTriggerResult({ ...input, correlationId: undefined })).toBe(false);
+  });
+});
+
+describe("implementation directive provenance", () => {
+  it("suppresses an agent-authored message containing the marker", () => {
+    expect(shouldDispatchMessage("pm-1", `${implementationTriggerMarker} echoed directive`)).toBe(false);
+  });
+
+  it("dispatches a human-authored message containing the marker", () => {
+    expect(shouldDispatchMessage("human", `${implementationTriggerMarker} original directive`)).toBe(true);
+  });
+
+  it("dispatches an agent-authored message without the marker", () => {
+    expect(shouldDispatchMessage("pm-1", "Ordinary collaboration message")).toBe(true);
+  });
+});
+
+describe("implementation trigger idempotency", () => {
+  const trigger = {
+    senderId: "human",
+    recipientIds: ["pm-1"],
+    content: `${implementationTriggerMarker} implement the synthesis`,
+  };
+
+  it("finds a human trigger to the lead before implementation tasks exist", () => {
+    expect(implementationTriggerExists({
+      messages: [trigger],
+      tasks: [{ title: "[Collaboration:synthesis] Synthesize findings" }],
+      leadAgentId: "pm-1",
+    })).toBe(true);
+  });
+
+  it("ignores agent-authored triggers and triggers to another recipient", () => {
+    expect(implementationTriggerExists({
+      messages: [{ ...trigger, senderId: "pm-1" }, { ...trigger, recipientIds: ["pm-2"] }],
+      tasks: [],
+      leadAgentId: "pm-1",
+    })).toBe(false);
+  });
+
+  it("does not block trigger creation after implementation tasks exist", () => {
+    expect(implementationTriggerExists({
+      messages: [trigger],
+      tasks: [{ title: "Implement the API" }],
+      leadAgentId: "pm-1",
+    })).toBe(false);
   });
 });
