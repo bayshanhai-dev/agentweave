@@ -27,6 +27,11 @@ describe("AgentTurnResult parsing", () => {
     expect(result.insights[0].kind).toBe("proposal");
   });
 
+  it("parses the first of two duplicated JSON objects", () => {
+    const json = '{"schemaVersion":1,"summary":"done with {nested} and \\"escaped\\" text","insights":[],"tasks":[],"messages":[]}';
+    expect(parseAgentTurnResult(json + json).summary).toBe('done with {nested} and "escaped" text');
+  });
+
   it("prefers fenced JSON over embedded JSON", () => {
     const result = parseAgentTurnResult(
       `Some text {"schemaVersion":1,"summary":"wrong","insights":[],"tasks":[],"messages":[]} more text\n\`\`\`json\n{"schemaVersion":1,"summary":"right","insights":[],"tasks":[],"messages":[]}\n\`\`\``
