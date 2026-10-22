@@ -43,10 +43,16 @@ describe("structured provider execution", () => {
     );
   });
   it.each([false, true])(
-    "validates explicit and JSON text results before emitting task completion (malformed=%s)",
+    "handles JSON text results before emitting task completion (malformed=%s)",
     async (malformed) => {
       const provider = new MockProviderAdapter();
       const base = provider.run.bind(provider);
+      const text = JSON.stringify({
+        summary: "Review",
+        messages: malformed
+          ? "invalid"
+          : [{ recipientRole: "qa", content: "Check" }],
+      });
       provider.run = async function* (input) {
         const generator = base(input);
         let step = await generator.next();
@@ -57,12 +63,7 @@ describe("structured provider execution", () => {
         return {
           ...step.value,
           structuredResult: undefined,
-          text: JSON.stringify({
-            summary: "Review",
-            messages: malformed
-              ? "invalid"
-              : [{ recipientRole: "qa", content: "Check" }],
-          }),
+          text,
         } as ProviderRunResult;
       };
       const sink = vi.fn(async () => {});
@@ -73,11 +74,17 @@ describe("structured provider execution", () => {
         sink,
       ).execute({ taskId: "task", agentId: "pm", prompt: "test" });
       if (malformed) {
-        await expect(run).rejects.toThrow(/Invalid structured/);
+        await run;
         expect(
           sink.mock.calls.map((call: unknown[]) => call[0]),
-        ).not.toContainEqual(
-          expect.objectContaining({ type: "task.completed" }),
+        ).toContainEqual(
+          expect.objectContaining({
+            type: "task.completed",
+            structuredResult: expect.objectContaining({
+              summary: text,
+              messages: [],
+            }),
+          }),
         );
       } else {
         await run;
