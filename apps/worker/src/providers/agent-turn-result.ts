@@ -27,6 +27,20 @@ function firstBalancedObject(text: string): string | undefined {
   return undefined;
 }
 
+function normalizeCandidate(candidate: unknown): unknown {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+  const insights = (candidate as Record<string, unknown>).insights;
+  if (!Array.isArray(insights)) return candidate;
+  for (const insight of insights) {
+    if (!insight || typeof insight !== "object" || Array.isArray(insight)) continue;
+    const fields = insight as Record<string, unknown>;
+    if (typeof fields.content !== "string" && typeof fields.summary === "string") {
+      fields.content = fields.summary;
+    }
+  }
+  return candidate;
+}
+
 export function parseAgentTurnResult(text: string): AgentTurnResult {
   // Try markdown code fence first, then the whole text, then JSON embedded in prose.
   const candidates: string[] = [];
@@ -39,16 +53,13 @@ export function parseAgentTurnResult(text: string): AgentTurnResult {
   // Find the largest {...} block in the text as a last resort.
   const embedded = text.match(/\{[\s\S]*\}/)?.[0];
   if (embedded && !candidates.includes(embedded)) candidates.push(embedded);
-  let lastError: unknown;
   for (const candidate of candidates) {
     try {
-      return agentTurnResultSchema.parse(JSON.parse(candidate));
-    } catch (error) {
-      lastError = error;
-    }
+      return agentTurnResultSchema.parse(normalizeCandidate(JSON.parse(candidate)));
+    } catch {}
   }
-  // Declared JSON must fail validation instead of becoming a successful text turn.
-  if (/^\s*(?:\{|```json\b)/.test(text)) throw new Error(`Invalid structured AgentTurnResult: ${String(lastError)}`);
+  // Invalid structured output becomes a summary-only result. Downstream decomposition
+  // gates reject and re-prompt it, while collaboration can use its prose fallback.
   const summary = text.trim();
   if (!summary) throw new Error("AgentTurnResult is empty or malformed");
   return agentTurnResultSchema.parse({

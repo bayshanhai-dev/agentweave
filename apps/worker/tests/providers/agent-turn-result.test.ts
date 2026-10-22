@@ -3,9 +3,25 @@ import { parseAgentTurnResult } from "../../src/providers/agent-turn-result.js";
 
 describe("AgentTurnResult parsing", () => {
   it("parses JSON and fenced JSON", () => {
-    const result = parseAgentTurnResult('```json\n{"summary":"done","tasks":[]}\n```');
-    expect(result.summary).toBe("done");
-    expect(result.schemaVersion).toBe(1);
+    const json = '{"summary":"done","tasks":[]}';
+    expect(parseAgentTurnResult(json).summary).toBe("done");
+    const fencedResult = parseAgentTurnResult(`\`\`\`json\n${json}\n\`\`\``);
+    expect(fencedResult.summary).toBe("done");
+    expect(fencedResult.schemaVersion).toBe(1);
+  });
+
+  it("normalizes insight summary to content", () => {
+    const result = parseAgentTurnResult(
+      '{"summary":"reviewed","insights":[{"id":"qa-1","kind":"critique","summary":"Add a bounded validation step"}]}'
+    );
+    expect(result.insights[0].content).toBe("Add a bounded validation step");
+  });
+
+  it("wraps schema-invalid declared JSON as a prose summary", () => {
+    const text = '{"summary":"reviewed","insights":[{"id":"qa-1","kind":"critique"}]}';
+    const result = parseAgentTurnResult(text);
+    expect(result.summary).toBe(text);
+    expect(result.insights).toEqual([]);
   });
 
   it("keeps marker output as a compatibility fallback", () => {
