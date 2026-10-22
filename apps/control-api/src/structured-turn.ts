@@ -10,6 +10,7 @@ import type {
   PersistedTask,
 } from "./repositories/types.js";
 import type { TaskSpec } from "./orchestrator.js";
+import { withFinalValidationTask } from "./final-validation.js";
 
 export class InvalidStructuredTurn extends Error {}
 export type TurnContext = {
@@ -56,7 +57,7 @@ export function extractStructuredTaskSpecs(result: AgentTurnResult): TaskSpec[] 
   if (result.tasks.length < 1 || result.tasks.length > 12)
     throw new InvalidStructuredTurn("Decomposition must contain between 1 and 12 tasks");
 
-  return result.tasks.map((task) => {
+  const specs = result.tasks.map((task) => {
     const title = task.title.trim();
     if (!title || title.toLowerCase() === "task title")
       throw new InvalidStructuredTurn("Decomposition task title is invalid");
@@ -68,6 +69,7 @@ export function extractStructuredTaskSpecs(result: AgentTurnResult): TaskSpec[] 
       acceptanceCriteria: task.acceptanceCriteria ?? [],
     };
   });
+  return withFinalValidationTask(specs);
 }
 
 // Existing adapters may wrap legacy text in a summary-only result.
