@@ -33,6 +33,7 @@ import {
   shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
 import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
+import { reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -277,7 +278,12 @@ for (const command of ["pause", "resume", "complete", "emergency-stop", "waiting
     const workstream = workstreams.get(id);
     const body = (request.body ?? {}) as CommandBody;
     if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-    try { return await lifecycleCommandHandler.execute(workstream, command, body, (type, message) => emit(workstream, type, message)); }
+    try {
+      const previousStatus = workstream.status;
+      const response = await lifecycleCommandHandler.execute(workstream, command, body, (type, message) => emit(workstream, type, message));
+      if (previousStatus === "waiting_for_human" && workstream.status === "active") await reconcileAfterActivation(workstream);
+      return response;
+    }
     catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
   });
 }
@@ -287,6 +293,7 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   const body = (request.body ?? {}) as CommandBody;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
   try {
+    const previousStatus = workstream.status;
     const response = await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message));
     if (body.decision === "resume") {
       await republishImplementationTriggerAfterResume(workstream, {
@@ -296,6 +303,7 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
         emit: (type, message, role) => emit(workstream, type, message, role),
       });
     }
+    if (previousStatus === "waiting_for_human" && workstream.status === "active") await reconcileAfterActivation(workstream);
     return response;
   }
   catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
@@ -331,6 +339,7 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
     orchestrators.set(workstream.id, new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream)));
     await persistWorkstreamStatus(workstream);
     emit(workstream, "workstream.resumed_by_human_message", "Human resumed the Workstream through PM");
+    await reconcileAfterActivation(workstream);
   }
   let taskId = body.taskId;
   if (messageType === "request" && !taskId) {
@@ -618,6 +627,25 @@ async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<vo
   await workstreamRepository.saveAgentStatus(agent.id, status);
 }
 
+async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
+  await reconcileWaveGateAfterActivation(workstream, orchestrationPolicyFor(workstream), {
+    acknowledgeGateMessage: async (message) => {
+      const aggregateStatus = await messageRepository.updateDelivery(message.id, "human", "acknowledged");
+      if (aggregateStatus !== "acknowledged") return false;
+      message.deliveryStatus = aggregateStatus;
+      emitMessage(workstream, "message.acknowledged", message as Message);
+      return true;
+    },
+    hasExecutionClaim: (taskId) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId),
+    dispatchTask: ({ senderId, recipientId, content, taskId, causationId }) =>
+      createMessage(workstream, senderId, [recipientId], content, "request", {
+        taskId,
+        ...(causationId ? { causationId } : {}),
+      }),
+    emit: (type, message, role) => emit(workstream, type, message, role),
+  });
+}
+
 async function persistEvent(workstreamId: string, event: WorkflowEvent): Promise<void> {
   // Backfill the atomically allocated sequence onto the in-memory event for consistency.
   event.sequence = await workflowEventRepository.append(workstreamId, event);
@@ -657,6 +685,9 @@ try {
 }
 await eventBus.connect();
 await loadWorkstreams();
+for (const workstream of workstreams.values()) {
+  if (workstream.status === "active") await reconcileAfterActivation(workstream);
+}
 await eventBus.consumer(subjects.events, async (message) => {
   const envelope = eventBus.decode(message) as { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string };
   if (envelope.id) {

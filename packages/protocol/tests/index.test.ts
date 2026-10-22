@@ -15,6 +15,8 @@ describe("scaling contracts", () => {
   it("registers control-api orchestration and dispatch events", () => {
     for (const type of [
       "message.dispatch_failed",
+      "message.dispatch_reconciled",
+      "message.gate_released",
       "orchestration.agent_directive_suppressed",
       "orchestration.decomposition_failed",
       "orchestration.decomposition_reprompted",

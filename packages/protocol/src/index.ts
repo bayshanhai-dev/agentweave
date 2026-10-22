@@ -245,6 +245,8 @@ const workflowEventTypes = [
   "collaboration.round.stopped",
   "collaboration.turn.accepted",
   "message.dispatch_failed",
+  "message.dispatch_reconciled",
+  "message.gate_released",
   "message.sent",
   "orchestration.agent_directive_suppressed",
   "orchestration.complete.requested",
