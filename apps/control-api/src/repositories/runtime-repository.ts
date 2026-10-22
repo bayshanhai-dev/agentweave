@@ -34,6 +34,18 @@ export class RuntimeRepository {
   async releaseEvent(id: string): Promise<void> {
     await this.sql`delete from consumed_runtime_events where id = ${id}`;
   }
+  async hasTaskExecutionClaim(workstreamId: string, taskId: string): Promise<boolean> {
+    const rows = await this.sql`
+      select 1
+      from task_execution_claims claim
+      join messages message
+        on left(claim.message_id, length(message.id) + 1) = message.id || ':'
+      where claim.workstream_id = ${workstreamId}
+        and message.workstream_id = ${workstreamId}
+        and message.task_id = ${taskId}
+      limit 1`;
+    return rows.length > 0;
+  }
   async markStaleWorkersOffline(): Promise<void> {
     await this
       .sql`update runtime_workers set status='offline', updated_at=now() where status='online' and last_heartbeat_at < now() - interval '45 seconds'`;
