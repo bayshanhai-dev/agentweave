@@ -30,8 +30,7 @@ type ReconciliationPolicy = {
   executionRoles: readonly string[];
   reviewRole: string;
 };
-type ReconciliationDependencies = {
-  acknowledgeGateMessage: (message: ReconciliationMessage) => Promise<boolean>;
+type DispatchReconciliationDependencies = {
   hasExecutionClaim: (taskId: string) => Promise<boolean>;
   dispatchTask: (input: {
     senderId: string;
@@ -42,8 +41,12 @@ type ReconciliationDependencies = {
   }) => Promise<{ deliveryStatus?: string }>;
   emit: (type: string, message: string, role?: string) => void;
 };
+type ReconciliationDependencies = DispatchReconciliationDependencies & {
+  acknowledgeGateMessage: (message: ReconciliationMessage) => Promise<boolean>;
+};
 
 const openDeliveryStatuses = new Set(["pending", "delivered"]);
+const terminalTaskStatuses = new Set(["done", "failed", "cancelled"]);
 
 function taskDispatchContent(
   task: ReconciliationTask,
@@ -61,6 +64,66 @@ function taskDispatchContent(
     ? task.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")
     : "- Task is completed with evidence";
   return `${marker}\nContinue the workstream after Human approval.\n\nPlanned task:\n${task.title}\n\nAcceptance criteria:\n${criteria}`;
+}
+
+/** Dispatch dependency-ready assigned tasks without duplicating durable work. */
+export async function reconcileDispatchableTasks(
+  workstream: ReconciliationWorkstream,
+  policy: ReconciliationPolicy,
+  dependencies: DispatchReconciliationDependencies,
+  causationId?: string,
+): Promise<string[]> {
+  if (workstream.status !== "active") return [];
+
+  const terminalTaskIds = new Set(
+    workstream.tasks
+      .filter((task) => terminalTaskStatuses.has(task.status))
+      .map((task) => task.id),
+  );
+  const tasksWithOpenDeliveries = new Set(
+    workstream.messages.flatMap((message) =>
+      message.taskId && openDeliveryStatuses.has(message.deliveryStatus)
+        ? [message.taskId]
+        : [],
+    ),
+  );
+  const lead = workstream.agents.find(
+    (agent) => agent.role === policy.leadRole,
+  );
+  const dispatchedTaskIds: string[] = [];
+
+  for (const task of workstream.tasks) {
+    if (
+      task.status !== "assigned" ||
+      !task.ownerAgentId ||
+      tasksWithOpenDeliveries.has(task.id) ||
+      !task.dependencies.every((dependency) =>
+        terminalTaskIds.has(dependency),
+      ) ||
+      (await dependencies.hasExecutionClaim(task.id))
+    )
+      continue;
+    const owner = workstream.agents.find(
+      (agent) => agent.id === task.ownerAgentId,
+    );
+    if (!owner) continue;
+    const dispatched = await dependencies.dispatchTask({
+      senderId: task.createdByAgentId ?? lead?.id ?? "human",
+      recipientId: owner.id,
+      content: taskDispatchContent(task, owner, policy),
+      taskId: task.id,
+      ...(causationId ? { causationId } : {}),
+    });
+    if (dispatched.deliveryStatus !== "delivered") continue;
+    tasksWithOpenDeliveries.add(task.id);
+    dispatchedTaskIds.push(task.id);
+    dependencies.emit(
+      "message.dispatch_reconciled",
+      `Assigned task ${task.id} dispatched after dependency reconciliation`,
+      owner.role,
+    );
+  }
+  return dispatchedTaskIds;
 }
 
 /**
@@ -94,53 +157,12 @@ export async function reconcileWaveGateAfterActivation(
     );
   }
 
-  const completedTaskIds = new Set(
-    workstream.tasks
-      .filter((task) => task.status === "done")
-      .map((task) => task.id),
-  );
-  const tasksWithOpenDeliveries = new Set(
-    workstream.messages.flatMap((message) =>
-      message.taskId && openDeliveryStatuses.has(message.deliveryStatus)
-        ? [message.taskId]
-        : [],
-    ),
-  );
-  const lead = workstream.agents.find(
-    (agent) => agent.role === policy.leadRole,
-  );
   const causationId = heldDecisions.at(-1)?.id;
-
-  for (const task of workstream.tasks) {
-    if (
-      task.status !== "assigned" ||
-      !task.ownerAgentId ||
-      tasksWithOpenDeliveries.has(task.id) ||
-      !task.dependencies.every((dependency) =>
-        completedTaskIds.has(dependency),
-      ) ||
-      (await dependencies.hasExecutionClaim(task.id))
-    )
-      continue;
-    const owner = workstream.agents.find(
-      (agent) => agent.id === task.ownerAgentId,
-    );
-    if (!owner) continue;
-    const dispatched = await dependencies.dispatchTask({
-      senderId: task.createdByAgentId ?? lead?.id ?? "human",
-      recipientId: owner.id,
-      content: taskDispatchContent(task, owner, policy),
-      taskId: task.id,
-      ...(causationId ? { causationId } : {}),
-    });
-    if (dispatched.deliveryStatus !== "delivered") continue;
-    tasksWithOpenDeliveries.add(task.id);
-    result.dispatchedTaskIds.push(task.id);
-    dependencies.emit(
-      "message.dispatch_reconciled",
-      `Assigned task ${task.id} dispatched after Workstream activation`,
-      owner.role,
-    );
-  }
+  result.dispatchedTaskIds = await reconcileDispatchableTasks(
+    workstream,
+    policy,
+    dependencies,
+    causationId,
+  );
   return result;
 }

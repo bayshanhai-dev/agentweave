@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { reconcileWaveGateAfterActivation } from "../src/wave-gate-reconciliation.js";
+import { withFinalValidationTask } from "../src/final-validation.js";
+import {
+  reconcileDispatchableTasks,
+  reconcileWaveGateAfterActivation,
+} from "../src/wave-gate-reconciliation.js";
 
 const policy = {
   templateId: "software-development",
@@ -77,6 +81,78 @@ function waveFixture(status = "active") {
     dispatched,
     dependencies: {
       acknowledgeGateMessage,
+      hasExecutionClaim: vi.fn(async () => false),
+      dispatchTask,
+      emit: vi.fn(),
+    },
+  };
+}
+
+function finalValidationFixture() {
+  const agents = [
+    { id: "pm-1", role: "pm" },
+    { id: "backend-1", role: "backend" },
+    { id: "frontend-1", role: "frontend" },
+    { id: "qa-1", role: "qa" },
+  ];
+  const specs = withFinalValidationTask([
+    { title: "Build the API", ownerRole: "backend" },
+    { title: "Build the UI", ownerRole: "frontend" },
+    { title: "Write the docs", ownerRole: "backend" },
+  ]);
+  const taskIds = specs.map((_, index) => `task-${index + 1}`);
+  const tasks = specs.map((spec, index) => ({
+    id: taskIds[index]!,
+    title: spec.title,
+    status: "assigned",
+    ownerAgentId: agents.find((agent) => agent.role === spec.ownerRole)?.id,
+    createdByAgentId: "pm-1",
+    acceptanceCriteria: spec.acceptanceCriteria ?? [],
+    dependencies: spec.dependsOnAllPrevious
+      ? taskIds.slice(0, index)
+      : (spec.dependencies ?? []),
+  }));
+  const validationTask = tasks.at(-1)!;
+  const implementationTasks = tasks.slice(0, -1);
+  const workstream = {
+    id: "ws-final-validation",
+    status: "active",
+    agents,
+    tasks,
+    messages: implementationTasks.map((task) => ({
+      id: `request-${task.id}`,
+      senderId: "pm-1",
+      recipientIds: [task.ownerAgentId!],
+      messageType: "request",
+      taskId: task.id,
+      deliveryStatus: "delivered",
+    })),
+  };
+  const dispatchTask = vi.fn(
+    async (input: {
+      senderId: string;
+      recipientId: string;
+      content: string;
+      taskId: string;
+      causationId?: string;
+    }) => {
+      workstream.messages.push({
+        id: `request-${input.taskId}`,
+        senderId: input.senderId,
+        recipientIds: [input.recipientId],
+        messageType: "request",
+        taskId: input.taskId,
+        deliveryStatus: "delivered",
+      });
+      return { deliveryStatus: "delivered" };
+    },
+  );
+
+  return {
+    workstream,
+    implementationTasks,
+    validationTask,
+    dependencies: {
       hasExecutionClaim: vi.fn(async () => false),
       dispatchTask,
       emit: vi.fn(),
@@ -183,6 +259,71 @@ describe("wave gate activation reconciliation", () => {
     );
 
     expect(result.dispatchedTaskIds).toEqual([]);
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("terminal task dispatch reconciliation", () => {
+  it("dispatches appended final validation after the last implementation task completes", async () => {
+    const fixture = finalValidationFixture();
+
+    for (const [index, task] of fixture.implementationTasks.entries()) {
+      task.status = "done";
+      const dispatched = await reconcileDispatchableTasks(
+        fixture.workstream,
+        policy,
+        fixture.dependencies,
+      );
+      expect(dispatched).toEqual(
+        index === fixture.implementationTasks.length - 1
+          ? [fixture.validationTask.id]
+          : [],
+      );
+    }
+
+    expect(
+      fixture.workstream.messages.some(
+        (message) =>
+          message.taskId === fixture.validationTask.id &&
+          message.messageType === "request" &&
+          message.deliveryStatus === "delivered",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not dispatch final validation when a non-final dependency completes", async () => {
+    const fixture = finalValidationFixture();
+    fixture.implementationTasks[0]!.status = "done";
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream,
+      policy,
+      fixture.dependencies,
+    );
+
+    expect(dispatched).toEqual([]);
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate final validation when it already has an in-flight delivery", async () => {
+    const fixture = finalValidationFixture();
+    for (const task of fixture.implementationTasks) task.status = "done";
+    fixture.workstream.messages.push({
+      id: "existing-validation-request",
+      senderId: "pm-1",
+      recipientIds: [fixture.validationTask.ownerAgentId!],
+      messageType: "request",
+      taskId: fixture.validationTask.id,
+      deliveryStatus: "delivered",
+    });
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream,
+      policy,
+      fixture.dependencies,
+    );
+
+    expect(dispatched).toEqual([]);
     expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
   });
 });
