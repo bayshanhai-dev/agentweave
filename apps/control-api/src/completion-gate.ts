@@ -6,7 +6,7 @@ type CompletionMessage = {
   recipientIds: string[];
   deliveryStatus: string;
 };
-type CompletionEvent = { taskId?: string; message: string };
+type CompletionEvent = { type: string; taskId?: string; message: string };
 type CompletionWorkstream = {
   status: string;
   tasks: CompletionTask[];
@@ -21,6 +21,41 @@ type CompletionGateDependencies = {
 
 const terminalTaskStatuses = new Set(["done", "failed", "cancelled"]);
 const openDeliveryStatuses = new Set(["pending", "delivered"]);
+
+/** A completion decision is only meaningful after the current implementation cycle exists. */
+export function completionPreconditionsMet(
+  workstream: CompletionWorkstream,
+): boolean {
+  const persistedIndex = workstream.events.findLastIndex(
+    (event) => event.type === "task.decomposition.persisted",
+  );
+  if (persistedIndex === -1) return false;
+
+  const cycleStartedIndex = workstream.events.findLastIndex(
+    (event) => event.type === "orchestration.implementation_triggered",
+  );
+  if (cycleStartedIndex > persistedIndex) return false;
+
+  const unresolvedDecomposition = workstream.events
+    .slice(persistedIndex + 1)
+    .some(
+      (event) =>
+        event.type === "orchestration.decomposition_reprompted" ||
+        event.type === "orchestration.decomposition_failed" ||
+        (event.type === "task.failed" &&
+          (event.taskId === undefined ||
+            /\bdecompos(?:e|ition)\b/i.test(
+              workstream.tasks.find((task) => task.id === event.taskId)
+                ?.title ?? "",
+            ))),
+    );
+  if (unresolvedDecomposition) return false;
+
+  return (
+    workstream.tasks.some(isFinalValidationTask) &&
+    workstream.tasks.every((task) => terminalTaskStatuses.has(task.status))
+  );
+}
 
 function completionSummary(workstream: CompletionWorkstream): string {
   const counts = new Map<string, number>();
@@ -56,8 +91,7 @@ export async function reconcileCompletionGate(
 ): Promise<boolean> {
   if (
     workstream.status !== "active" ||
-    workstream.tasks.length === 0 ||
-    workstream.tasks.some((task) => !terminalTaskStatuses.has(task.status)) ||
+    !completionPreconditionsMet(workstream) ||
     workstream.messages.some(
       (message) =>
         message.messageType === "decision" &&

@@ -1116,15 +1116,6 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     }
   }
   if (await reconcileCompletion(workstream)) return;
-  if (sender.role === policy.leadRole && resultText.startsWith("[PROPOSE_COMPLETE]")) {
-    const proposal = resultText.replace(/^\[PROPOSE_COMPLETE\]\s*/i, "").trim();
-    await createMessage(workstream, sender.id, ["human"], proposal || `${policy.leadRole} proposes completion based on the attached evidence.`, "decision", { ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });
-    workstream.status = "waiting_for_human";
-    await setAgentStatus(sender, "idle");
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.completion_proposed", message: `${policy.leadRole} proposed completion for Human review`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id });
-    await persistWorkstreamStatus(workstream);
-    return;
-  }
   const orchestrationText = triggerDecomposition ? triggerSummary ?? "" : resultText;
   if (triggerDecomposition) decompositionReprompts.delete(workstream.id);
   const eventType = sender.role === policy.leadRole ? "goal.received" : sender.role === policy.planningRole ? "task.decomposed" : policy.executionRoles.includes(sender.role) ? "design.completed" : qaMarker === "QA_PASSED" ? "qa.passed" : qaMarker === "QA_FAILED" ? "qa.failed" : /fail|missing|error/i.test(resultText) ? "qa.failed" : "qa.passed";
