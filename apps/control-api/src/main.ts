@@ -34,6 +34,8 @@ import {
 } from "./approval-implementation-trigger.js";
 import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 import { reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
+import { reconcileCompletionGate } from "./completion-gate.js";
+import { isFinalValidationTask } from "./final-validation.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -65,6 +67,7 @@ await app.register(websocket);
 const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const decompositionReprompts = new Map<string, number>();
+const completionGateTransitions = new Map<string, Promise<boolean>>();
 const maxDecompositionReprompts = 2;
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
@@ -319,7 +322,9 @@ app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
   const task = workstream?.tasks.find((candidate) => candidate.id === taskId); const body = request.body as { status?: Task["status"]; evidence?: string[] } | undefined;
   if (!workstream || !task) return reply.code(404).send({ error: "task_not_found" });
   if (body?.status) task.status = body.status; if (body?.evidence) task.evidence = body.evidence; task.updatedAt = new Date().toISOString();
-  await persistTask(task); emit(workstream, "task.updated", `${task.title} → ${task.status}`); return task;
+  await persistTask(task); emit(workstream, "task.updated", `${task.title} → ${task.status}`);
+  await reconcileCompletion(workstream);
+  return task;
 });
 app.post("/api/workstreams/:id/messages", async (request, reply) => {
   const { id } = request.params as { id: string };
@@ -602,14 +607,15 @@ async function persistTask(task: Task): Promise<void> {
 
 async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAgentId?: string): Promise<Task[]> {
   const now = new Date().toISOString();
-  const created: Task[] = specs.map((spec) => {
+  const taskIds = specs.map(() => `${workstream.id}:task-${randomUUID()}`);
+  const created: Task[] = specs.map((spec, index) => {
     const owner = spec.ownerRole ? workstream.agents.find((agent) => agent.role === spec.ownerRole) : undefined;
     return {
-      id: `${workstream.id}:task-${randomUUID()}`, workstreamId: workstream.id, title: spec.title.trim(), status: owner ? "assigned" : "ready",
+      id: taskIds[index]!, workstreamId: workstream.id, title: spec.title.trim(), status: owner ? "assigned" : "ready",
       ...(owner ? { ownerAgentId: owner.id } : {}), ...(creatorAgentId ? { createdByAgentId: creatorAgentId } : {}),
       ...(spec.parentTaskId ? { parentTaskId: spec.parentTaskId } : {}), relatedTaskIds: spec.relatedTaskIds ?? [],
       acceptanceCriteria: spec.acceptanceCriteria?.length ? spec.acceptanceCriteria : ["Task is completed with evidence"],
-      dependencies: spec.dependencies ?? [], evidence: [], createdAt: now, updatedAt: now,
+      dependencies: spec.dependsOnAllPrevious ? taskIds.slice(0, index) : spec.dependencies ?? [], evidence: [], createdAt: now, updatedAt: now,
     };
   });
   workstream.tasks.push(...created);
@@ -644,6 +650,37 @@ async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
       }),
     emit: (type, message, role) => emit(workstream, type, message, role),
   });
+  await reconcileCompletion(workstream);
+}
+
+async function reconcileCompletion(workstream: Workstream): Promise<boolean> {
+  const existing = completionGateTransitions.get(workstream.id);
+  if (existing) return existing;
+  const transition = (async () => {
+    const policy = orchestrationPolicyFor(workstream);
+    const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+    return reconcileCompletionGate(workstream, {
+      createGate: async (content) => {
+        const now = new Date().toISOString();
+        const message: Message = {
+          id: randomUUID(), workstreamId: workstream.id, senderId: lead?.id ?? "human", recipientIds: ["human"], messageType: "decision", content,
+          correlationId: randomUUID(), evidenceIds: [], createdAt: now, deliveryStatus: "pending",
+        };
+        await messageRepository.create(message);
+        workstream.messages.push(message);
+        emitMessage(workstream, "message.created", message);
+        return message;
+      },
+      persistWaitingForHuman: () => persistWorkstreamStatus(workstream),
+      emit: (type, message, role) => emit(workstream, type, message, role),
+    });
+  })();
+  completionGateTransitions.set(workstream.id, transition);
+  try {
+    return await transition;
+  } finally {
+    if (completionGateTransitions.get(workstream.id) === transition) completionGateTransitions.delete(workstream.id);
+  }
 }
 
 async function persistEvent(workstreamId: string, event: WorkflowEvent): Promise<void> {
@@ -760,7 +797,7 @@ async function recoverDecomposition(
       );
       triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
     }
-    const prefix = "Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from backend, frontend, pe, qa, or devops, and acceptanceCriteria as an array of strings. Do not write code yourself; delegate the work, and do not call any API.";
+    const prefix = "Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from backend, frontend, pe, qa, or devops, and acceptanceCriteria as an array of strings. The platform appends final full-suite validation automatically. Do not write code yourself; delegate the work, and do not call any API.";
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
@@ -854,8 +891,9 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       return;
     }
     await setAgentStatus(sender, "idle");
-    workstream.status = "waiting_for_human";
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    if (await reconcileCompletion(workstream)) return;
+    workstream.status = "waiting_for_human";
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() });
     await persistWorkstreamStatus(workstream);
     return;
@@ -995,6 +1033,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         event.sequence = await workflowEventRepository.append(workstream.id, event);
         if (!workstream.events.some((item) => item.id === event.id)) workstream.events.push(event);
         for (const socket of sockets) socket.send(JSON.stringify({ workstreamId: workstream.id, ...event }));
+        await reconcileCompletion(workstream);
         return;
       }
     } catch (error) {
@@ -1031,7 +1070,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "failed");
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role, ...(task ? { taskId: task.id } : {}) });
+    await reconcileCompletion(workstream);
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
     return;
   }
@@ -1059,10 +1099,11 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const persistedEvidenceCount = await evidenceRepository.countMatching(task.id, evidenceIds);
     if (workstream.workspaceRoot && (!evidenceIds.length || persistedEvidenceCount !== evidenceIds.length)) {
       task.status = "failed"; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "failed"); await persistTask(task);
-      recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → evidence persistence incomplete`, occurredAt: new Date().toISOString(), role: sender.role });
+      recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → evidence persistence incomplete`, occurredAt: new Date().toISOString(), role: sender.role, taskId: task.id });
+      await reconcileCompletion(workstream);
       return;
     }
-    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "idle"); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "idle"); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: isFinalValidationTask(task) ? resultText : `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
   }
   for (const completedTaskId of completedTaskIds) {
     if (completedTaskId !== task?.id) {
@@ -1074,6 +1115,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${reviewedTask.title} → done after review`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: reviewedTask.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     }
   }
+  if (await reconcileCompletion(workstream)) return;
   if (sender.role === policy.leadRole && resultText.startsWith("[PROPOSE_COMPLETE]")) {
     const proposal = resultText.replace(/^\[PROPOSE_COMPLETE\]\s*/i, "").trim();
     await createMessage(workstream, sender.id, ["human"], proposal || `${policy.leadRole} proposes completion based on the attached evidence.`, "decision", { ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}) });

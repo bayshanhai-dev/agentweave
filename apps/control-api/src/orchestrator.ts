@@ -1,6 +1,6 @@
 export type OrchestratorStage = "lead" | "planning" | "execution" | "review" | "waiting_for_human" | "completed";
 export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected" | "human.clarification.replied"; content: string; evidenceIds?: string[] };
-export type TaskSpec = { title: string; ownerRole?: string; acceptanceCriteria?: string[]; dependencies?: string[]; parentTaskId?: string; relatedTaskIds?: string[] };
+export type TaskSpec = { title: string; ownerRole?: string; acceptanceCriteria?: string[]; dependencies?: string[]; dependsOnAllPrevious?: boolean; parentTaskId?: string; relatedTaskIds?: string[] };
 export type OrchestrationPolicy = { templateId: string; leadRole: string; planningRole: string; executionRoles: readonly string[]; reviewRole: string };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: string | "human"; messageType: "request" | "decision"; content: string; attempt: number; taskSpecs?: TaskSpec[] };
 export type OrchestrationDecision = {
@@ -12,7 +12,7 @@ export type OrchestrationDecision = {
   reason: string;
 };
 
-type RoutableTask = { id: string; status: string; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds?: string[] };
+type RoutableTask = { id: string; status: string; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds?: string[]; dependencies?: string[] };
 type RoutableMessage = { taskId?: string; recipientIds: readonly string[]; correlationId?: string };
 
 const terminalTaskStatuses = new Set(["done", "failed", "cancelled"]);
@@ -28,8 +28,11 @@ export function selectPlannedTask<T extends RoutableTask>(
     const lastExecuted = planned.find((task) => task.id === options.lastExecutedTaskId);
     if (lastExecuted) return lastExecuted;
   }
+  const completedTaskIds = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
   const nonTerminal = planned.filter((task) =>
-    !terminalTaskStatuses.has(task.status) && !options.dispatchedTaskIds?.has(task.id)
+    !terminalTaskStatuses.has(task.status) &&
+    !options.dispatchedTaskIds?.has(task.id) &&
+    (task.dependencies ?? []).every((dependency) => completedTaskIds.has(dependency))
   );
   return nonTerminal.find((task) => task.ownerAgentId === options.recipientAgentId) ?? nonTerminal[0];
 }

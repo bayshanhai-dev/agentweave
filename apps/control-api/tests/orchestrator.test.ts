@@ -175,6 +175,23 @@ describe("WorkstreamOrchestrator", () => {
     })?.id).toBe("implementation-2");
   });
 
+  it("does not select final validation until all of its dependencies are done", () => {
+    const tasks = [
+      { id: "implementation", status: "running", ownerAgentId: "backend-agent", createdByAgentId: "lead" },
+      { id: "validation", status: "assigned", ownerAgentId: "qa-agent", createdByAgentId: "lead", dependencies: ["implementation"] },
+    ];
+
+    expect(selectPlannedTask(tasks, "lead", {
+      fixUp: false,
+      dispatchedTaskIds: new Set(["implementation"]),
+    })).toBeUndefined();
+    tasks[0]!.status = "done";
+    expect(selectPlannedTask(tasks, "lead", {
+      fixUp: false,
+      dispatchedTaskIds: new Set(["implementation"]),
+    })?.id).toBe("validation");
+  });
+
   it("never derives a task title from an agentweave marker", () => {
     const title = deriveHandoffTitle("[agentweave template=software-development phase=review]\nReview this", "Review the implementation");
     expect(title).toBe("Review the implementation");
