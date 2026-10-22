@@ -16,6 +16,15 @@ describe("inboxStatusGateDecision", () => {
     expect(inboxStatusGateDecision("waiting_for_human", "ordinary task message")).toBe("ack");
   });
 
+  it("re-drives the queued run 18 decomposition re-prompt after resume", () => {
+    const reprompt = `Reply with a valid decomposition.\n${implementationTriggerMarker}`;
+
+    expect(inboxStatusGateDecision("waiting_for_human", reprompt)).toBe(
+      "retry",
+    );
+    expect(inboxStatusGateDecision("active", reprompt)).toBeUndefined();
+  });
+
   it.each(["completed", "archived"])(
     "acknowledges implementation-trigger flow messages in terminal state %s",
     (status) => {
