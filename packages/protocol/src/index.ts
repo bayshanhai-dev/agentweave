@@ -244,11 +244,17 @@ const workflowEventTypes = [
   "collaboration.round.started",
   "collaboration.round.stopped",
   "collaboration.turn.accepted",
+  "message.dispatch_failed",
   "message.sent",
+  "orchestration.agent_directive_suppressed",
   "orchestration.complete.requested",
+  "orchestration.decomposition_failed",
+  "orchestration.decomposition_reprompted",
   "orchestration.decision.applied",
   "orchestration.human_input_requested",
+  "orchestration.implementation_trigger_exists",
   "orchestration.implementation_triggered",
+  "orchestration.lead",
   "orchestration.waiting",
   "task.created",
   "task.decomposition.persisted",
@@ -282,6 +288,10 @@ export const runtimeEventPayloadRegistry: ReadonlyMap<string, z.ZodType> =
     ),
     ["dead-letter", z.string()],
   ]);
+
+export const allowedRuntimeEventTypes: ReadonlySet<string> = new Set(
+  runtimeEventPayloadRegistry.keys(),
+);
 
 export function parseRuntimeEventPayload(
   type: string,

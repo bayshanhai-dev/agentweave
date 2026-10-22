@@ -414,7 +414,13 @@ function emit(workstream: Workstream, type: string, message: string, role?: Role
   }
   const event: WorkflowEvent = { id: randomUUID(), type, message, occurredAt: new Date().toISOString(), ...(role ? { role } : {}) };
   recordWorkflowEvent(workstream, event);
-  void eventBus.publish(subjects.events.replace("*", workstream.id), { id: event.id, type, workstreamId: workstream.id, occurredAt: event.occurredAt, payload: event });
+  void (async () => {
+    try {
+      await eventBus.publish(subjects.events.replace("*", workstream.id), { id: event.id, type, workstreamId: workstream.id, occurredAt: event.occurredAt, payload: event });
+    } catch (error) {
+      app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.event.publish_failed");
+    }
+  })();
 }
 
 function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void {

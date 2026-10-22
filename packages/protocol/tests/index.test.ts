@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentInstanceSchema,
   agentMessageSchema,
+  allowedRuntimeEventTypes,
   eventEnvelopeSchema,
   governedOutputSchema,
   parseRuntimeEventPayload,
@@ -11,6 +12,17 @@ import {
 } from "../src/index.js";
 
 describe("scaling contracts", () => {
+  it("registers control-api orchestration and dispatch events", () => {
+    for (const type of [
+      "message.dispatch_failed",
+      "orchestration.agent_directive_suppressed",
+      "orchestration.decomposition_failed",
+      "orchestration.decomposition_reprompted",
+      "orchestration.implementation_trigger_exists",
+      "orchestration.lead",
+    ]) expect(allowedRuntimeEventTypes.has(type), type).toBe(true);
+  });
+
   it("accepts implementation-triggered workflow events", () => {
     const now = new Date().toISOString();
     expect(

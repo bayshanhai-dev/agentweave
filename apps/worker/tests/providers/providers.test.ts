@@ -133,6 +133,22 @@ describe("provider adapters", () => {
     expect(run.events.at(-1)).toMatchObject({ type: "turn.completed", text: "Final inspection summary" });
   });
 
+  it("uses only the last completed agent message as Codex turn text", async () => {
+    const json = '{"schemaVersion":1,"summary":"Final result","insights":[],"tasks":[],"messages":[]}';
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-1" } } } : { result: { turnId: "turn-1" } }; },
+      async *events() {
+        yield { type: "item.completed", item: { type: "user_message", content: [{ type: "text", text: "Task prompt" }] } };
+        yield { type: "item.completed", item: { type: "agent_message", content: [{ type: "text", text: "Draft response" }] } };
+        yield { type: "turn.delta", text: json };
+        yield { type: "item.completed", item: { type: "agent_message", content: [{ type: "text", text: json }] } };
+      },
+    };
+    const run = await collect(new CodexAppServerAdapter(transport).run({ input: "inspect" }));
+    expect(run.result.text).toBe(json);
+    expect(run.result.text).not.toContain("Task prompt");
+  });
+
   it("captures Codex App Server token usage from the latest turn", async () => {
     const transport: CodexTransport = {
       async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-usage" } } } : { result: { turnId: "turn-usage" } }; },
