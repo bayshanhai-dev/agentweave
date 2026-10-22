@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, sliceFromDecompositionMarker, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
+import { completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, reviewedTaskFor, selectPlannedTask, sliceFromDecompositionMarker, taskWasDispatchedToAgent, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
 
 describe("sliceFromDecompositionMarker", () => {
   it("slices from a marker at the start of the reply", () => {
@@ -126,6 +126,53 @@ describe("WorkstreamOrchestrator", () => {
     expect(selectPlannedTask(tasks, "lead", { fixUp: false, recipientAgentId: "frontend-agent" })?.id).toBe("frontend-match");
     expect(selectPlannedTask(tasks, "lead", { fixUp: false, recipientAgentId: "devops-agent" })?.id).toBe("backend-first");
     expect(selectPlannedTask(tasks, "lead", { fixUp: true, recipientAgentId: "backend-agent", lastExecutedTaskId: "done" })?.id).toBe("done");
+  });
+
+  it("settles a dispatched execution and review before selecting the next planned task", () => {
+    const tasks = [
+      { id: "implementation-1", status: "running", ownerAgentId: "frontend-agent", createdByAgentId: "lead", relatedTaskIds: [] },
+      { id: "implementation-2", status: "assigned", ownerAgentId: "backend-agent", createdByAgentId: "lead", relatedTaskIds: [] },
+      { id: "review-1", status: "running", ownerAgentId: "qa-agent", createdByAgentId: "backend-agent", parentTaskId: "implementation-1", relatedTaskIds: ["implementation-1"] },
+    ];
+    const messages = [
+      { taskId: "implementation-1", recipientIds: ["backend-agent"], correlationId: "execution-handoff" },
+      { taskId: "review-1", recipientIds: ["qa-agent"], correlationId: "review-handoff" },
+    ];
+
+    // The selected task was historically sent to the default backend even
+    // though it was owned by frontend. The exact dispatch still authorizes
+    // the result and prevents the parent from remaining "running".
+    expect(taskWasDispatchedToAgent(messages, "implementation-1", "backend-agent", "execution-handoff")).toBe(true);
+    for (const id of completedTaskIdsForPhaseResult(tasks, messages, {
+      taskId: "implementation-1", agentId: "backend-agent", correlationId: "execution-handoff", reviewPassed: false,
+    })) tasks.find((task) => task.id === id)!.status = "done";
+    expect(taskWasDispatchedToAgent(messages, "review-1", "qa-agent", "review-handoff")).toBe(true);
+    expect(reviewedTaskFor(tasks, tasks[2]!)?.id).toBe("implementation-1");
+    for (const id of completedTaskIdsForPhaseResult(tasks, messages, {
+      taskId: "review-1", agentId: "qa-agent", correlationId: "review-handoff", reviewPassed: true,
+    })) tasks.find((task) => task.id === id)!.status = "done";
+
+    const next = selectPlannedTask(tasks, "lead", {
+      fixUp: false,
+      dispatchedTaskIds: new Set(["implementation-1"]),
+    });
+
+    expect(next?.id).toBe("implementation-2");
+    expect(next?.id).not.toBe("implementation-1");
+    expect(tasks[0]!.status).toBe("done");
+    expect(tasks[2]!.status).toBe("done");
+  });
+
+  it("does not reissue an already-dispatched phase whose status was not settled", () => {
+    const tasks = [
+      { id: "implementation-1", status: "running", ownerAgentId: "backend-agent", createdByAgentId: "lead" },
+      { id: "implementation-2", status: "assigned", ownerAgentId: "frontend-agent", createdByAgentId: "lead" },
+    ];
+
+    expect(selectPlannedTask(tasks, "lead", {
+      fixUp: false,
+      dispatchedTaskIds: new Set(["implementation-1"]),
+    })?.id).toBe("implementation-2");
   });
 
   it("never derives a task title from an agentweave marker", () => {

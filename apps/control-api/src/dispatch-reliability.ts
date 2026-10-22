@@ -14,6 +14,18 @@ export function shouldArmTriggerWatchdog(
   );
 }
 
+export function shouldArmDurableTaskWatchdog(taskId: string | undefined, content: string, recipientId: string): boolean {
+  return Boolean(taskId && recipientId !== "human" && content.startsWith("[agentweave template="));
+}
+
+export function durableDispatchTimeoutDecision(
+  taskStatus: string | undefined,
+  isRedrive: boolean,
+): "ignore" | "redrive" | "fail" {
+  if (!taskStatus || ["done", "failed", "cancelled"].includes(taskStatus)) return "ignore";
+  return isRedrive ? "fail" : "redrive";
+}
+
 export function armTriggerWatchdogForDispatch(
   watchdog: TriggerDispatchWatchdog,
   workstreamId: string,

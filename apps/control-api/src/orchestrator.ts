@@ -12,14 +12,15 @@ export type OrchestrationDecision = {
   reason: string;
 };
 
-type RoutableTask = { id: string; status: string; ownerAgentId?: string; createdByAgentId?: string };
+type RoutableTask = { id: string; status: string; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds?: string[] };
+type RoutableMessage = { taskId?: string; recipientIds: readonly string[]; correlationId?: string };
 
 const terminalTaskStatuses = new Set(["done", "failed", "cancelled"]);
 
 export function selectPlannedTask<T extends RoutableTask>(
   tasks: readonly T[],
   leadAgentId: string | undefined,
-  options: { fixUp: boolean; recipientAgentId?: string; lastExecutedTaskId?: string },
+  options: { fixUp: boolean; recipientAgentId?: string; lastExecutedTaskId?: string; dispatchedTaskIds?: ReadonlySet<string> },
 ): T | undefined {
   if (!leadAgentId) return undefined;
   const planned = tasks.filter((task) => task.createdByAgentId === leadAgentId);
@@ -27,8 +28,45 @@ export function selectPlannedTask<T extends RoutableTask>(
     const lastExecuted = planned.find((task) => task.id === options.lastExecutedTaskId);
     if (lastExecuted) return lastExecuted;
   }
-  const nonTerminal = planned.filter((task) => !terminalTaskStatuses.has(task.status));
+  const nonTerminal = planned.filter((task) =>
+    !terminalTaskStatuses.has(task.status) && !options.dispatchedTaskIds?.has(task.id)
+  );
   return nonTerminal.find((task) => task.ownerAgentId === options.recipientAgentId) ?? nonTerminal[0];
+}
+
+/** A phase result may complete a task assigned to a different owner when that exact handoff was dispatched to the sender. */
+export function taskWasDispatchedToAgent(
+  messages: readonly RoutableMessage[],
+  taskId: string,
+  agentId: string,
+  correlationId?: string,
+): boolean {
+  return messages.some((message) =>
+    message.taskId === taskId &&
+    message.recipientIds.includes(agentId) &&
+    (!correlationId || message.correlationId === correlationId)
+  );
+}
+
+/** Resolves the implementation task represented by a durable review task. */
+export function reviewedTaskFor<T extends RoutableTask>(tasks: readonly T[], reviewTask: T): T | undefined {
+  const parent = reviewTask.parentTaskId ? tasks.find((task) => task.id === reviewTask.parentTaskId) : undefined;
+  if (parent) return parent;
+  const relatedIds = new Set(reviewTask.relatedTaskIds ?? []);
+  return tasks.find((task) => relatedIds.has(task.id));
+}
+
+export function completedTaskIdsForPhaseResult<T extends RoutableTask>(
+  tasks: readonly T[],
+  messages: readonly RoutableMessage[],
+  result: { taskId: string; agentId: string; correlationId?: string; reviewPassed: boolean },
+): string[] {
+  const task = tasks.find((candidate) => candidate.id === result.taskId);
+  if (!task || (task.ownerAgentId !== result.agentId && !taskWasDispatchedToAgent(messages, task.id, result.agentId, result.correlationId))) return [];
+  const completed = [task.id];
+  const reviewedTask = result.reviewPassed ? reviewedTaskFor(tasks, task) : undefined;
+  if (reviewedTask && !completed.includes(reviewedTask.id)) completed.push(reviewedTask.id);
+  return completed;
 }
 
 export function deriveHandoffTitle(content: string, fallback: string): string {

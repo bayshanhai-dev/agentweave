@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { armTriggerWatchdogForDispatch, publishWithRetry, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
 
 describe("publishWithRetry", () => {
   it("retries a failed publish with the configured backoff", async () => {
@@ -57,5 +57,21 @@ describe("TriggerDispatchWatchdog", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("durable task dispatch recovery", () => {
+  it("watches executable orchestration handoffs but not Human decisions", () => {
+    const prompt = "[agentweave template=software-development phase=execution recipient=backend]";
+    expect(shouldArmDurableTaskWatchdog("task-1", prompt, "backend-1")).toBe(true);
+    expect(shouldArmDurableTaskWatchdog(undefined, prompt, "backend-1")).toBe(false);
+    expect(shouldArmDurableTaskWatchdog("task-1", prompt, "human")).toBe(false);
+    expect(shouldArmDurableTaskWatchdog("task-1", "ordinary message", "backend-1")).toBe(false);
+  });
+
+  it("re-drives once, then fails loudly instead of silently stalling", () => {
+    expect(durableDispatchTimeoutDecision("running", false)).toBe("redrive");
+    expect(durableDispatchTimeoutDecision("running", true)).toBe("fail");
+    expect(durableDispatchTimeoutDecision("done", false)).toBe("ignore");
   });
 });
