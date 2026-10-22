@@ -33,7 +33,7 @@ import {
   shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
 import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
-import { reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
+import { reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
 
@@ -550,6 +550,7 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
       task.status = "failed";
       task.updatedAt = new Date().toISOString();
       await persistTask(task);
+      await reconcileTaskDispatches(workstream);
       const recipient = workstream.agents.find((candidate) => candidate.id === recipientId);
       if (recipient) await setAgentStatus(recipient, "idle");
       workstream.status = "waiting_for_human";
@@ -633,6 +634,26 @@ async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<vo
   await workstreamRepository.saveAgentStatus(agent.id, status);
 }
 
+function dispatchReconciliationDependencies(workstream: Workstream) {
+  return {
+    hasExecutionClaim: (taskId: string) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId),
+    dispatchTask: ({ senderId, recipientId, content, taskId, causationId }: { senderId: string; recipientId: string; content: string; taskId: string; causationId?: string }) =>
+      createMessage(workstream, senderId, [recipientId], content, "request", {
+        taskId,
+        ...(causationId ? { causationId } : {}),
+      }),
+    emit: (type: string, message: string, role?: string) => emit(workstream, type, message, role),
+  };
+}
+
+async function reconcileTaskDispatches(workstream: Workstream): Promise<void> {
+  await reconcileDispatchableTasks(
+    workstream,
+    orchestrationPolicyFor(workstream),
+    dispatchReconciliationDependencies(workstream),
+  );
+}
+
 async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
   await reconcileWaveGateAfterActivation(workstream, orchestrationPolicyFor(workstream), {
     acknowledgeGateMessage: async (message) => {
@@ -642,13 +663,7 @@ async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
       emitMessage(workstream, "message.acknowledged", message as Message);
       return true;
     },
-    hasExecutionClaim: (taskId) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId),
-    dispatchTask: ({ senderId, recipientId, content, taskId, causationId }) =>
-      createMessage(workstream, senderId, [recipientId], content, "request", {
-        taskId,
-        ...(causationId ? { causationId } : {}),
-      }),
-    emit: (type, message, role) => emit(workstream, type, message, role),
+    ...dispatchReconciliationDependencies(workstream),
   });
   await reconcileCompletion(workstream);
 }
@@ -892,6 +907,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     }
     await setAgentStatus(sender, "idle");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    if (task) await reconcileTaskDispatches(workstream);
     if (await reconcileCompletion(workstream)) return;
     workstream.status = "waiting_for_human";
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() });
@@ -1033,6 +1049,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         event.sequence = await workflowEventRepository.append(workstream.id, event);
         if (!workstream.events.some((item) => item.id === event.id)) workstream.events.push(event);
         for (const socket of sockets) socket.send(JSON.stringify({ workstreamId: workstream.id, ...event }));
+        if (sourceTask?.status === "done") await reconcileTaskDispatches(workstream);
         await reconcileCompletion(workstream);
         return;
       }
@@ -1047,6 +1064,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         const sourceTask = workstream.tasks.find((task) => task.id === payload.taskId && task.ownerAgentId === sender.id);
         if (sourceTask && !["done", "failed", "cancelled"].includes(sourceTask.status)) {
           sourceTask.status = "failed"; sourceTask.updatedAt = new Date().toISOString(); await persistTask(sourceTask);
+          await reconcileTaskDispatches(workstream);
         }
         await setAgentStatus(sender, "failed");
         workstream.status = "waiting_for_human";
@@ -1071,6 +1089,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "failed");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role, ...(task ? { taskId: task.id } : {}) });
+    if (task) await reconcileTaskDispatches(workstream);
     await reconcileCompletion(workstream);
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
     return;
@@ -1100,6 +1119,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     if (workstream.workspaceRoot && (!evidenceIds.length || persistedEvidenceCount !== evidenceIds.length)) {
       task.status = "failed"; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "failed"); await persistTask(task);
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → evidence persistence incomplete`, occurredAt: new Date().toISOString(), role: sender.role, taskId: task.id });
+      await reconcileTaskDispatches(workstream);
       await reconcileCompletion(workstream);
       return;
     }
@@ -1115,6 +1135,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: `${reviewedTask.title} → done after review`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: reviewedTask.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
     }
   }
+  if (completedTaskIds.length) await reconcileTaskDispatches(workstream);
   if (await reconcileCompletion(workstream)) return;
   const orchestrationText = triggerDecomposition ? triggerSummary ?? "" : resultText;
   if (triggerDecomposition) decompositionReprompts.delete(workstream.id);
