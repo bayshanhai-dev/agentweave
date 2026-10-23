@@ -278,6 +278,45 @@ html[data-mantine-color-scheme="dark"] .cc-grid {
   gap: 16px;
   align-items: start;
 }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 7px;
+  background: #1d2733;
+  color: #dbe4ee;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
+  cursor: pointer;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.35);
+}
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab:hover { background: #263242; }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-label { display: block; }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-label::before {
+  content: "TASK BOARD";
+  writing-mode: vertical-rl;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-count {
+  font-family: "DM Mono", monospace;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-dots { display: flex; flex-direction: column; gap: 5px; }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-dot { width: 7px; height: 7px; border-radius: 50%; }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-dot-running { background: #f6c85f; }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-dot-done { background: #8ce99a; }
 html[data-mantine-color-scheme="dark"] .cc-controls-sep {
   width: 1px;
   height: 20px;

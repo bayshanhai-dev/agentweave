@@ -81,7 +81,13 @@ function TaskDetail({ task, agents }: { task: Task; agents?: AgentLike[] }) {
 }
 
 /** Kanban task board: one column per task lane, running tasks highlighted. */
-export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: TaskLane[]; agents?: AgentLike[] }) {
+/** Collaboration stage ("proposal", "critique", …) encoded in the task title prefix, if any. */
+function taskKind(title: string): string | undefined {
+  const match = /^\[Collaboration:\s*([^\]]+)\]/i.exec(title);
+  return match ? match[1].trim() : undefined;
+}
+
+export function TaskBoard({ tasks, lanes, agents, showAllLanes = false }: { tasks: Task[]; lanes?: TaskLane[]; agents?: AgentLike[]; showAllLanes?: boolean }) {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   if (!tasks.length) {
     return (
@@ -94,14 +100,18 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
   }
   const columns = lanes?.length ? lanes : DEFAULT_LANES;
   const overflow = tasks.filter((task) => !columns.some((column) => column.status === task.status));
-  // Empty lanes do not earn a column: they are named once, in one muted line,
-  // and the board's width goes to the lanes that hold work.
+  // In the page tab, empty lanes do not earn a column: they are named once,
+  // in one muted line, and the board's width goes to the lanes that hold
+  // work. In the slide-over drawer (showAllLanes) every lane is shown, the
+  // way a kanban board reads at a glance.
   const populated = columns
     .map((column) => ({ column, columnTasks: tasks.filter((task) => task.status === column.status) }))
-    .filter(({ columnTasks }) => columnTasks.length > 0);
-  const emptyLabels = columns
-    .filter((column) => !populated.some(({ column: kept }) => kept.status === column.status))
-    .map((column) => column.label);
+    .filter(({ columnTasks }) => showAllLanes || columnTasks.length > 0);
+  const emptyLabels = showAllLanes
+    ? []
+    : columns
+        .filter((column) => !populated.some(({ column: kept }) => kept.status === column.status))
+        .map((column) => column.label);
 
   return (
     <div className="cc-panel cc-taskboard">
@@ -123,6 +133,9 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
                 <Text fw={700} size="sm">{column.label}</Text>
               </div>
               <div className="cc-kanban-lane-body">
+                {columnTasks.length === 0 && (
+                  <Text size="xs" c="dimmed">No tasks</Text>
+                )}
                 {columnTasks.map((task) => (
                   <Card
                     key={task.id}
@@ -140,6 +153,11 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
                   >
                     <Text fw={700} size="sm" className="cc-kanban-card-title">{displayTaskTitle(task.title)}</Text>
                     <Group gap="xs" mt={6} wrap="wrap">
+                      {taskKind(task.title) && (
+                        <Badge size="xs" variant="light" color="grape">
+                          {taskKind(task.title)}
+                        </Badge>
+                      )}
                       <Badge size="xs" variant="light" color={task.ownerAgentId ? "blue" : "gray"}>
                         {ownerLabel(task, agents)}
                       </Badge>
