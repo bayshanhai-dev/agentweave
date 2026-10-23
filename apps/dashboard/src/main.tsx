@@ -657,9 +657,11 @@ function App() {
                 agents={selected.agents}
               />
               <button type="button" className="cc-board-edge-tab" onClick={openBoard} aria-label="Open task board">
-                <span className="cc-board-edge-tab-label">Task board</span>
-                <span className="cc-board-edge-tab-count">{selected.tasks.length}</span>
-                <span className="cc-board-edge-tab-dots">
+                {/* Decorative: the button's aria-label names it; a second bare
+                    "Task board" text would duplicate the board's own header. */}
+                <span className="cc-board-edge-tab-label" aria-hidden>Task board</span>
+                <span className="cc-board-edge-tab-count" aria-hidden>{selected.tasks.length}</span>
+                <span className="cc-board-edge-tab-dots" aria-hidden>
                   <span className="cc-board-edge-dot cc-board-edge-dot-running" title={`${selected.tasks.filter((task) => task.status === "running").length} running`} />
                   <span className="cc-board-edge-dot cc-board-edge-dot-done" title={`${selected.tasks.filter((task) => task.status === "done").length} done`} />
                 </span>
