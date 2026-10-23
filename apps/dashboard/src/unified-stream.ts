@@ -145,6 +145,11 @@ export function parseStructuredContent(content: string): StructuredContent {
   return { summary: content };
 }
 
+/** Task titles carry an internal "[Collaboration:stage]" prefix; show the human title. */
+export function displayTaskTitle(title: string): string {
+  return title.replace(/^\[Collaboration:[^\]]+\]\s*/, "");
+}
+
 /** Short, honest task label: the id's last segment, never a mid-word slice. */
 export function taskShortLabel(taskId: string): string {
   const segment = taskId.split(":").at(-1) ?? taskId;

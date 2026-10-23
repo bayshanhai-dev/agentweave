@@ -512,6 +512,18 @@ html[data-mantine-color-scheme="dark"] .cc-approval-banner {
 }
 html[data-mantine-color-scheme="dark"] .cc-approval-banner-text { flex: 1; min-width: 260px; }
 
+/* --- failure banner --- */
+html[data-mantine-color-scheme="dark"] .cc-failure-banner {
+  background: rgba(250, 82, 82, 0.07);
+  border: 1px solid rgba(250, 82, 82, 0.45);
+  border-radius: 14px;
+  padding: 14px 18px;
+}
+
+/* --- goal progress subline / untouched agents --- */
+html[data-mantine-color-scheme="dark"] .cc-goal-progress-sub { margin-top: 5px; }
+html[data-mantine-color-scheme="dark"] .cc-agent-untouched { opacity: 0.55; }
+
 /* --- system instruction notes (demoted: quiet gray, no card chrome) --- */
 html[data-mantine-color-scheme="dark"] .cc-event-system {
   display: flex;
@@ -581,15 +593,10 @@ html[data-mantine-color-scheme="dark"] .cc-big-number {
 html[data-mantine-color-scheme="dark"] .cc-taskboard { margin-top: 4px; }
 html[data-mantine-color-scheme="dark"] .cc-kanban {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Only populated lanes render, so fit however many there are. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   align-items: start;
-}
-@media (max-width: 1100px) {
-  html[data-mantine-color-scheme="dark"] .cc-kanban { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 700px) {
-  html[data-mantine-color-scheme="dark"] .cc-kanban { grid-template-columns: 1fr; }
 }
 html[data-mantine-color-scheme="dark"] .cc-kanban-lane {
   background: rgba(23, 23, 33, 0.6);

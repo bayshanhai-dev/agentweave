@@ -69,7 +69,18 @@ export type AgentCard = {
   latest?: CardEvent;
   usage: AggregatedTokenUsage;
   stale: boolean;
+  /** Implementation/discussion tasks this agent has completed. */
+  tasksDone: number;
+  /** When this agent last produced any signal, if ever. */
+  lastActiveAt?: string;
 };
+
+/** True when the agent has actually done something in this workstream. */
+export function cardWorked(card: AgentCard): boolean {
+  return card.usage.totalTokens > 0 || card.tasksDone > 0 || card.latest !== undefined;
+}
+
+export type CardTask = { status: string; ownerAgentId?: string };
 
 function deriveStatus(agent: CardAgent, events: CardEvent[]): { status: AgentCardStatus; latest?: CardEvent } {
   const agentEvents = events.filter(
@@ -91,12 +102,23 @@ export function computeAgentCards(
   agents: CardAgent[],
   events: CardEvent[],
   projection?: CardProjection,
+  tasks: CardTask[] = [],
 ): AgentCard[] {
   return agents.map((agent) => {
     const { status, latest } = deriveStatus(agent, events);
     const agentEvents = events.filter(
       (event) => event.agentId === agent.id || event.role === agent.role,
     );
+    const tasksDone = tasks.filter(
+      (task) =>
+        task.status === "done" &&
+        (task.ownerAgentId === agent.id ||
+          task.ownerAgentId?.split(":").at(-1)?.replace(/-\d+$/, "") === agent.role),
+    ).length;
+    const lastActiveAt = [...agentEvents]
+      .reverse()
+      .map((event) => event.occurredAt)
+      .find((value) => value !== undefined);
     const projected = projection?.agents.find(
       (candidate) => candidate.agentId === agent.id || candidate.role === agent.role,
     );
@@ -127,6 +149,8 @@ export function computeAgentCards(
       latest,
       usage,
       stale: projected?.stale ?? false,
+      tasksDone,
+      ...(lastActiveAt ? { lastActiveAt } : {}),
     };
   });
 }

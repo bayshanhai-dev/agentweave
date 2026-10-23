@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   causalNeighbors,
+  displayTaskTitle,
   isSystemInstruction,
   parseStructuredContent,
   taskShortLabel,
@@ -102,6 +103,15 @@ describe("structured content parsing", () => {
     expect(parseStructuredContent("Just a plain reply.")).toEqual({ summary: "Just a plain reply." });
     expect(parseStructuredContent("{not json")).toEqual({ summary: "{not json" });
     expect(parseStructuredContent('{"insights":[]}')).toEqual({ summary: '{"insights":[]}' });
+  });
+});
+
+describe("display task titles", () => {
+  it("strips the internal collaboration prefix and nothing else", () => {
+    expect(displayTaskTitle("[Collaboration:proposal] Draft the approach")).toBe("Draft the approach");
+    expect(displayTaskTitle("[Collaboration:synthesis] Decide")).toBe("Decide");
+    expect(displayTaskTitle("Fix the [Collaboration:proposal] parser")).toBe("Fix the [Collaboration:proposal] parser");
+    expect(displayTaskTitle("[WIP] Real bracket title")).toBe("[WIP] Real bracket title");
   });
 });
 

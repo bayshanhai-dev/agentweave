@@ -38,6 +38,8 @@ import { createRoot } from "react-dom/client";
 import { AgentsNow, type SteerMessage } from "./AgentsNow";
 import { GoalBar } from "./GoalBar";
 import { ApprovalBanner } from "./ApprovalBanner";
+import { FailureBanner } from "./FailureBanner";
+import { displayTaskTitle } from "./unified-stream";
 import { isSystemInstruction } from "./unified-stream";
 import { SessionTotals } from "./SessionTotals";
 import { computeAgentCards } from "./agentCards";
@@ -84,6 +86,7 @@ type Workstream = {
   goal: string;
   flavor: string;
   status: string;
+  createdAt?: string;
   provider: { tool: string; model: string };
   workspaceRoot: string;
   agents: Agent[];
@@ -320,7 +323,10 @@ function App() {
     selected?.events.filter((event) => event.type?.startsWith("message.")) ??
     [];
   const agentCards = useMemo(
-    () => (selected ? computeAgentCards(selected.agents, selected.events, selected.runtime) : []),
+    () =>
+      selected
+        ? computeAgentCards(selected.agents, selected.events, selected.runtime, selected.tasks)
+        : [],
     [selected],
   );
   const humanSteers = useMemo<SteerMessage[]>(
@@ -572,7 +578,12 @@ function App() {
               <GoalBar
                 goal={selected.goal}
                 tasks={selected.tasks}
-                workstreams={items.map((item) => ({ id: item.id, goal: item.goal, status: item.status }))}
+                workstreams={items.map((item) => ({
+                  id: item.id,
+                  goal: item.goal,
+                  status: item.status,
+                  createdAt: item.createdAt,
+                }))}
                 selectedId={selected.id}
                 onSelect={(id) => {
                   const item = items.find((candidate) => candidate.id === id);
@@ -599,6 +610,17 @@ function App() {
                   </>
                 }
               />
+              {selected.status === "failed" && (
+                <FailureBanner
+                  reason={[...selected.events]
+                    .reverse()
+                    .find((event) => (event.type ?? "").includes("fail"))
+                    ?.message?.slice(0, 400)}
+                  failedTasks={selected.tasks
+                    .filter((task) => task.status === "failed")
+                    .map((task) => displayTaskTitle(task.title))}
+                />
+              )}
               {selected.status === "waiting_for_human" && (
                 <ApprovalBanner
                   api={api}
