@@ -29,7 +29,10 @@ debate, human judgment where it matters most.
 > specialists execute in parallel, QA validates, and a human approves at
 > explicit dashboard gates. A recent verified run took a one-sentence brief to
 > a working web app with 20 completed tasks and 51 passing tests, with live
-> per-agent token accounting in the dashboard throughout. The deterministic
+> per-agent token accounting in the dashboard throughout. Provider adapters
+> also include Claude Code and a local Ollama path, the latter verified end to
+> end through a full collaboration round (proposals, critique, synthesis,
+> per-agent usage) on a locally hosted 8B model. The deterministic
 > mock provider remains the credential-free path for demos and CI (see
 > `demo/`). Remaining reliability work is tracked in the
 > [v0.2 roadmap](https://github.com/bayshanhai-dev/agentweave/issues/20).
@@ -49,10 +52,80 @@ This repository is pre-1.0 and currently focused on a single-host, Docker-first
 MVP for software-development workstreams. It is not production-hardened for
 untrusted multi-tenant deployment.
 
+## Who it is for
+
+AgentWeave is an AI collaboration platform for **solo founders and small
+teams**. You define a goal, configure an AI team, and let agents autonomously
+collaborate, execute tasks, and deliver results — while you retain final
+approval. It is an AI workforce that lets one person accomplish work that
+traditionally required a team:
+
+> AgentWeave lets a solo founder run an AI team that plans, debates, executes,
+> and delivers work — with dynamic collaboration, persistent execution, and
+> human approval.
+
+## Differentiators
+
+### Dynamic collaboration
+
+AgentWeave does not run a predefined workflow. Agents determine who should
+work on a task, which agent should collaborate with another, when to create
+additional tasks, how dependencies should evolve, and when to request review
+or assistance. The collaboration graph emerges during execution: a lead
+decomposes the goal into tasks at runtime, specialists pick up work in
+parallel, reviewers send findings back as new tasks, and a human can steer
+mid-run.
+
+> Agents decide how to collaborate. The runtime ensures collaboration remains
+> reliable, observable, and controllable.
+
+### Human-in-the-loop accountability
+
+Agent evaluation and human acceptance are separate steps. A PM or evaluator
+agent may recommend that a workstream is complete, but the human remains the
+final acceptance authority — with approval gates, mid-execution steering,
+observable decisions, evidence and artifact inspection, and rejection that
+continues execution instead of ending it.
+
+> Delegate execution without surrendering control.
+
+### Heterogeneous model orchestration
+
+Providers are adapters behind one contract, so the model can follow the job:
+a strong reasoning model for planning and coordination, Codex for
+implementation, a local model via Ollama for lower-cost research, a fast
+model for QA validation. Adapters for Codex App Server, Claude Code, Ollama,
+and a deterministic mock are implemented today (see the capability matrix). A
+workstream currently runs on one selected provider; per-role routing within
+a workstream is the active direction.
+
+> Use the right model for the right agent.
+
+### Durable, recoverable execution
+
+A workstream is a persistent object, not an ephemeral chat session.
+PostgreSQL is the source of truth, NATS JetStream carries durable messages,
+and tasks, sessions, checkpoints, and evidence are persisted — so AI teams
+can execute long-running work without losing progress. Crash-atomic event
+publication and complete cross-worker recovery are still in progress (see
+the capability matrix).
+
+### Adaptive collaboration (direction)
+
+Collaboration should scale with the task instead of charging full-team cost
+for every job: a simple task may need a single agent, a medium one an agent
+plus a reviewer, a complex one several specialists, and a high-risk decision
+the full loop — independent proposals, critique, synthesis, and human review.
+The goal is outcome quality relative to cost and latency, and it drives the
+current roadmap.
+
 ## Research context and design thesis
 
 AgentWeave is built around a simple thesis: **the innovation space of multiple
 collaborating agents can be larger than a single Agent ↔ Human conversation**.
+Its central claim is deliberately narrow: **the value of AgentWeave is not the
+number of agents it can orchestrate, but the quality of work those agents can
+accomplish together.**
 The important difference is not merely using more model calls. Different agents
 can hold different roles, challenge assumptions, propose alternatives, divide
 the search space, and combine partial solutions before a human reviews the
@@ -273,7 +346,8 @@ available on `main` from work that is intentionally still in progress.
 | Durable Workstreams, Tasks, Messages, evidence, and provider sessions in PostgreSQL  | Implemented   | Designed for the trusted, single-host Docker deployment                                                                                                             |
 | Per-Workstream event sequence, reconnect cursor, and persisted Dashboard projections | Implemented   | Replays committed history; full crash-atomic publication is not yet guaranteed                                                                                      |
 | Deterministic Mock-provider operator journey                                         | Implemented   | Playwright covers create, start, activity, Human approval, and persisted completion                                                                                 |
-| Mock, Codex App Server, and Claude Code provider adapters                            | Implemented   | Codex App Server is the primary real-provider path (stdio or host bridge); Mock remains the deterministic path for CI and demos                                     |
+| Mock, Codex App Server, Claude Code, and Ollama provider adapters                    | Implemented   | Codex App Server is the primary real-provider path (stdio or host bridge); Ollama runs local models through the same adapter contract; Mock remains the deterministic path for CI and demos |
+| Per-role model routing within one workstream                                         | Planned       | A workstream currently runs on a single selected provider; the adapter contract is provider-neutral, and role-level routing (e.g. Codex for the coder, a local model for research) is the active direction |
 | Provider token-usage accounting                                                      | Implemented   | Per-agent usage from the provider's own usage notifications, aggregated into dashboard Session Totals; never estimated                                              |
 | Dashboard human gates and mid-run steering                                           | Implemented   | Gates pause the workstream for approve-and-continue, approve-and-complete, or reject; steering is delivered to agent inboxes and answered in the open event stream  |
 | Durable agent inboxes and structured Human ↔ Agent / Agent ↔ Agent messages          | Partial       | Transport and contracts exist; agent-owned collaboration policy is still evolving                                                                                   |
