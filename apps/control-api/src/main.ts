@@ -32,7 +32,7 @@ import {
   republishImplementationTriggerAfterResume,
   shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 import { reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
@@ -563,8 +563,22 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
     const priorHandoff = message.causationId
       ? workstream.messages.find((candidate) => candidate.id === message.causationId && candidate.taskId === message.taskId)
       : undefined;
-    const decision = durableDispatchTimeoutDecision(task?.status, Boolean(priorHandoff));
-    if (!task || decision === "ignore") return;
+    if (!task) return;
+    const recipientAgent = workstream.agents.find((candidate) => candidate.id === recipientId);
+    const action = durableDispatchTimeoutAction({
+      taskStatus: task.status,
+      isRedrive: Boolean(priorHandoff),
+      hasExecutionClaim: await runtimeRepository.hasTaskExecutionClaim(workstream.id, task.id),
+      ownerBusy: recipientAgent?.status === "running",
+    });
+    if (action === "ignore") return;
+    if (action === "defer") {
+      // The handoff is queued behind the owner's current execution, or the
+      // worker already claimed it under an earlier correlation and is
+      // executing it now. Neither is lost: re-arm and judge again later.
+      dispatchWatchdog.arm(workstream.id, message.correlationId, onDurableWatchdogExpired);
+      return;
+    }
     const failDispatch = async (reason: string): Promise<void> => {
       task.status = "failed";
       task.updatedAt = new Date().toISOString();
@@ -577,7 +591,7 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → ${reason}`, occurredAt: new Date().toISOString(), taskId: task.id, ...(recipient?.role ? { role: recipient.role } : {}), ...(recipient?.id ? { agentId: recipient.id } : {}) });
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Durable task dispatch failed twice; Human decision required", occurredAt: new Date().toISOString() });
     };
-    if (decision === "fail") {
+    if (action === "fail") {
       await failDispatch("dispatch timed out after re-drive");
       return;
     }
