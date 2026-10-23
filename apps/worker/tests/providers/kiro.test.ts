@@ -29,6 +29,44 @@ describe("Kiro provider", () => {
     expect(run.events.map((event) => event.type)).toEqual(["turn.started", "session.started", "turn.delta", "usage.updated", "turn.completed"]);
   });
 
+  it("never resumes a locally minted or legacy UUID session, and adopts the CLI session from ACP records", async () => {
+    const seenArgs: string[][] = [];
+    const runner: KiroProcessRunner = (_command, args) => {
+      seenArgs.push(args);
+      return {
+        code: Promise.resolve(0),
+        stdout: chunks([
+          '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_real1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}\n',
+          '{"runFinished":{"finalText":"hi","usage":{"creditsUsed":0.25}}}\n',
+        ]),
+        stderr: chunks([]),
+        kill: () => undefined,
+      };
+    };
+    const adapter = new KiroAdapter(runner);
+
+    // Turn 1: the worker supplies its bookkeeping session (locally minted id).
+    const local = await adapter.createSession();
+    expect(local.providerSessionId).toMatch(/^local-/);
+    const first = await collect(adapter.run({ input: "work", session: local }));
+    expect(seenArgs[0]).not.toContain("--resume-id");
+    expect(first.result.session.providerSessionId).toBe("sess_real1");
+    expect(first.result.text).toBe("hi");
+    expect(first.result.usage).toEqual({ source: "provider", credits: 0.25 });
+
+    // Turn 2: the persisted CLI-issued id is resumed.
+    const second = await collect(adapter.run({ input: "more", session: first.result.session }));
+    expect(seenArgs[1]).toContain("--resume-id");
+    expect(seenArgs[1][seenArgs[1].indexOf("--resume-id") + 1]).toBe("sess_real1");
+    expect(second.events.map((event) => event.type)).toContain("session.resumed");
+
+    // Legacy stored sessions (bare UUIDs minted by the pre-fix adapter) are
+    // not resumed either — the CLI never issued them.
+    const legacy = { provider: "kiro", providerSessionId: "123e4567-e89b-12d3-a456-426614174000", status: "active", createdAt: "now", updatedAt: "now" };
+    await collect(adapter.run({ input: "more", session: legacy }));
+    expect(seenArgs[2]).not.toContain("--resume-id");
+  });
+
   it("does not synthesize usage when Kiro omits it", async () => {
     const runner: KiroProcessRunner = () => ({ code: Promise.resolve(0), stdout: chunks(['{"type":"content","text":"ok"}\n{"type":"completion"}\n']), stderr: chunks([]), kill: () => undefined });
     const run = await collect(new KiroAdapter(runner).run({ input: "work" }));

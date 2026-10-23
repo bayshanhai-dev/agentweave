@@ -12,6 +12,8 @@ export type ProviderUsage = {
   outputTokens?: number;
   totalTokens?: number;
   costUsd?: number;
+  /** Credit-billed providers (e.g. Kiro) report credits instead of tokens. Never convert silently. */
+  credits?: number;
 };
 
 export type ProviderSession = {
