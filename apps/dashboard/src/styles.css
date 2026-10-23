@@ -498,6 +498,33 @@ html[data-mantine-color-scheme="dark"] .cc-tag-token { background: rgba(148, 163
 html[data-mantine-color-scheme="dark"] .cc-tag-message,
 html[data-mantine-color-scheme="dark"] .cc-tag-insight { background: rgba(148, 163, 184, 0.13); color: #94a3b8; }
 
+/* --- approval gate banner --- */
+html[data-mantine-color-scheme="dark"] .cc-approval-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: rgba(250, 176, 5, 0.07);
+  border: 1px solid rgba(250, 176, 5, 0.45);
+  border-radius: 14px;
+  padding: 14px 18px;
+}
+html[data-mantine-color-scheme="dark"] .cc-approval-banner-text { flex: 1; min-width: 260px; }
+
+/* --- system instruction notes (demoted: quiet gray, no card chrome) --- */
+html[data-mantine-color-scheme="dark"] .cc-event-system {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 6px 10px;
+  margin: 0 0 8px 2px;
+  border-left: 2px solid rgba(255, 255, 255, 0.12);
+  opacity: 0.8;
+}
+html[data-mantine-color-scheme="dark"] .cc-event-system-body { flex: 1; min-width: 0; }
+html[data-mantine-color-scheme="dark"] .cc-tag-system { background: rgba(148, 163, 184, 0.13); color: #94a3b8; }
+
 /* --- steer composer --- */
 html[data-mantine-color-scheme="dark"] .cc-composer-wrap {
   margin-top: 12px;
