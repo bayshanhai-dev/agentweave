@@ -10,7 +10,6 @@ import {
   Divider,
   Group,
   MantineProvider,
-  Drawer,
   Modal,
   NavLink,
   Paper,
@@ -45,6 +44,7 @@ import { isSystemInstruction } from "./unified-stream";
 import { SessionTotals } from "./SessionTotals";
 import { computeAgentCards } from "./agentCards";
 import { TaskBoard, type Task } from "./TaskBoard";
+import { TaskBoardSidecar } from "./TaskBoardSidecar";
 import { TraceDebugger } from "./TraceDebugger";
 import { WorkstreamControls } from "./WorkstreamControls";
 import { LiveMessageBus } from "./LiveMessageBus";
@@ -234,7 +234,6 @@ function App() {
   const [items, setItems] = useState<Workstream[]>([]);
   const [selected, setSelected] = useState<Workstream | null>(null);
   const [auditOpen, { open: openAudit, close: closeAudit }] = useDisclosure(false);
-  const [boardOpen, { open: openBoard, close: closeBoard }] = useDisclosure(false);
   const [traceOpen, { open: openTrace, close: closeTrace }] = useDisclosure(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -656,37 +655,11 @@ function App() {
                 lanes={selected.template?.taskLanes}
                 agents={selected.agents}
               />
-              <button type="button" className="cc-board-edge-tab" onClick={openBoard} aria-label="Open task board">
-                {/* The label is rendered by CSS (::before content), not a DOM
-                    text node: a second bare "Task board" text duplicates the
-                    board's own header for text-based locators/assistive tech.
-                    The button's aria-label names it. */}
-                <span className="cc-board-edge-tab-label" aria-hidden />
-                <span className="cc-board-edge-tab-count" aria-hidden>{selected.tasks.length}</span>
-                <span className="cc-board-edge-tab-dots" aria-hidden>
-                  <span className="cc-board-edge-dot cc-board-edge-dot-running" title={`${selected.tasks.filter((task) => task.status === "running").length} running`} />
-                  <span className="cc-board-edge-dot cc-board-edge-dot-done" title={`${selected.tasks.filter((task) => task.status === "done").length} done`} />
-                </span>
-              </button>
-              <Drawer
-                opened={boardOpen}
-                onClose={closeBoard}
-                position="right"
-                size="min(1080px, 94vw)"
-                title={
-                  <Group gap="sm">
-                    <Text fw={800} size="lg">Task board</Text>
-                    <Badge variant="light">{selected.tasks.length}</Badge>
-                  </Group>
-                }
-              >
-                <TaskBoard
-                  tasks={selected.tasks}
-                  lanes={selected.template?.taskLanes}
-                  agents={selected.agents}
-                  showAllLanes
-                />
-              </Drawer>
+              <TaskBoardSidecar
+                tasks={selected.tasks}
+                lanes={selected.template?.taskLanes}
+                agents={selected.agents}
+              />
               <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
                 <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
                 <ScrollArea h="65vh" type="auto">
