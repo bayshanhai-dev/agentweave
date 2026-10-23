@@ -14,8 +14,9 @@ The following settings are the core Docker configuration:
 | `WORKER_ROLES` | Worker role capability list | `pm,pe,coder,qa` |
 | `WORKSPACE_ROOT` | Container workspace root | `/workspaces` |
 | `AGENTWEAVE_HOST_WORKSPACE` | Narrow host directory mounted into Worker | `./workspaces` |
-| `AGENTWEAVE_PROVIDER` | Provider adapter (`mock`, `codex`, `claude`, or `ollama`) | `mock` |
+| `AGENTWEAVE_PROVIDER` | Provider adapter (`mock`, `codex`, `claude`, `kiro`, or `ollama`) | `mock` |
 | `AGENTWEAVE_MODEL` | Provider model override | provider-specific |
+| `KIRO_CLI_COMMAND` | Kiro CLI executable used by the `kiro` provider | `kiro-cli` |
 | `OLLAMA_BASE_URL` | Ollama API base URL | `http://127.0.0.1:11434` |
 | `CODEX_HOST_WORKSPACE_ROOT` | Host root resolved by the Codex bridge | `./workspaces` |
 | `CODEX_CONTAINER_WORKSPACE_ROOT` | Matching root inside Worker container | `/workspaces` |
