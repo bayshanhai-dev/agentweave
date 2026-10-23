@@ -1,5 +1,19 @@
 export type ExecutionControlState = "active" | "waiting_for_human" | "paused" | "emergency_stopped" | "completed";
 
+/**
+ * Thrown when a human gate (pause / waiting_for_human) interrupts an execution.
+ * A gate is not a failure: the task must stay dispatchable so it can be
+ * re-driven once the Human resumes the Workstream.
+ */
+export class ExecutionGatedError extends Error {
+  readonly state: ExecutionControlState;
+  constructor(state: ExecutionControlState) {
+    super(`Execution is ${state}`);
+    this.name = "ExecutionGatedError";
+    this.state = state;
+  }
+}
+
 export class ExecutionControl {
   private state: ExecutionControlState = "active";
   private checkpointHandler?: () => Promise<void>;
@@ -7,7 +21,7 @@ export class ExecutionControl {
   setHandlers(handlers: { checkpoint: () => Promise<void>; cancel: () => Promise<void> }): void { this.checkpointHandler = handlers.checkpoint; this.cancelHandler = handlers.cancel; }
   async update(next: ExecutionControlState): Promise<void> { if (next === this.state) return; this.state = next; if (next === "paused" || next === "waiting_for_human") await this.checkpointHandler?.(); if (next === "paused" || next === "emergency_stopped") await this.cancelHandler?.(); }
   get current(): ExecutionControlState { return this.state; }
-  assertRunnable(): void { if (this.state === "emergency_stopped") throw new Error("Execution stopped by operator"); if (this.state === "paused" || this.state === "waiting_for_human") throw new Error(`Execution is ${this.state}`); }
+  assertRunnable(): void { if (this.state === "emergency_stopped") throw new Error("Execution stopped by operator"); if (this.state === "paused" || this.state === "waiting_for_human") throw new ExecutionGatedError(this.state); }
 }
 
 export class WorkstreamControlPoller {

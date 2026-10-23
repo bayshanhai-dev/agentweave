@@ -43,6 +43,7 @@ export class RuntimeRepository {
       where claim.workstream_id = ${workstreamId}
         and message.workstream_id = ${workstreamId}
         and message.task_id = ${taskId}
+        and claim.status = 'active'
       limit 1`;
     return rows.length > 0;
   }

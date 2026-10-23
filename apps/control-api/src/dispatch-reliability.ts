@@ -18,6 +18,23 @@ export function shouldArmDurableTaskWatchdog(taskId: string | undefined, content
   return Boolean(taskId && recipientId !== "human" && content.startsWith("[agentweave template="));
 }
 
+/**
+ * A dispatch timeout must not be decided while the Workstream sits at a
+ * Human gate: the handoff is legitimately held, not lost. The decision is
+ * deferred until the Workstream is active again (activation reconciliation
+ * and the re-armed watchdog take it from there).
+ */
+export function shouldDeferDispatchTimeout(
+  workstreamStatus: string | undefined,
+): boolean {
+  return (
+    workstreamStatus === "waiting_for_human" ||
+    workstreamStatus === "paused" ||
+    workstreamStatus === "completing" ||
+    workstreamStatus === "emergency_stopped"
+  );
+}
+
 export function durableDispatchTimeoutDecision(
   taskStatus: string | undefined,
   isRedrive: boolean,

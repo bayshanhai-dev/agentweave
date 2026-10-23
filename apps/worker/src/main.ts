@@ -7,6 +7,7 @@ import { PostgresAgentSessionRepository } from "./providers/postgres-session-rep
 import { createHash } from "node:crypto";
 import { executionKeyForDelivery } from "./runtime/execution-key.js";
 import { inboxStatusGateDecision } from "./inbox-status-gate.js";
+import { ExecutionGatedError } from "./runtime/execution-control.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
 const provider = createProviderFromEnv();
@@ -87,6 +88,13 @@ await bus.consumer(subjects.inbox, async (message) => {
         await executor.finishTask(executionKey, "completed");
       } catch (error) {
         await executor.finishTask(executionKey, "failed");
+        if (error instanceof ExecutionGatedError) {
+          // The Workstream was gated mid-execution. The executor already
+          // reported task.gated; this delivery is done and the Control Plane
+          // re-drives the task after the Human resumes.
+          console.log(JSON.stringify({ event: "worker.task.gated", workerId, taskId: executionKey, messageId: envelope.id, state: error.state, occurredAt: new Date().toISOString() }));
+          return "ack";
+        }
         throw error;
       }
       return "ack";

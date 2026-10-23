@@ -1,3 +1,5 @@
+import { isFinalValidationTask } from "./final-validation.js";
+
 type ReconciliationAgent = { id: string; role: string };
 type ReconciliationTask = {
   id: string;
@@ -100,6 +102,16 @@ export async function reconcileDispatchableTasks(
       !task.dependencies.every((dependency) =>
         terminalTaskIds.has(dependency),
       ) ||
+      // Final validation is a barrier task: it may only run once every other
+      // durable task is terminal. Its explicit dependencies are fixed at
+      // decomposition time, but review/continuation tasks created afterwards
+      // must also finish first — otherwise a late completion proposal can
+      // gate the Workstream while validation is still executing.
+      (isFinalValidationTask(task) &&
+        workstream.tasks.some(
+          (other) =>
+            other.id !== task.id && !terminalTaskStatuses.has(other.status),
+        )) ||
       (await dependencies.hasExecutionClaim(task.id))
     )
       continue;

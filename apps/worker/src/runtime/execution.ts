@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ProviderAdapter, ProviderRunEvent, ProviderSession, ProviderUsage } from "../providers/index.js";
 import type { AgentSessionRecord, AgentSessionRepository } from "../providers/session-repository.js";
-import { ExecutionControl } from "./execution-control.js";
+import { ExecutionControl, ExecutionGatedError } from "./execution-control.js";
 import { ensureWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "@agentweave/protocol";
@@ -11,7 +11,7 @@ import { parseAgentTurnResult } from "../providers/agent-turn-result.js";
 export type AgentTask = { taskId: string; executionKey?: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; model?: string; correlationId?: string; idempotencyKey?: string; collectEvidence?: boolean };
 type ExecutionContext = { taskId: string; agentId?: string; workstreamId?: string; provider?: string; model?: string; usage?: ProviderUsage };
 export type ExecutionTurnSummary = { turnId: string; text: string; structuredResult?: AgentTurnResult; usage?: ProviderUsage };
-export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; turns?: ExecutionTurnSummary[]; error?: string; evidenceIds?: string[]; turnBudgetExhausted?: boolean; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
+export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed" | "task.gated"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; turns?: ExecutionTurnSummary[]; error?: string; evidenceIds?: string[]; turnBudgetExhausted?: boolean; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
 
 class SessionLeaseLostError extends Error {
   constructor() { super("Session lease lost"); }
@@ -169,7 +169,18 @@ export class AgentTaskExecutor {
         }
         await this.sink({ type: "task.completed", turnId: result.turnId, ...(structuredResult ? { structuredResult } : {}), taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: result.session.provider, ...(result.session.model ? { model: result.session.model } : {}), ...(totalUsage ? { usage: totalUsage } : {}), text: result.text, turns, ...(evidenceIds.length ? { evidenceIds } : {}), ...(turnBudgetExhausted ? { turnBudgetExhausted: true } : {}) });
       }
-    } catch (error) { if (!(error instanceof SessionLeaseLostError)) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); } await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) }); throw error; }
+    } catch (error) {
+      if (error instanceof ExecutionGatedError) {
+        // A human gate interrupted the run. That is not a failure: keep the
+        // session record active so the task can be re-driven after resume,
+        // and report the hold instead of a failure.
+        await this.sink({ type: "task.gated", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error.message });
+      } else {
+        if (!(error instanceof SessionLeaseLostError)) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); }
+        await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) });
+      }
+      throw error;
+    }
     finally { if (heartbeat) clearInterval(heartbeat); await this.sessions.releaseLease(id, this.workerId); if (task.workstreamId && this.controls.get(task.workstreamId) === control) this.controls.delete(task.workstreamId); }
   }
   private async emitProviderEvent(event: ProviderRunEvent, task: AgentTask, session: ProviderSession): Promise<void> {
