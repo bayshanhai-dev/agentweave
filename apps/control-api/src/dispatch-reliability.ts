@@ -50,6 +50,28 @@ export function durableDispatchTimeoutDecision(
   return isRedrive ? "fail" : "redrive";
 }
 
+/**
+ * Full timeout action for a durable task handoff. The bare decision above
+ * only sees message bookkeeping; live runs showed two ways that misjudges:
+ * a handoff queued behind the owner Agent's current execution is not lost
+ * (it starts when the Agent frees up), and a handoff the worker already
+ * claimed under an earlier correlation is executing even though the armed
+ * timer tracks the re-drive's correlation. Both must defer — re-arm and
+ * look again later — instead of re-driving (which piles up duplicate
+ * handoffs) or failing a task that is mid-execution.
+ */
+export function durableDispatchTimeoutAction(input: {
+  taskStatus: string | undefined;
+  isRedrive: boolean;
+  hasExecutionClaim: boolean;
+  ownerBusy: boolean;
+}): "ignore" | "defer" | "redrive" | "fail" {
+  const decision = durableDispatchTimeoutDecision(input.taskStatus, input.isRedrive);
+  if (decision === "ignore") return "ignore";
+  if (input.hasExecutionClaim || input.ownerBusy) return "defer";
+  return decision;
+}
+
 export function armTriggerWatchdogForDispatch(
   watchdog: TriggerDispatchWatchdog,
   workstreamId: string,

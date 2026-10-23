@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
 
 describe("publishWithRetry", () => {
   it("retries a failed publish with the configured backoff", async () => {
@@ -118,6 +118,23 @@ describe("durable task dispatch recovery", () => {
     expect(durableDispatchTimeoutDecision("running", false)).toBe("redrive");
     expect(durableDispatchTimeoutDecision("running", true)).toBe("fail");
     expect(durableDispatchTimeoutDecision("done", false)).toBe("ignore");
+  });
+
+  it("defers instead of re-driving when the handoff is queued behind a busy owner", () => {
+    expect(durableDispatchTimeoutAction({ taskStatus: "assigned", isRedrive: false, hasExecutionClaim: false, ownerBusy: true })).toBe("defer");
+    expect(durableDispatchTimeoutAction({ taskStatus: "assigned", isRedrive: true, hasExecutionClaim: false, ownerBusy: true })).toBe("defer");
+  });
+
+  it("defers instead of failing when the worker already claimed the task under an earlier handoff", () => {
+    expect(durableDispatchTimeoutAction({ taskStatus: "running", isRedrive: true, hasExecutionClaim: true, ownerBusy: false })).toBe("defer");
+    expect(durableDispatchTimeoutAction({ taskStatus: "assigned", isRedrive: false, hasExecutionClaim: true, ownerBusy: false })).toBe("defer");
+  });
+
+  it("still re-drives, fails, or ignores when nothing is executing or queued", () => {
+    expect(durableDispatchTimeoutAction({ taskStatus: "assigned", isRedrive: false, hasExecutionClaim: false, ownerBusy: false })).toBe("redrive");
+    expect(durableDispatchTimeoutAction({ taskStatus: "assigned", isRedrive: true, hasExecutionClaim: false, ownerBusy: false })).toBe("fail");
+    expect(durableDispatchTimeoutAction({ taskStatus: "done", isRedrive: false, hasExecutionClaim: true, ownerBusy: true })).toBe("ignore");
+    expect(durableDispatchTimeoutAction({ taskStatus: undefined, isRedrive: false, hasExecutionClaim: false, ownerBusy: false })).toBe("ignore");
   });
 
   it("defers the timeout decision while the workstream sits at a human gate", () => {
