@@ -410,7 +410,7 @@ html[data-mantine-color-scheme="dark"] .cc-steer-time { display: block; font-sty
 @keyframes av-typing-blink { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
 
 /* --- live events timeline --- */
-html[data-mantine-color-scheme="dark"] .cc-live-events { display: flex; flex-direction: column; min-height: 560px; }
+html[data-mantine-color-scheme="dark"] .cc-live-events { display: flex; flex-direction: column; height: calc(100vh - 214px); min-height: 480px; }
 html[data-mantine-color-scheme="dark"] .cc-live-dot {
   width: 9px;
   height: 9px;
@@ -423,7 +423,7 @@ html[data-mantine-color-scheme="dark"] .cc-live-dot {
   0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
   50% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
 }
-html[data-mantine-color-scheme="dark"] .cc-timeline-scroll { flex: 1; min-height: 0; }
+html[data-mantine-color-scheme="dark"] .cc-timeline-scroll { flex: 1; min-height: 0; overscroll-behavior: contain; }
 html[data-mantine-color-scheme="dark"] .cc-timeline { position: relative; padding: 4px 0 4px 26px; }
 html[data-mantine-color-scheme="dark"] .cc-timeline::before {
   content: "";

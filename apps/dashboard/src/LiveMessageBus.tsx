@@ -147,7 +147,7 @@ export function LiveMessageBus({ messages, insights = [], agents, onSend, sendEr
       ) : (
         <ScrollArea
           className="bus-scroll-area cc-timeline-scroll"
-          type="auto"
+          type="always"
           offsetScrollbars
           viewportRef={viewportRef}
           onScrollPositionChange={() => {
