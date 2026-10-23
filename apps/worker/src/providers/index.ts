@@ -5,6 +5,7 @@ export * from "./codex-app-server.js";
 export * from "./codex-stdio-transport.js";
 export * from "./codex-http-transport.js";
 export * from "./claude-code.js";
+export * from "./ollama.js";
 export * from "./registry.js";
 export * from "./session-repository.js";
 export * from "./postgres-session-repository.js";

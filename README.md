@@ -119,7 +119,7 @@ flowchart TB
         Worker[Worker Runtime Pool]
         Actor[Dynamic AgentRuntime<br/>one serialized inbox per agent identity]
         Session[Durable provider session<br/>checkpoint · resume · cancellation]
-        Adapter[Provider adapter<br/>Mock · Codex App Server · Claude Code]
+        Adapter[Provider adapter<br/>Mock · Codex App Server · Claude Code · Ollama]
         Workspace[Workspace & evidence boundary<br/>tests · diffs · artifacts]
         Worker --> Actor --> Session --> Adapter
         Actor --> Workspace
@@ -225,8 +225,8 @@ run provider sessions, and publish normalized execution events. Each runtime
 actor has its own role, status, current task, session, usage, and auditable
 output.
 
-The provider adapter boundary supports Mock, Codex App Server, Claude Code, and
-future providers behind one contract for streaming, cancellation, resume,
+The provider adapter boundary supports Mock, Codex App Server, Claude Code,
+Ollama, and future providers behind one contract for streaming, cancellation, resume,
 failure classification, checkpoints, and usage. Provider-reported token usage
 is forwarded from the app server's usage notifications through the worker into
 durable events, and the dashboard aggregates it per agent in Session Totals —
