@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Group, Text } from "@mantine/core";
+import { ActionIcon, Badge, Group } from "@mantine/core";
 import { IconX } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import { DEFAULT_LANES, TaskBoard, type Task, type TaskLane } from "./TaskBoard";
@@ -63,6 +63,19 @@ export function TaskBoardSidecar({ tasks, lanes, agents }: { tasks: Task[]; lane
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open ]);
 
+  // The board inside the panel is mounted only while the panel is open
+  // (plus the closing slide), so a closed sidecar never duplicates the
+  // in-page board's contents in the DOM.
+  const [renderContent, setRenderContent] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setRenderContent(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setRenderContent(false), 300);
+    return () => window.clearTimeout(timer);
+  }, [open ]);
+
   const columns = lanes?.length ? lanes : DEFAULT_LANES;
   const laneCounts = columns.map((column) => ({
     column,
@@ -124,18 +137,13 @@ export function TaskBoardSidecar({ tasks, lanes, agents }: { tasks: Task[]; lane
                 Other · {overflowCount}
               </Badge>
             )}
-            {tasks.length === 0 && (
-              <Text size="sm" c="dimmed">
-                No tasks yet
-              </Text>
-            )}
           </Group>
           <ActionIcon variant="subtle" color="gray" onClick={() => setOpen(false)} aria-label="Close task board">
             <IconX size={18} />
           </ActionIcon>
         </div>
         <div className="cc-board-sidecar-body">
-          <TaskBoard tasks={tasks} lanes={lanes} agents={agents} embedded />
+          {renderContent && <TaskBoard tasks={tasks} lanes={lanes} agents={agents} embedded />}
         </div>
       </aside>
     </>
