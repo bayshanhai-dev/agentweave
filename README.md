@@ -20,12 +20,18 @@ way good human teams do:
    ("prioritize sustainability", "cap the budget"), and the synthesis must honor it.
 
 The result is more robust than any single agent's answer — not because the
-models are smarter, but because the *process* is: multiple perspectives, honest
+models are smarter, but because the _process_ is: multiple perspectives, honest
 debate, human judgment where it matters most.
 
-> **Status:** pre-1.0 developer preview. The collaboration loop above runs today
-> against a deterministic mock provider (see `demo/` for the recorded 116-second
-> walkthrough); real-provider and autonomous collaboration work is tracked in the
+> **Status:** pre-1.0 developer preview. The collaboration loop above now runs
+> end to end against a real provider (Codex): agents independently propose, a
+> reviewer critiques, a lead synthesizes and decomposes the plan into tasks,
+> specialists execute in parallel, QA validates, and a human approves at
+> explicit dashboard gates. A recent verified run took a one-sentence brief to
+> a working web app with 20 completed tasks and 51 passing tests, with live
+> per-agent token accounting in the dashboard throughout. The deterministic
+> mock provider remains the credential-free path for demos and CI (see
+> `demo/`). Remaining reliability work is tracked in the
 > [v0.2 roadmap](https://github.com/bayshanhai-dev/agentweave/issues/20).
 
 ---
@@ -137,11 +143,14 @@ flowchart TB
 then publishes inboxes/events through JetStream; a crash-atomic transactional
 outbox is not implemented yet.
 
-### Agent-owned collaboration vision — planned
+### Agent-owned collaboration vision — partially implemented
 
-Everything dashed in this diagram is planned. The implemented Control API,
-PostgreSQL, and JetStream boundary remains the validation and durability point
-even as agents become more self-directed.
+Parts of this diagram are implemented today: agents submit structured
+decisions (proposals, critiques, synthesis, task decomposition, completion
+proposals) that the Control API validates before any effect is committed.
+Context packs, agent memory, and compaction remain planned. The implemented
+Control API, PostgreSQL, and JetStream boundary remains the validation and
+durability point even as agents become more self-directed.
 
 ```mermaid
 flowchart TB
@@ -218,9 +227,12 @@ output.
 
 The provider adapter boundary supports Mock, Codex App Server, Claude Code, and
 future providers behind one contract for streaming, cancellation, resume,
-failure classification, checkpoints, and usage. Workspace access is explicit
-and bounded; tests, diffs, tool output, and artifacts are persisted as evidence
-instead of remaining hidden in a transcript.
+failure classification, checkpoints, and usage. Provider-reported token usage
+is forwarded from the app server's usage notifications through the worker into
+durable events, and the dashboard aggregates it per agent in Session Totals —
+the numbers are the provider's own accounting, not estimates. Workspace access
+is explicit and bounded; tests, diffs, tool output, and artifacts are
+persisted as evidence instead of remaining hidden in a transcript.
 
 The renderable sources are [`architecture.mmd`](architecture.mmd) (current) and
 [`architecture-vision.mmd`](architecture-vision.mmd) (planned vision).
@@ -256,17 +268,19 @@ The renderable sources are [`architecture.mmd`](architecture.mmd) (current) and
 AgentWeave is a developer preview. The table below separates behavior that is
 available on `main` from work that is intentionally still in progress.
 
-| Capability                                                                           | Status        | Current boundary                                                                                     |
-| ------------------------------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------- |
-| Durable Workstreams, Tasks, Messages, evidence, and provider sessions in PostgreSQL  | Implemented   | Designed for the trusted, single-host Docker deployment                                              |
-| Per-Workstream event sequence, reconnect cursor, and persisted Dashboard projections | Implemented   | Replays committed history; full crash-atomic publication is not yet guaranteed                       |
-| Deterministic Mock-provider operator journey                                         | Implemented   | Playwright covers create, start, activity, Human approval, and persisted completion                  |
-| Mock, Codex App Server, and Claude Code provider adapters                            | Implemented   | Mock is the supported deterministic path; real providers require local credentials and configuration |
-| Durable agent inboxes and structured Human ↔ Agent / Agent ↔ Agent messages          | Partial       | Transport and contracts exist; agent-owned collaboration policy is still evolving                    |
-| Insight and collaboration-round contracts, persistence, and read projections         | Partial       | Durable data model exists; automatic proposal/critique/synthesis rounds are planned                  |
-| Worker heartbeats, task leases, retries, and dead-letter handling                    | Partial       | Basic runtime signals exist; dependency-aware scheduling and cross-Worker lease recovery are planned |
-| Transactional state change + event outbox                                            | Planned       | A crash between database commit and event publication can still require operator diagnosis           |
-| Production security and untrusted multi-tenancy                                      | Not supported | No built-in authentication/authorization boundary; deploy only on a trusted local network            |
+| Capability                                                                           | Status        | Current boundary                                                                                                                                                    |
+| ------------------------------------------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Durable Workstreams, Tasks, Messages, evidence, and provider sessions in PostgreSQL  | Implemented   | Designed for the trusted, single-host Docker deployment                                                                                                             |
+| Per-Workstream event sequence, reconnect cursor, and persisted Dashboard projections | Implemented   | Replays committed history; full crash-atomic publication is not yet guaranteed                                                                                      |
+| Deterministic Mock-provider operator journey                                         | Implemented   | Playwright covers create, start, activity, Human approval, and persisted completion                                                                                 |
+| Mock, Codex App Server, and Claude Code provider adapters                            | Implemented   | Codex App Server is the primary real-provider path (stdio or host bridge); Mock remains the deterministic path for CI and demos                                     |
+| Provider token-usage accounting                                                      | Implemented   | Per-agent usage from the provider's own usage notifications, aggregated into dashboard Session Totals; never estimated                                              |
+| Dashboard human gates and mid-run steering                                           | Implemented   | Gates pause the workstream for approve-and-continue, approve-and-complete, or reject; steering is delivered to agent inboxes and answered in the open event stream  |
+| Durable agent inboxes and structured Human ↔ Agent / Agent ↔ Agent messages          | Partial       | Transport and contracts exist; agent-owned collaboration policy is still evolving                                                                                   |
+| Insight and collaboration-round contracts, persistence, and read projections         | Implemented   | Automatic proposal, critique, and synthesis rounds run against real providers; decomposition is submitted as a validated structured decision, not parsed from prose |
+| Worker heartbeats, task leases, retries, and dead-letter handling                    | Partial       | Basic runtime signals exist; dependency-aware scheduling and cross-Worker lease recovery are planned                                                                |
+| Transactional state change + event outbox                                            | Planned       | A crash between database commit and event publication can still require operator diagnosis                                                                          |
+| Production security and untrusted multi-tenancy                                      | Not supported | No built-in authentication/authorization boundary; deploy only on a trusted local network                                                                           |
 
 “Implemented” describes code exercised on `main`; it is not a production
 support guarantee. See the open [v0.2 roadmap](https://github.com/bayshanhai-dev/agentweave/issues/20)
@@ -298,14 +312,18 @@ verifies the proposal remains after reload. Run the database checks against a
 disposable database with `STRUCTURED_TURN_TEST_DATABASE_URL` set and
 `pnpm --filter @agentweave/control-api exec vitest run tests/structured-turn-postgres.test.ts`.
 
-## Day 1 scope
+## Current scope
 
-- Create one durable workstream.
-- Register PM, PE, Coder, and QA sessions.
-- Route typed human and agent messages through NATS JetStream.
-- Persist workstream state and read models in PostgreSQL.
-- Display agents, chat, activity, and controls in a React dashboard.
-- Run a fixed end-to-end workflow with pause, resume, human review, and completion.
+- Create a workstream from a one-sentence goal in the dashboard.
+- Run a collaboration round: independent proposals, critique, and synthesis.
+- Decompose the synthesized plan into tasks through a validated structured
+  decision, then execute tasks in parallel across role agents (PM, PE,
+  Backend, Frontend, QA, DevOps).
+- Route typed human and agent messages through NATS JetStream; persist
+  workstream state and read models in PostgreSQL.
+- Watch everything in the React dashboard: task board, agent cards, live
+  event stream, human gates, steering, and per-agent token totals.
+- Close the workstream only after validation evidence and human approval.
 
 ## Repository layout
 
@@ -317,6 +335,30 @@ packages/protocol Provider-neutral event and command schemas
 packages/domain   Workstream state machine and domain rules
 docs              Product specification and implementation backlog
 ```
+
+## System requirements
+
+AgentWeave is an orchestrator, not a model host: providers run the models, so
+**no GPU is required** and the runtime itself is light. On the current
+deployment host, the full stack (Control API, worker with a resident Codex app
+server, PostgreSQL, NATS) uses roughly 1.5 GB of RAM in total; the real load
+during a run is concurrent provider sessions plus whatever builds and test
+suites the agents execute inside workspaces.
+
+| Tier                                   | CPU     | RAM   | Disk   | Notes                                                                                                                                                                                    |
+| -------------------------------------- | ------- | ----- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Minimum — mock demo and light use      | 2 vCPU  | 4 GB  | 10 GB  | The credential-free demo path. The core services alone have also run on a 1 GB micro instance.                                                                                           |
+| Recommended — real-provider agent runs | 4+ vCPU | 8+ GB | 20+ GB | Headroom for several concurrent Codex sessions and in-workspace builds/tests. Verified end to end on an 8 OCPU / 48 GB host, with total memory use staying in the single-digit GB range. |
+
+Software:
+
+- Linux host (Ubuntu 22.04 verified) with Docker and Docker Compose for the
+  standard deployment, or Node.js 22+ with pnpm 11.2.2 for development.
+- For real-provider runs: the Codex CLI with an authenticated subscription or
+  API credentials on the worker host (or reachable through the host bridge),
+  plus outbound HTTPS to the provider.
+- Local ports 3000 (Control API) and 5173 (Dashboard); keep PostgreSQL, NATS,
+  and the Codex bridge off public networks (see [SECURITY.md](SECURITY.md)).
 
 ## Quick start: reliable local demo
 
@@ -353,7 +395,9 @@ observability volumes; it does not delete the mounted workspace directory.
 
 ## Run with Codex
 
-Codex is an opt-in local preview, not required for the quick start. The bridge
+Codex is an opt-in local preview, not required for the quick start. When the
+worker itself runs on a host with Codex installed, no bridge is needed: the
+worker spawns `codex app-server` directly over stdio. Otherwise the bridge
 executes Codex on your host while the Worker stays in Docker.
 
 1. Set `AGENTWEAVE_PROVIDER=codex` in `.env`.
