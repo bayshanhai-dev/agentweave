@@ -192,7 +192,7 @@ flowchart TB
         Worker[Worker Runtime Pool]
         Actor[Dynamic AgentRuntime<br/>one serialized inbox per agent identity]
         Session[Durable provider session<br/>checkpoint · resume · cancellation]
-        Adapter[Provider adapter<br/>Mock · Codex App Server · Claude Code · Ollama]
+        Adapter[Provider adapter<br/>Mock · Codex App Server · Claude Code · Kiro · Ollama]
         Workspace[Workspace & evidence boundary<br/>tests · diffs · artifacts]
         Worker --> Actor --> Session --> Adapter
         Actor --> Workspace
@@ -299,7 +299,7 @@ actor has its own role, status, current task, session, usage, and auditable
 output.
 
 The provider adapter boundary supports Mock, Codex App Server, Claude Code,
-Ollama, and future providers behind one contract for streaming, cancellation, resume,
+Kiro, Ollama, and future providers behind one contract for streaming, cancellation, resume,
 failure classification, checkpoints, and usage. Provider-reported token usage
 is forwarded from the app server's usage notifications through the worker into
 durable events, and the dashboard aggregates it per agent in Session Totals —
@@ -346,7 +346,7 @@ available on `main` from work that is intentionally still in progress.
 | Durable Workstreams, Tasks, Messages, evidence, and provider sessions in PostgreSQL  | Implemented   | Designed for the trusted, single-host Docker deployment                                                                                                             |
 | Per-Workstream event sequence, reconnect cursor, and persisted Dashboard projections | Implemented   | Replays committed history; full crash-atomic publication is not yet guaranteed                                                                                      |
 | Deterministic Mock-provider operator journey                                         | Implemented   | Playwright covers create, start, activity, Human approval, and persisted completion                                                                                 |
-| Mock, Codex App Server, Claude Code, and Ollama provider adapters                    | Implemented   | Codex App Server is the primary real-provider path (stdio or host bridge); Ollama runs local models through the same adapter contract; Mock remains the deterministic path for CI and demos |
+| Mock, Codex App Server, Claude Code, Kiro, and Ollama provider adapters              | Implemented   | Codex App Server is the primary real-provider path (stdio or host bridge); Kiro drives the Kiro CLI headlessly with a tolerant JSONL parser and hermetic stub-CLI tests (no real install in CI); Ollama runs local models through the same adapter contract; Mock remains the deterministic path for CI and demos |
 | Per-role model routing within one workstream                                         | Planned       | A workstream currently runs on a single selected provider; the adapter contract is provider-neutral, and role-level routing (e.g. Codex for the coder, a local model for research) is the active direction |
 | Provider token-usage accounting                                                      | Implemented   | Per-agent usage from the provider's own usage notifications, aggregated into dashboard Session Totals; never estimated                                              |
 | Dashboard human gates and mid-run steering                                           | Implemented   | Gates pause the workstream for approve-and-continue, approve-and-complete, or reject; steering is delivered to agent inboxes and answered in the open event stream  |

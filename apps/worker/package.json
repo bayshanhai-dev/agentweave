@@ -9,6 +9,8 @@
     "start": "node dist/main.js",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
+    "test:compat:kiro": "vitest run --config vitest.kiro-evidence.config.ts",
+    "test:compat:kiro:assumptions": "vitest run --config vitest.kiro-assumptions.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

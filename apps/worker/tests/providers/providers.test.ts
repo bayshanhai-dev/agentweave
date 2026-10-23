@@ -76,6 +76,7 @@ describe("provider adapters", () => {
   it("selects configured providers and rejects invalid configuration", () => {
     expect(createProviderFromEnv({ AGENTWEAVE_PROVIDER: "mock" }).name).toBe("mock");
     expect(createProviderFromEnv({ AGENTWEAVE_PROVIDER: "codex" }, { codexTransport: fakeCodexTransport() }).name).toBe("codex");
+    expect(createProviderFromEnv({ AGENTWEAVE_PROVIDER: "kiro" }).name).toBe("kiro");
     expect(() => createProviderFromEnv({ AGENTWEAVE_PROVIDER: "unknown" })).toThrow("Unsupported AGENTWEAVE_PROVIDER");
   });
 
