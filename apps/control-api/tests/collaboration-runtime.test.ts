@@ -21,6 +21,17 @@ describe("agent-owned collaboration runtime", () => {
     expect(roundFrom({ id: "r", workstream_id: "ws-1", topic: "t", participant_agent_ids: '["pm-1","qa-1"]', synthesizer_agent_id: "pm-1", max_turns: 4, deadline: "2026-10-02T13:00:00.000Z", completion_rule: "human_approval", status: "active", insight_ids: '["p1"]', created_at: "2026-10-02T12:00:00.000Z", updated_at: "2026-10-02T12:00:00.000Z" })).toMatchObject({ participantAgentIds: ["pm-1", "qa-1"], insightIds: ["p1"] });
   });
 
+  it("tells the model the exact insight field contract in every dispatch prompt", () => {
+    const { dispatches } = createCollaborationRound("ws-1", "Ship a useful demo", agents, new Date("2026-10-02T12:00:00.000Z"));
+    expect(dispatches.length).toBeGreaterThan(0);
+    for (const dispatch of dispatches) {
+      // The protocol requires the narrative in `content`; models that put it
+      // in `text`/`body` fail validation. The prompt must say so, by name.
+      expect(dispatch.prompt).toContain('MUST be in the field named "content"');
+      expect(dispatch.prompt).toContain('"evidenceIds"');
+    }
+  });
+
   it("dispatches two independent proposals, one critique, then lead synthesis", () => {
     const { round, dispatches } = createCollaborationRound("ws-1", "Ship a useful demo", agents, new Date("2026-10-02T12:00:00.000Z"));
     expect(dispatches.map((item) => item.agentId)).toEqual(["backend-1", "frontend-1"]);

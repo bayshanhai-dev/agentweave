@@ -24,7 +24,7 @@ const marker = (
 ) =>
   `[agentweave collaboration=${encodeURIComponent(roundId)} stage=${stage} key=${encodeURIComponent(key)}]`;
 
-const resultContract = `Return only one JSON object with schemaVersion 1, summary, insights, tasks, and messages. Do not wrap it in markdown.`;
+const resultContract = `Return only one JSON object with schemaVersion 1, summary, insights, tasks, and messages. Do not wrap it in markdown. Each insight is an object with: "id" (string), "kind", "content" — the full narrative text MUST be in the field named "content" (not "text", "body", or "message"; a reply whose narrative is in any other field is rejected), "confidence" (number 0-1), "references" (array of insight ids), "contradictionOf" (array of insight ids), and "evidenceIds" (array of evidence ids).`;
 
 export function createCollaborationRound(
   workstreamId: string,

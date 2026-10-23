@@ -1286,4 +1286,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (action.recipientRole === "human") { workstream.status = "waiting_for_human"; recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Human approval required before completion", occurredAt: new Date().toISOString() }); }
 }
 
-await app.listen({ host: "0.0.0.0", port: Number(process.env.CONTROL_API_PORT ?? 3000) });
+// Bind address is configurable: keep 0.0.0.0 for containers, set
+// CONTROL_API_HOST=127.0.0.1 for a host-local run that must not be
+// reachable from the LAN.
+await app.listen({ host: process.env.CONTROL_API_HOST ?? "0.0.0.0", port: Number(process.env.CONTROL_API_PORT ?? 3000) });

@@ -5,7 +5,9 @@ The following settings are the core Docker configuration:
 
 | Variable | Purpose | Example |
 | --- | --- | --- |
+| `CONTROL_API_HOST` | Control API bind address (`127.0.0.1` for host-local runs) | `0.0.0.0` |
 | `CONTROL_API_PORT` | Control API port | `3000` |
+| `CONTROL_API_URL` | Worker → Control API base URL (defaults to the Docker hostname `http://control-api:3000`; set it when the worker runs outside Docker, e.g. `http://127.0.0.1:3000`) | `http://127.0.0.1:3000` |
 | `DATABASE_URL` | PostgreSQL connection | `postgresql://...` |
 | `NATS_URL` | NATS connection | `nats://nats:4222` |
 | `VITE_CONTROL_API_URL` | Browser API URL | `http://localhost:3000` |
