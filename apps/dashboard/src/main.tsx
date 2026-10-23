@@ -37,6 +37,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AgentsNow, type SteerMessage } from "./AgentsNow";
 import { GoalBar } from "./GoalBar";
+import { ApprovalBanner } from "./ApprovalBanner";
+import { isSystemInstruction } from "./unified-stream";
 import { SessionTotals } from "./SessionTotals";
 import { computeAgentCards } from "./agentCards";
 import { TaskBoard, type Task } from "./TaskBoard";
@@ -324,7 +326,13 @@ function App() {
   const humanSteers = useMemo<SteerMessage[]>(
     () =>
       messages
-        .filter((message) => message.from === "human" || message.senderId === "human")
+        .filter(
+          (message) =>
+            (message.from === "human" || message.senderId === "human") &&
+            // Platform instructions are addressed as "human" internally but
+            // were never typed by the user — keep them out of the steer rail.
+            !isSystemInstruction(message.content ?? message.message ?? ""),
+        )
         .map((message) => ({
           id: message.id,
           content: message.content,
@@ -477,7 +485,16 @@ function App() {
                 <Burger opened={workstreamsOpen} onClick={toggleWorkstreams} aria-label="Toggle Workstreams" size="sm" />
               </Tooltip>
             )}
-            {immersiveOverview && <Badge size="xs" color="teal" variant="light">System active</Badge>}
+            {immersiveOverview &&
+              (selected?.status === "waiting_for_human" ? (
+                <Badge size="xs" color="yellow" variant="light">Waiting for you</Badge>
+              ) : selected?.status === "failed" ? (
+                <Badge size="xs" color="red" variant="light">Failed</Badge>
+              ) : selected?.status === "completed" ? (
+                <Badge size="xs" color="green" variant="light">Completed</Badge>
+              ) : (
+                <Badge size="xs" color="teal" variant="light">System active</Badge>
+              ))}
           </Group>
           <Group gap="sm">
             {immersiveOverview && (
@@ -581,6 +598,20 @@ function App() {
                   </>
                 }
               />
+              {selected.status === "waiting_for_human" && (
+                <ApprovalBanner
+                  api={api}
+                  workstreamId={selected.id}
+                  tasks={selected.tasks}
+                  events={selected.events}
+                  insights={selected.insights}
+                  onStatus={(status) =>
+                    setSelected((current) =>
+                      current?.id === selected.id ? { ...current, status } : current,
+                    )
+                  }
+                />
+              )}
               <div className="cc-grid">
                 <AgentsNow
                   cards={agentCards}
