@@ -145,7 +145,7 @@ html[data-theme="light"] .theme-toggle { color: #263022; background: #ffffff; bo
 body { background: #f4f7fb; color: #17212f; }
 .mantine-AppShell-main { background: linear-gradient(180deg, #f8fafc 0%, #f4f7fb 58%, #eef3f8 100%); }
 .mantine-AppShell-header { border-bottom-color: #dfe7ef !important; background: rgba(255, 255, 255, .9) !important; box-shadow: 0 4px 18px rgba(28, 48, 72, .06); backdrop-filter: blur(14px); }
-.immersive-workspace { max-width: 1680px; padding: 10px 18px 28px; }
+.immersive-workspace { max-width: 2048px; padding: 10px 18px 28px; }
 .runtime-workstream-bar { padding: 14px 16px !important; border: 1px solid #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .86) !important; box-shadow: 0 8px 24px rgba(28, 48, 72, .05) !important; }
 .runtime-workstream-bar .mantine-Title-root { max-width: min(980px, 70vw); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .runtime-summary-report { padding: 14px 16px !important; border-color: #dfe7ef !important; border-radius: 14px !important; background: rgba(255, 255, 255, .92) !important; box-shadow: 0 8px 24px rgba(28, 48, 72, .05); }
@@ -274,9 +274,17 @@ html[data-mantine-color-scheme="dark"] .cc-workspace {
 }
 html[data-mantine-color-scheme="dark"] .cc-grid {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 300px;
+  grid-template-columns: 320px minmax(0, 1fr) 320px;
   gap: 16px;
   align-items: start;
+}
+html[data-mantine-color-scheme="dark"] .cc-controls-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.14);
+  margin: 0 4px;
+  align-self: center;
+  flex-shrink: 0;
 }
 @media (max-width: 1280px) {
   html[data-mantine-color-scheme="dark"] .cc-grid { grid-template-columns: 280px minmax(0, 1fr); }

@@ -31,6 +31,17 @@ type Props = {
   createOnly?: boolean;
   /** The approval banner owns the decision buttons while it is mounted. */
   hideApprovals?: boolean;
+  /** The app header owns the single New Workstream entry point. */
+  hideCreate?: boolean;
+};
+
+/** Sensible model per provider; empty means "use the provider's own default". */
+const PROVIDER_MODEL_DEFAULTS: Record<string, string> = {
+  codex: "gpt-5.6-luna",
+  claude: "",
+  kiro: "",
+  ollama: "llama3.1:8b",
+  mock: "deterministic",
 };
 const commands = [
   { key: "pause", label: "Pause", icon: IconPlayerPause },
@@ -57,6 +68,7 @@ export function WorkstreamControls({
   onCreateOpenChange,
   createOnly = false,
   hideApprovals = false,
+  hideCreate = false,
 }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +89,10 @@ export function WorkstreamControls({
           : null,
       workspace: (value) =>
         value.trim() ? null : "Workspace path is required",
+      model: (value, values) =>
+        values.provider !== "mock" && value.trim().toLowerCase() === "deterministic"
+          ? "“deterministic” is the Mock provider's placeholder, not a real model — choose the Mock provider, name a real model, or leave it empty for the provider default"
+          : null,
     },
   });
   useEffect(() => setOpened(openCreate), [openCreate]);
@@ -123,7 +139,9 @@ export function WorkstreamControls({
           templateId: values.templateId,
           workspaceRoot: values.workspace.trim(),
           tool: values.provider,
-          model: values.model,
+          // An empty model means "the provider's own default"; never store
+          // an empty string (or a placeholder) as if it were a model name.
+          ...(values.model.trim() ? { model: values.model.trim() } : {}),
         }),
       });
       const created = (await response.json()) as {
@@ -231,13 +249,16 @@ export function WorkstreamControls({
   return (
     <>
       <Group gap="xs" style={createOnly ? { display: "none" } : undefined}>
-        <Button
-          variant="light"
-          leftSection={<IconPlus size={16} />}
-          onClick={() => setCreateModal(true)}
-        >
-          New Workstream
-        </Button>
+        {!hideCreate && (
+          <Button
+            variant="light"
+            leftSection={<IconPlus size={16} />}
+            onClick={() => setCreateModal(true)}
+          >
+            New Workstream
+          </Button>
+        )}
+        {!hideCreate && <span className="cc-controls-sep" aria-hidden />}
         {status === "draft" && (
           <Button
             leftSection={<IconPlayerPlay size={16} />}
@@ -247,25 +268,42 @@ export function WorkstreamControls({
             Start Workstream
           </Button>
         )}
-        {commands.map(({ key, label, icon: Icon }) => (
-          <Button
-            key={key}
-            variant={key === "emergency-stop" ? "outline" : "default"}
-            color={key === "emergency-stop" ? "red" : undefined}
-            leftSection={<Icon size={16} />}
-            disabled={
-              status === "draft" ||
-              terminal ||
-              busy !== null ||
-              (key === "pause" && status === "paused") ||
-              (key === "resume" && status !== "paused")
-            }
-            loading={busy === key}
-            onClick={() => void command(key)}
-          >
-            {label}
-          </Button>
-        ))}
+        {commands
+          .filter(({ key }) => key !== "emergency-stop")
+          .map(({ key, label, icon: Icon }) => (
+            <Button
+              key={key}
+              variant="default"
+              leftSection={<Icon size={16} />}
+              disabled={
+                status === "draft" ||
+                terminal ||
+                busy !== null ||
+                (key === "pause" && status === "paused") ||
+                (key === "resume" && status !== "paused")
+              }
+              loading={busy === key}
+              onClick={() => void command(key)}
+            >
+              {label}
+            </Button>
+          ))}
+        <span className="cc-controls-sep" aria-hidden />
+        {commands
+          .filter(({ key }) => key === "emergency-stop")
+          .map(({ key, label, icon: Icon }) => (
+            <Button
+              key={key}
+              variant="outline"
+              color="red"
+              leftSection={<Icon size={16} />}
+              disabled={status === "draft" || terminal || busy !== null}
+              loading={busy === key}
+              onClick={() => void command(key)}
+            >
+              {label}
+            </Button>
+          ))}
         {waiting && !hideApprovals && (
           <>
             <Button
@@ -333,11 +371,25 @@ export function WorkstreamControls({
               label="Provider"
               data={[
                 { value: "codex", label: "Codex" },
+                { value: "claude", label: "Claude Code" },
+                { value: "kiro", label: "Kiro" },
+                { value: "ollama", label: "Ollama (local)" },
                 { value: "mock", label: "Mock (deterministic)" },
               ]}
               {...form.getInputProps("provider")}
+              onChange={(value) => {
+                form.setFieldValue("provider", value ?? "codex");
+                // Switching providers resets the model to that provider's
+                // default instead of carrying a foreign model name across.
+                form.setFieldValue("model", PROVIDER_MODEL_DEFAULTS[value ?? "codex"] ?? "");
+              }}
             />
-            <TextInput label="Model" {...form.getInputProps("model")} />
+            <TextInput
+              label="Model"
+              description="Leave empty to use the provider's own default model."
+              placeholder="Provider default"
+              {...form.getInputProps("model")}
+            />
             <Button type="submit" loading={busy === "create"}>
               Create Workstream
             </Button>
