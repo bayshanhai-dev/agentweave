@@ -24,7 +24,7 @@ export type TaskLane = {
 
 type AgentLike = { id: string; role: string };
 
-const DEFAULT_LANES: TaskLane[] = [
+export const DEFAULT_LANES: TaskLane[] = [
   { status: "ready", label: "Backlog", color: "gray" },
   { status: "assigned", label: "To Do", color: "blue" },
   { status: "running", label: "In Progress", color: "yellow" },
@@ -87,38 +87,36 @@ function taskKind(title: string): string | undefined {
   return match ? match[1].trim() : undefined;
 }
 
-export function TaskBoard({ tasks, lanes, agents, showAllLanes = false }: { tasks: Task[]; lanes?: TaskLane[]; agents?: AgentLike[]; showAllLanes?: boolean }) {
+export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: Task[]; lanes?: TaskLane[]; agents?: AgentLike[]; embedded?: boolean }) {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   if (!tasks.length) {
-    return (
-      <div className="cc-panel">
-        <Alert icon={<IconAlertCircle size={18} />} title="No tasks yet">
-          Tasks created by the Orchestrator will appear here.
-        </Alert>
-      </div>
+    const empty = (
+      <Alert icon={<IconAlertCircle size={18} />} title="No tasks yet">
+        Tasks created by the Orchestrator will appear here.
+      </Alert>
     );
+    return embedded ? empty : <div className="cc-panel">{empty}</div>;
   }
   const columns = lanes?.length ? lanes : DEFAULT_LANES;
   const overflow = tasks.filter((task) => !columns.some((column) => column.status === task.status));
-  // In the page tab, empty lanes do not earn a column: they are named once,
-  // in one muted line, and the board's width goes to the lanes that hold
-  // work. In the slide-over drawer (showAllLanes) every lane is shown, the
-  // way a kanban board reads at a glance.
+  // Only populated lanes earn a column, in the page tab and in the
+  // sidecar (embedded) alike: empty lanes are named once, in one muted
+  // line, and the board's width goes to the lanes that hold work.
   const populated = columns
     .map((column) => ({ column, columnTasks: tasks.filter((task) => task.status === column.status) }))
-    .filter(({ columnTasks }) => showAllLanes || columnTasks.length > 0);
-  const emptyLabels = showAllLanes
-    ? []
-    : columns
-        .filter((column) => !populated.some(({ column: kept }) => kept.status === column.status))
-        .map((column) => column.label);
+    .filter(({ columnTasks }) => columnTasks.length > 0);
+  const emptyLabels = columns
+    .filter((column) => !populated.some(({ column: kept }) => kept.status === column.status))
+    .map((column) => column.label);
 
   return (
-    <div className="cc-panel cc-taskboard">
-      <Group justify="space-between" mb="md">
-        <Text fw={800}>Task board</Text>
-        <Badge variant="light">{tasks.length} tasks</Badge>
-      </Group>
+    <div className={embedded ? "cc-taskboard cc-taskboard-embedded" : "cc-panel cc-taskboard"}>
+      {!embedded && (
+        <Group justify="space-between" mb="md">
+          <Text fw={800}>Task board</Text>
+          <Badge variant="light">{tasks.length} tasks</Badge>
+        </Group>
+      )}
       {emptyLabels.length > 0 && (
         <Text size="xs" c="dimmed" mb="sm">
           No tasks in {emptyLabels.join(" · ")}
