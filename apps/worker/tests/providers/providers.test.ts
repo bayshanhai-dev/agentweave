@@ -123,6 +123,15 @@ describe("provider adapters", () => {
     ]);
   });
 
+  it("forwards Codex token usage notifications instead of dropping them", () => {
+    const receiver = (CodexStdioTransport.prototype as unknown as { receive(this: unknown, line: string): void }).receive;
+    const transport = { child: { stdin: { write: () => undefined } }, pending: new Map(), queues: new Map(), waiters: new Map() };
+    receiver.call(transport, JSON.stringify({ jsonrpc: "2.0", method: "thread/tokenUsage/updated", params: { threadId: "thread-usage", turnId: "turn-1", tokenUsage: { total: { inputTokens: 900, outputTokens: 90, totalTokens: 990 }, last: { inputTokens: 120, outputTokens: 30, totalTokens: 150 } } } }));
+    expect(transport.queues.get("thread-usage")).toEqual([
+      { type: "thread/tokenUsage/updated", tokenUsage: { total: { inputTokens: 900, outputTokens: 90, totalTokens: 990 }, last: { inputTokens: 120, outputTokens: 30, totalTokens: 150 } } },
+    ]);
+  });
+
   it("keeps final App Server item text when no delta was emitted", async () => {
     const transport: CodexTransport = {
       async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-1" } } } : { result: { turnId: "turn-1" } }; },
