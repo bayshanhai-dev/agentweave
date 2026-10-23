@@ -298,12 +298,13 @@ html[data-mantine-color-scheme="dark"] .cc-board-edge-tab {
   box-shadow: -4px 0 16px rgba(0, 0, 0, 0.35);
 }
 html[data-mantine-color-scheme="dark"] .cc-board-edge-tab:hover { background: #263242; }
-html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-label {
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-label { display: block; }
+html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-label::before {
+  content: "TASK BOARD";
   writing-mode: vertical-rl;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
-  text-transform: uppercase;
 }
 html[data-mantine-color-scheme="dark"] .cc-board-edge-tab-count {
   font-family: "DM Mono", monospace;
