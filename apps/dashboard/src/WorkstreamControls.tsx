@@ -195,7 +195,7 @@ export function WorkstreamControls({
       setBusy(null);
     }
   }
-  async function approval(decision: "complete" | "reject") {
+  async function approval(decision: "resume" | "complete" | "reject") {
     setBusy(`approval-${decision}`);
     try {
       const response = await fetch(
@@ -267,6 +267,13 @@ export function WorkstreamControls({
           <>
             <Button
               color="green"
+              loading={busy === "approval-resume"}
+              onClick={() => void approval("resume")}
+            >
+              Approve & continue
+            </Button>
+            <Button
+              variant="default"
               loading={busy === "approval-complete"}
               onClick={() => void approval("complete")}
             >
