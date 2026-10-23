@@ -28,11 +28,51 @@ describe("Kiro stream-json normalization", () => {
   });
 
   it("normalizes verified session, usage, and error fields only", () => {
-    expect(normalizeKiroRecord({ type: "session.started", data: { session_id: "session-1", extra: true } })).toEqual({ type: "session", sessionId: "session-1" });
-    expect(normalizeKiroRecord({ type: "usage", data: { usage: { input_tokens: 10, outputTokens: 4, total_tokens: 14, invented: 99 } } })).toEqual({ type: "usage", usage: { source: "provider", inputTokens: 10, outputTokens: 4, totalTokens: 14 } });
-    expect(normalizeKiroRecord({ type: "error", data: { error: { message: "denied", code: "AUTH" } } })).toEqual({ type: "error", message: "denied", code: "AUTH" });
-    expect(normalizeKiroRecord({ type: "usage", data: { usage: { total_tokens: "14" } } })).toBeUndefined();
-    expect(normalizeKiroRecord({ type: "session", data: { sessionId: 123 } })).toBeUndefined();
+    expect(normalizeKiroRecord({ type: "session.started", data: { session_id: "session-1", extra: true } })).toEqual([{ type: "session", sessionId: "session-1" }]);
+    expect(normalizeKiroRecord({ type: "usage", data: { usage: { input_tokens: 10, outputTokens: 4, total_tokens: 14, invented: 99 } } })).toEqual([{ type: "usage", usage: { source: "provider", inputTokens: 10, outputTokens: 4, totalTokens: 14 } }]);
+    expect(normalizeKiroRecord({ type: "error", data: { error: { message: "denied", code: "AUTH" } } })).toEqual([{ type: "error", message: "denied", code: "AUTH" }]);
+    expect(normalizeKiroRecord({ type: "usage", data: { usage: { total_tokens: "14" } } })).toEqual([]);
+    expect(normalizeKiroRecord({ type: "session", data: { sessionId: 123 } })).toEqual([]);
+  });
+
+  it("normalizes the ACP shapes kiro-cli 2.x actually emits", async () => {
+    const events = await collect([
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_abc123","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello"}}}}\n',
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_abc123","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hmm"}}}}\n',
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_abc123","update":{"sessionUpdate":"tool_call","content":{"type":"text","text":"not text output"}}}}\n',
+      '{"runFinished":{"finalText":"Hello world","stopReason":"end_turn","usage":{"creditsUsed":0.42}}}\n',
+    ]);
+    expect(events).toEqual([
+      { type: "session", sessionId: "sess_abc123" },
+      { type: "content", text: "Hello" },
+      { type: "session", sessionId: "sess_abc123" },
+      { type: "session", sessionId: "sess_abc123" },
+      { type: "usage", usage: { source: "provider", credits: 0.42 } },
+      { type: "completion", text: "Hello world" },
+    ]);
+  });
+
+  it("normalizes run errors and flattened session updates", () => {
+    expect(normalizeKiroRecord({ runError: { message: "Session not found", code: "SESSION" } })).toEqual([
+      { type: "error", message: "Session not found", code: "SESSION" },
+    ]);
+    expect(
+      normalizeKiroRecord({ sessionUpdate: "agent_message_chunk", sessionId: "sess_1", content: { type: "text", text: "flat" } }),
+    ).toEqual([
+      { type: "session", sessionId: "sess_1" },
+      { type: "content", text: "flat" },
+    ]);
+    expect(normalizeKiroRecord({ id: 2, result: { stopReason: "end_turn" } })).toEqual([{ type: "completion" }]);
+  });
+
+  it("reports metering usage as credits, never as tokens", () => {
+    expect(normalizeKiroRecord({ type: "usage", data: { meteringUsage: { creditsUsed: 3 } } })).toEqual([
+      { type: "usage", usage: { source: "provider", credits: 3 } },
+    ]);
+    expect(normalizeKiroRecord({ runFinished: { meteringUsage: 1.5 } })).toEqual([
+      { type: "usage", usage: { source: "provider", credits: 1.5 } },
+      { type: "completion" },
+    ]);
   });
 
   it("decodes split UTF-8 without corrupting content", async () => {

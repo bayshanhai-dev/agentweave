@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { providerError, redactSecrets } from "./errors.js";
-import { buildKiroCommand } from "./kiro-command.js";
+import { buildKiroCommand, isCliIssuedSessionId } from "./kiro-command.js";
 import { normalizeKiroJsonl } from "./kiro-jsonl.js";
 import type { ProviderAdapter, ProviderCapabilities, ProviderError, ProviderRunEvent, ProviderRunInput, ProviderRunResult, ProviderSession, ProviderUsage, SessionCheckpoint } from "./types.js";
 
@@ -49,7 +49,10 @@ export class KiroAdapter implements ProviderAdapter {
 
   async createSession(input: { model?: string; workspacePath?: string } = {}): Promise<ProviderSession> {
     const now = new Date().toISOString();
-    return { provider: this.name, providerSessionId: crypto.randomUUID(), status: "active", createdAt: now, updatedAt: now,
+    // Locally minted ids carry a `local-` marker: they name our bookkeeping
+    // record, not a CLI session, and must never reach --resume-id. The id is
+    // replaced by the CLI-issued one as soon as the stream reports it.
+    return { provider: this.name, providerSessionId: `local-${crypto.randomUUID()}`, status: "active", createdAt: now, updatedAt: now,
       ...(input.model ?? this.config.model ? { model: input.model ?? this.config.model } : {}), ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}) };
   }
 
@@ -62,7 +65,11 @@ export class KiroAdapter implements ProviderAdapter {
     const suppliedSession = input.session;
     let session = suppliedSession ?? await this.createSession({ model: input.model, workspacePath: input.workspacePath });
     const turnId = crypto.randomUUID(); const correlationId = input.correlationId ?? crypto.randomUUID();
-    const invocation = buildKiroCommand(this.config, input, session, suppliedSession !== undefined);
+    // Resume only a session the CLI itself issued. A supplied session object
+    // is not evidence of that: the worker passes its bookkeeping record on
+    // every turn, including the first, and its id may be locally minted.
+    const resuming = suppliedSession !== undefined && isCliIssuedSessionId(session.providerSessionId);
+    const invocation = buildKiroCommand(this.config, input, session, resuming);
     let process: KiroProcess;
     try { process = this.runner(invocation.command, invocation.args, { ...invocation.options, stdin: invocation.stdin }); }
     catch (cause) {
@@ -80,11 +87,23 @@ export class KiroAdapter implements ProviderAdapter {
     yield { type: "turn.started", turnId, correlationId };
 
     let text = ""; let completed = false; let usage: ProviderUsage | undefined; let reportedError: ProviderError | undefined;
+    let sessionEventEmitted = false;
     try {
       for await (const event of normalizeKiroJsonl(process.stdout)) {
         if (event.type === "content") { text += event.text; yield { type: "turn.delta", turnId, text: event.text, correlationId }; }
         if (event.type === "completion") { completed = true; if (event.text !== undefined) text = event.text; }
-        if (event.type === "session") { session = { ...session, providerSessionId: event.sessionId, updatedAt: new Date().toISOString() }; yield { type: suppliedSession ? "session.resumed" : "session.started", session, correlationId }; }
+        if (event.type === "session") {
+          // ACP records repeat the session id on every line; surface it once
+          // per turn, and adopt the CLI-issued id for the persisted session.
+          const resumeConfirmed = resuming && !sessionEventEmitted && event.sessionId === session.providerSessionId;
+          if (event.sessionId !== session.providerSessionId) {
+            session = { ...session, providerSessionId: event.sessionId, updatedAt: new Date().toISOString() };
+          }
+          if (!sessionEventEmitted) {
+            sessionEventEmitted = true;
+            yield { type: resumeConfirmed ? "session.resumed" : "session.started", session, correlationId };
+          }
+        }
         if (event.type === "usage") { usage = event.usage; yield { type: "usage.updated", turnId, usage, correlationId }; }
         if (event.type === "error") { reportedError = classifyFailure(event.message, correlationId, event.code ? { code: event.code } : {}); yield { type: "provider.error", error: reportedError, correlationId }; }
       }
