@@ -93,7 +93,11 @@ describe("Kiro evidence-derived compatibility", () => {
   it("cancels and reaps the subprocess, then removes active-turn state", async () => {
     const directory = await temporaryDirectory("agentweave-kiro-cancel-");
     const markerPath = join(directory, "signals.log");
-    const adapter = new KiroAdapter(undefined, { command: fixture, killGraceMs: 50 });
+    // The grace must exceed the fixture's trap latency: bash only runs a TERM
+    // trap between its sleep slices, so 50ms made this a scheduler race (it
+    // failed intermittently under CI load). 1s still proves SIGTERM is sent
+    // and honored before any SIGKILL escalation.
+    const adapter = new KiroAdapter(undefined, { command: fixture, killGraceMs: 1_000 });
     const stream = adapter.run({ input: `cancel:${markerPath}` });
     const started = await stream.next();
     expect(started.value.type).toBe("turn.started");
