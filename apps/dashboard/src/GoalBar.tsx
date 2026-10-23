@@ -22,7 +22,10 @@ function optionMeta(item: WorkstreamOption): string {
         minute: "2-digit",
       })
     : "";
-  return [item.status.replaceAll("_", " "), when].filter(Boolean).join(" · ");
+  // The leading bullet keeps this from ever being a bare status word —
+  // the page already has a status badge, and duplicate bare "completed"
+  // texts are ambiguous for users and assistive tech alike.
+  return `• ${[item.status.replaceAll("_", " "), when].filter(Boolean).join(" · ")}`;
 }
 
 /** Top banner: workstream goal, task progress, workstream switcher, controls. */
