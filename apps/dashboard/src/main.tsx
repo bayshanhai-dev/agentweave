@@ -496,11 +496,11 @@ function App() {
               ))}
           </Group>
           <Group gap="sm">
-            {immersiveOverview && (
-              <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
-                New Workstream
-              </Button>
-            )}
+            {/* The single New Workstream entry point, visible in both the
+                list view and a selected workstream's view. */}
+            <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
+              New Workstream
+            </Button>
             {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : `${selected?.provider.tool} · ${selected ? providerModelLabel(selected.provider.model) : "—"}`}</Text>}
             <Tooltip
               label={colorScheme === "dark" ? "Light mode" : "Dark mode"}
