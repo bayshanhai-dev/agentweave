@@ -336,6 +336,30 @@ packages/domain   Workstream state machine and domain rules
 docs              Product specification and implementation backlog
 ```
 
+## System requirements
+
+AgentWeave is an orchestrator, not a model host: providers run the models, so
+**no GPU is required** and the runtime itself is light. On the current
+deployment host, the full stack (Control API, worker with a resident Codex app
+server, PostgreSQL, NATS) uses roughly 1.5 GB of RAM in total; the real load
+during a run is concurrent provider sessions plus whatever builds and test
+suites the agents execute inside workspaces.
+
+| Tier                                   | CPU     | RAM   | Disk   | Notes                                                                                                                                                                                    |
+| -------------------------------------- | ------- | ----- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Minimum — mock demo and light use      | 2 vCPU  | 4 GB  | 10 GB  | The credential-free demo path. The core services alone have also run on a 1 GB micro instance.                                                                                           |
+| Recommended — real-provider agent runs | 4+ vCPU | 8+ GB | 20+ GB | Headroom for several concurrent Codex sessions and in-workspace builds/tests. Verified end to end on an 8 OCPU / 48 GB host, with total memory use staying in the single-digit GB range. |
+
+Software:
+
+- Linux host (Ubuntu 22.04 verified) with Docker and Docker Compose for the
+  standard deployment, or Node.js 22+ with pnpm 11.2.2 for development.
+- For real-provider runs: the Codex CLI with an authenticated subscription or
+  API credentials on the worker host (or reachable through the host bridge),
+  plus outbound HTTPS to the provider.
+- Local ports 3000 (Control API) and 5173 (Dashboard); keep PostgreSQL, NATS,
+  and the Codex bridge off public networks (see [SECURITY.md](SECURITY.md)).
+
 ## Quick start: reliable local demo
 
 The default provider is deterministic `mock`, so anyone with Docker can see a
