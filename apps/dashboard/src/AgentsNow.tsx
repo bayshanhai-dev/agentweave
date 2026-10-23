@@ -1,6 +1,6 @@
 import { Badge, Text } from "@mantine/core";
 import { AgentAvatar, type AvatarState } from "./AgentAvatar";
-import type { AgentCard } from "./agentCards";
+import { cardWorked, type AgentCard } from "./agentCards";
 import { roleColor, roleIcon, roleLabel, type TemplateRoleVisual } from "./roleVisuals";
 
 export type SteerMessage = {
@@ -42,18 +42,26 @@ function relativeTime(value?: string): string {
 /** Left rail: what every agent is doing right now, plus human steer history. */
 export function AgentsNow({ cards, templateRoles, steers }: Props) {
   const recent = steers.slice(-3).reverse();
+  // Whoever is working (or has worked) first; untouched roles sink, muted.
+  const rank = (card: AgentCard) =>
+    card.status === "running" ? 0 : card.status === "failed" ? 1 : cardWorked(card) ? 2 : 3;
+  const ordered = [...cards].sort(
+    (a, b) => rank(a) - rank(b) || b.usage.totalTokens - a.usage.totalTokens,
+  );
   return (
     <div className="cc-panel cc-agents-now">
       <Text className="cc-kicker">Agents now</Text>
       <div className="cc-agent-list">
-        {cards.map((card) => {
+        {ordered.map((card) => {
           const color = roleColor(card.role, templateRoles);
           const icon = roleIcon(card.role, templateRoles);
           const working = card.status === "running";
+          const worked = cardWorked(card);
+          const untouched = !worked && !working && card.status !== "failed";
           return (
             <div
               key={card.agent.id}
-              className={`cc-agent-card${working ? " cc-agent-working" : ""}`}
+              className={`cc-agent-card${working ? " cc-agent-working" : ""}${untouched ? " cc-agent-untouched" : ""}`}
             >
               <AgentAvatar color={color} icon={icon} state={avatarState(card.status)} size={40} />
               <div className="cc-agent-meta">
@@ -64,13 +72,20 @@ export function AgentsNow({ cards, templateRoles, steers }: Props) {
                   {statusBadge(card.status)}
                 </div>
                 <Text size="xs" c="dimmed" className="cc-agent-activity">
-                  {card.activity}
+                  {untouched
+                    ? "Not used in this run"
+                    : worked && !working && card.status !== "failed"
+                      ? `Idle · last active ${relativeTime(card.lastActiveAt) || "earlier"}`
+                      : card.activity}
                   {working ? <span className="av-typing" aria-hidden><i /><i /><i /></span> : null}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {card.usage.totalTokens > 0
                     ? `${card.usage.totalTokens.toLocaleString()} tok`
-                    : "no tokens yet"}
+                    : worked
+                      ? "usage not reported"
+                      : "no tokens yet"}
+                  {card.tasksDone > 0 ? ` · ${card.tasksDone} task${card.tasksDone === 1 ? "" : "s"} done` : ""}
                   {card.stale ? " · stale" : ""}
                 </Text>
               </div>

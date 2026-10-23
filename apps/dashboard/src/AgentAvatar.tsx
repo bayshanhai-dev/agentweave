@@ -60,7 +60,10 @@ export function AgentAvatar({ color, icon, state, size = 40 }: Props) {
           <line x1="15" y1="28" x2="25" y2="28" stroke="#0a0a10" strokeWidth="2.5" strokeLinecap="round" />
         )}
       </svg>
-      {icon ? (
+      {/* The badge is a dark circle: only render it for a real glyph (an emoji
+          or 1–2 characters). A word-like icon name would render as an empty
+          black dot that looks like a broken image. */}
+      {icon && [...icon.trim()].length >= 1 && [...icon.trim()].length <= 2 ? (
         <span
           className="av-icon-badge"
           style={{ width: badge, height: badge, fontSize: badge * 0.62 }}

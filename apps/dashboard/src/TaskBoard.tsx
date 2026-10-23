@@ -1,6 +1,7 @@
 import { Alert, Badge, Card, Group, List, Modal, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
 import { useState } from "react";
+import { displayTaskTitle } from "./unified-stream";
 
 export type Task = {
   id: string;
@@ -48,7 +49,7 @@ function TaskDetail({ task, agents }: { task: Task; agents?: AgentLike[] }) {
     <Stack gap="md">
       <div>
         <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Task</Text>
-        <Title order={3}>{task.title}</Title>
+        <Title order={3}>{displayTaskTitle(task.title)}</Title>
       </div>
       <Group gap="xs">
         <Badge size="lg" variant="light" color={statusColors[task.status] ?? "gray"}>{task.status}</Badge>
@@ -93,6 +94,14 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
   }
   const columns = lanes?.length ? lanes : DEFAULT_LANES;
   const overflow = tasks.filter((task) => !columns.some((column) => column.status === task.status));
+  // Empty lanes do not earn a column: they are named once, in one muted line,
+  // and the board's width goes to the lanes that hold work.
+  const populated = columns
+    .map((column) => ({ column, columnTasks: tasks.filter((task) => task.status === column.status) }))
+    .filter(({ columnTasks }) => columnTasks.length > 0);
+  const emptyLabels = columns
+    .filter((column) => !populated.some(({ column: kept }) => kept.status === column.status))
+    .map((column) => column.label);
 
   return (
     <div className="cc-panel cc-taskboard">
@@ -100,9 +109,13 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
         <Text fw={800}>Task board</Text>
         <Badge variant="light">{tasks.length} tasks</Badge>
       </Group>
+      {emptyLabels.length > 0 && (
+        <Text size="xs" c="dimmed" mb="sm">
+          No tasks in {emptyLabels.join(" · ")}
+        </Text>
+      )}
       <div className="cc-kanban">
-        {columns.map((column) => {
-          const columnTasks = tasks.filter((task) => task.status === column.status);
+        {populated.map(({ column, columnTasks }) => {
           return (
             <div key={column.status} className="cc-kanban-lane">
               <div className="cc-kanban-lane-header">
@@ -110,7 +123,7 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
                 <Text fw={700} size="sm">{column.label}</Text>
               </div>
               <div className="cc-kanban-lane-body">
-                {columnTasks.length ? columnTasks.map((task) => (
+                {columnTasks.map((task) => (
                   <Card
                     key={task.id}
                     withBorder
@@ -119,13 +132,13 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
                     className={`cc-kanban-card${task.status === "running" ? " cc-kanban-card-running" : ""}`}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Open task: ${task.title}`}
+                    aria-label={`Open task: ${displayTaskTitle(task.title)}`}
                     onClick={() => setSelectedTask(task)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedTask(task); }
                     }}
                   >
-                    <Text fw={700} size="sm" className="cc-kanban-card-title">{task.title}</Text>
+                    <Text fw={700} size="sm" className="cc-kanban-card-title">{displayTaskTitle(task.title)}</Text>
                     <Group gap="xs" mt={6} wrap="wrap">
                       <Badge size="xs" variant="light" color={task.ownerAgentId ? "blue" : "gray"}>
                         {ownerLabel(task, agents)}
@@ -133,9 +146,7 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
                       {task.status === "running" && <Badge size="xs" color="yellow" variant="filled">Running</Badge>}
                     </Group>
                   </Card>
-                )) : (
-                  <Text size="xs" c="dimmed" className="cc-kanban-empty">No tasks</Text>
-                )}
+                ))}
               </div>
             </div>
           );
@@ -149,7 +160,7 @@ export function TaskBoard({ tasks, lanes, agents }: { tasks: Task[]; lanes?: Tas
             <div className="cc-kanban-lane-body">
               {overflow.map((task) => (
                 <Card key={task.id} withBorder padding="sm" radius="md" className="cc-kanban-card" role="button" tabIndex={0} onClick={() => setSelectedTask(task)}>
-                  <Text fw={700} size="sm">{task.title}</Text>
+                  <Text fw={700} size="sm">{displayTaskTitle(task.title)}</Text>
                   <Text size="xs" c="dimmed" mt={4}>{task.status}</Text>
                 </Card>
               ))}
