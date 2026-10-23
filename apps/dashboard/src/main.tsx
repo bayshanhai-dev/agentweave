@@ -446,13 +446,6 @@ function App() {
           </Button>
         )}
       </Group>
-      <Button
-        variant="light"
-        leftSection={<IconPlus size={16} />}
-        onClick={() => setCreateOpen(true)}
-      >
-        New Workstream
-      </Button>
       <ScrollArea.Autosize mah="calc(100vh - 220px)">
         {navigation}
       </ScrollArea.Autosize>
@@ -503,11 +496,11 @@ function App() {
               ))}
           </Group>
           <Group gap="sm">
-            {immersiveOverview && (
-              <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
-                New Workstream
-              </Button>
-            )}
+            {/* The single New Workstream entry point, visible in both the
+                list view and a selected workstream's view. */}
+            <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
+              New Workstream
+            </Button>
             {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : `${selected?.provider.tool} · ${selected ? providerModelLabel(selected.provider.model) : "—"}`}</Text>}
             <Tooltip
               label={colorScheme === "dark" ? "Light mode" : "Dark mode"}
@@ -591,12 +584,11 @@ function App() {
                 }}
                 controls={
                   <>
-                    <Button size="xs" variant="light" leftSection={<IconActivity size={14} />} onClick={openAudit}>Audit log</Button>
-                    <Button size="xs" variant="light" onClick={openTrace}>Trace debug</Button>
                     <WorkstreamControls
                       api={api}
                       workstreamId={selected.id}
                       status={selected.status}
+                      hideCreate
                       hideApprovals={selected.status === "waiting_for_human"}
                       onStatus={(status) =>
                         setSelected((current) =>
@@ -607,6 +599,9 @@ function App() {
                       openCreate={createOpen}
                       onCreateOpenChange={setCreateOpen}
                     />
+                    <span className="cc-controls-sep" aria-hidden />
+                    <Button size="xs" variant="subtle" color="gray" leftSection={<IconActivity size={14} />} onClick={openAudit}>Audit log</Button>
+                    <Button size="xs" variant="subtle" color="gray" onClick={openTrace}>Trace debug</Button>
                   </>
                 }
               />
