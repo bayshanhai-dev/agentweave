@@ -29,6 +29,8 @@ type Props = {
   openCreate?: boolean;
   onCreateOpenChange?: (open: boolean) => void;
   createOnly?: boolean;
+  /** The approval banner owns the decision buttons while it is mounted. */
+  hideApprovals?: boolean;
 };
 const commands = [
   { key: "pause", label: "Pause", icon: IconPlayerPause },
@@ -54,6 +56,7 @@ export function WorkstreamControls({
   openCreate = false,
   onCreateOpenChange,
   createOnly = false,
+  hideApprovals = false,
 }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -263,7 +266,7 @@ export function WorkstreamControls({
             {label}
           </Button>
         ))}
-        {waiting && (
+        {waiting && !hideApprovals && (
           <>
             <Button
               color="green"

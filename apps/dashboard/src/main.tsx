@@ -586,6 +586,7 @@ function App() {
                       api={api}
                       workstreamId={selected.id}
                       status={selected.status}
+                      hideApprovals={selected.status === "waiting_for_human"}
                       onStatus={(status) =>
                         setSelected((current) =>
                           current?.id === selected.id ? { ...current, status } : current,
