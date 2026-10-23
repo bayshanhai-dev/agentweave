@@ -1,6 +1,13 @@
 export const inboxPublishAttempts = 3;
 export const inboxPublishBackoffsMs = [250, 1_000] as const;
 export const implementationTriggerWatchdogMs = 180_000;
+/**
+ * A durable task handoff whose newest delivery is older than this is treated
+ * as lost when the owning Agent is idle and no execution claim exists: the
+ * watchdog cycle (180s) plus a full re-drive window passed without the task
+ * ever starting. Reconciliation closes the stale delivery and re-dispatches.
+ */
+export const durableTaskDeliveryStaleMs = 360_000;
 
 export function shouldArmTriggerWatchdog(
   content: string,
@@ -83,32 +90,50 @@ export async function publishWithRetry(
   throw lastError;
 }
 
+/**
+ * One timer per (Workstream, correlation) dispatch. Keying by Workstream
+ * alone let parallel handoffs armed in the same burst silently cancel each
+ * other, leaving every task but the last without timeout protection.
+ */
 export class TriggerDispatchWatchdog {
-  private readonly timers = new Map<string, { correlationId: string; timer: TimerHandle }>();
+  private readonly timers = new Map<string, { workstreamId: string; timer: TimerHandle }>();
 
   constructor(private readonly timeoutMs = implementationTriggerWatchdogMs) {}
 
+  private key(workstreamId: string, correlationId: string): string {
+    return `${workstreamId}:${correlationId}`;
+  }
+
   arm(workstreamId: string, correlationId: string, onExpired: () => void | Promise<void>): void {
-    this.clear(workstreamId);
+    const key = this.key(workstreamId, correlationId);
+    const existing = this.timers.get(key);
+    if (existing) clearTimeout(existing.timer);
     const timer = setTimeout(() => {
-      this.timers.delete(workstreamId);
+      this.timers.delete(key);
       void onExpired();
     }, this.timeoutMs);
     timer.unref();
-    this.timers.set(workstreamId, { correlationId, timer });
+    this.timers.set(key, { workstreamId, timer });
   }
 
   clear(workstreamId: string): boolean {
-    const tracked = this.timers.get(workstreamId);
-    if (!tracked) return false;
-    clearTimeout(tracked.timer);
-    this.timers.delete(workstreamId);
-    return true;
+    let cleared = false;
+    for (const [key, tracked] of this.timers) {
+      if (tracked.workstreamId !== workstreamId) continue;
+      clearTimeout(tracked.timer);
+      this.timers.delete(key);
+      cleared = true;
+    }
+    return cleared;
   }
 
   clearForCorrelation(workstreamId: string, correlationId: string | undefined): boolean {
-    const tracked = this.timers.get(workstreamId);
-    if (!tracked || !correlationId || tracked.correlationId !== correlationId) return false;
-    return this.clear(workstreamId);
+    if (!correlationId) return false;
+    const key = this.key(workstreamId, correlationId);
+    const tracked = this.timers.get(key);
+    if (!tracked) return false;
+    clearTimeout(tracked.timer);
+    this.timers.delete(key);
+    return true;
   }
 }
