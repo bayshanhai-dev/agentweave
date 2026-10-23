@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
 
 describe("publishWithRetry", () => {
   it("retries a failed publish with the configured backoff", async () => {
@@ -73,5 +73,15 @@ describe("durable task dispatch recovery", () => {
     expect(durableDispatchTimeoutDecision("running", false)).toBe("redrive");
     expect(durableDispatchTimeoutDecision("running", true)).toBe("fail");
     expect(durableDispatchTimeoutDecision("done", false)).toBe("ignore");
+  });
+
+  it("defers the timeout decision while the workstream sits at a human gate", () => {
+    expect(shouldDeferDispatchTimeout("waiting_for_human")).toBe(true);
+    expect(shouldDeferDispatchTimeout("paused")).toBe(true);
+    expect(shouldDeferDispatchTimeout("completing")).toBe(true);
+    expect(shouldDeferDispatchTimeout("emergency_stopped")).toBe(true);
+    expect(shouldDeferDispatchTimeout("active")).toBe(false);
+    expect(shouldDeferDispatchTimeout("completed")).toBe(false);
+    expect(shouldDeferDispatchTimeout(undefined)).toBe(false);
   });
 });

@@ -233,6 +233,7 @@ const runtimeExecutionEventTypes = [
   "agent.turn.completed",
   "task.completed",
   "task.failed",
+  "task.gated",
 ] as const;
 const workflowEventTypes = [
   "agent.reply.created",

@@ -305,6 +305,37 @@ describe("terminal task dispatch reconciliation", () => {
     expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
   });
 
+  it("holds final validation while a later review task is still running, then dispatches it", async () => {
+    const fixture = finalValidationFixture();
+    const reviewTask = {
+      id: "review-extra",
+      title: "Review: Build the API",
+      status: "running",
+      ownerAgentId: "qa-1",
+      createdByAgentId: "pm-1",
+      acceptanceCriteria: ["Review passes"],
+      dependencies: [],
+    };
+    fixture.workstream.tasks.push(reviewTask);
+    for (const task of fixture.implementationTasks) task.status = "done";
+
+    const held = await reconcileDispatchableTasks(
+      fixture.workstream,
+      policy,
+      fixture.dependencies,
+    );
+    expect(held).toEqual([]);
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+
+    reviewTask.status = "done";
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream,
+      policy,
+      fixture.dependencies,
+    );
+    expect(dispatched).toEqual([fixture.validationTask.id]);
+  });
+
   it("does not duplicate final validation when it already has an in-flight delivery", async () => {
     const fixture = finalValidationFixture();
     for (const task of fixture.implementationTasks) task.status = "done";

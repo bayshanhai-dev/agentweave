@@ -32,7 +32,7 @@ import {
   republishImplementationTriggerAfterResume,
   shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 import { reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
@@ -530,6 +530,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
 
 function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Message, recipientId: string, lead: Agent | undefined): void {
   if (lead && armTriggerWatchdogForDispatch(dispatchWatchdog, workstream.id, message.correlationId, message.content, recipientId, lead.id, async () => {
+      if (shouldDeferDispatchTimeout(workstream.status)) return;
       try {
         app.log.error({ workstreamId: workstream.id, recipientId: lead.id, messageId: message.id, correlationId: message.correlationId }, "implementation trigger dispatch timed out");
         await setAgentStatus(lead, "idle");
@@ -540,6 +541,7 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
     })) return;
   if (!shouldArmDurableTaskWatchdog(message.taskId, message.content, recipientId)) return;
   dispatchWatchdog.arm(workstream.id, message.correlationId, async () => {
+    if (shouldDeferDispatchTimeout(workstream.status)) return;
     const task = workstream.tasks.find((candidate) => candidate.id === message.taskId);
     const priorHandoff = message.causationId
       ? workstream.messages.find((candidate) => candidate.id === message.causationId && candidate.taskId === message.taskId)
@@ -869,7 +871,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     recordWorkflowEvent(workstream, { id: randomUUID(), type: envelope.type, message: `${role ?? payload.agentId ?? "agent"} ${envelope.type === "run.heartbeat" ? `running (${Math.round((payload.elapsedMs ?? 0) / 1000)}s)` : "started"}`, occurredAt: new Date().toISOString(), ...(role ? { role } : {}), ...(payload.agentId ? { agentId: payload.agentId } : {}), ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(payload.elapsedMs !== undefined ? { elapsedMs: payload.elapsedMs } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     return;
   }
-  if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed") return;
+  if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed" && envelope.type !== "task.gated") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
   dispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId);
@@ -896,6 +898,26 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     leadRole: policy.leadRole,
     ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
   });
+  if (envelope.type === "task.gated") {
+    // A Human gate interrupted this execution. The task did not fail: return
+    // it to assigned, close out its current delivery, and let activation
+    // reconciliation re-drive it after the Human resumes.
+    const task = durableTask;
+    const reason = payload.error?.trim() || "execution held by a Human gate";
+    if (task && !["done", "failed", "cancelled"].includes(task.status)) {
+      task.status = "assigned";
+      task.updatedAt = new Date().toISOString();
+      await persistTask(task);
+      for (const message of workstream.messages) {
+        if (message.taskId !== task.id || !["pending", "delivered"].includes(message.deliveryStatus) || !message.recipientIds.includes(sender.id)) continue;
+        const aggregateStatus = await messageRepository.updateDelivery(message.id, sender.id, "acknowledged");
+        if (aggregateStatus) message.deliveryStatus = aggregateStatus;
+      }
+    }
+    await setAgentStatus(sender, "idle");
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.gated", message: `${task?.title ?? sender.role} → ${reason}; task stays dispatchable and will be re-driven after resume`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    return;
+  }
   if (envelope.type === "task.failed") {
     const task = durableTask;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
