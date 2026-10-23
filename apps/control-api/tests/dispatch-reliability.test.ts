@@ -58,6 +58,51 @@ describe("TriggerDispatchWatchdog", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps independent timers for parallel dispatches in one workstream", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = vi.fn();
+      const second = vi.fn();
+      const watchdog = new TriggerDispatchWatchdog(180_000);
+      watchdog.arm("workstream-1", "correlation-1", first);
+      watchdog.arm("workstream-1", "correlation-2", second);
+
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(first).toHaveBeenCalledOnce();
+      expect(second).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clearing one correlation leaves the workstream's other timers armed, and clear drops them all", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = vi.fn();
+      const second = vi.fn();
+      const other = vi.fn();
+      const watchdog = new TriggerDispatchWatchdog(180_000);
+      watchdog.arm("workstream-1", "correlation-1", first);
+      watchdog.arm("workstream-1", "correlation-2", second);
+      watchdog.arm("workstream-2", "correlation-1", other);
+
+      expect(watchdog.clearForCorrelation("workstream-1", "correlation-1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledOnce();
+      expect(other).toHaveBeenCalledOnce();
+
+      watchdog.arm("workstream-1", "correlation-3", first);
+      watchdog.arm("workstream-1", "correlation-4", second);
+      expect(watchdog.clear("workstream-1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("durable task dispatch recovery", () => {

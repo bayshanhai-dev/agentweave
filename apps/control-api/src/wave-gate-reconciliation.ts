@@ -1,6 +1,7 @@
+import { durableTaskDeliveryStaleMs } from "./dispatch-reliability.js";
 import { isFinalValidationTask } from "./final-validation.js";
 
-type ReconciliationAgent = { id: string; role: string };
+type ReconciliationAgent = { id: string; role: string; status?: string };
 type ReconciliationTask = {
   id: string;
   title: string;
@@ -17,6 +18,7 @@ type ReconciliationMessage = {
   messageType: string;
   taskId?: string;
   deliveryStatus: string;
+  createdAt?: string;
 };
 type ReconciliationWorkstream = {
   id: string;
@@ -42,6 +44,15 @@ type DispatchReconciliationDependencies = {
     causationId?: string;
   }) => Promise<{ deliveryStatus?: string }>;
   emit: (type: string, message: string, role?: string) => void;
+  /**
+   * Marks a lost handoff's deliveries failed so the task can be dispatched
+   * again. Optional: without it, stale deliveries are left untouched.
+   */
+  closeStaleDelivery?: (message: ReconciliationMessage) => Promise<boolean>;
+  /** Injectable clock for staleness checks; defaults to Date.now. */
+  now?: () => number;
+  /** Staleness threshold override; defaults to durableTaskDeliveryStaleMs. */
+  staleDeliveryMs?: number;
 };
 type ReconciliationDependencies = DispatchReconciliationDependencies & {
   acknowledgeGateMessage: (message: ReconciliationMessage) => Promise<boolean>;
@@ -82,13 +93,14 @@ export async function reconcileDispatchableTasks(
       .filter((task) => terminalTaskStatuses.has(task.status))
       .map((task) => task.id),
   );
-  const tasksWithOpenDeliveries = new Set(
-    workstream.messages.flatMap((message) =>
-      message.taskId && openDeliveryStatuses.has(message.deliveryStatus)
-        ? [message.taskId]
-        : [],
-    ),
-  );
+  const openDeliveriesByTask = new Map<string, ReconciliationMessage[]>();
+  for (const message of workstream.messages) {
+    if (!message.taskId || !openDeliveryStatuses.has(message.deliveryStatus))
+      continue;
+    const existing = openDeliveriesByTask.get(message.taskId);
+    if (existing) existing.push(message);
+    else openDeliveriesByTask.set(message.taskId, [message]);
+  }
   const lead = workstream.agents.find(
     (agent) => agent.role === policy.leadRole,
   );
@@ -98,7 +110,6 @@ export async function reconcileDispatchableTasks(
     if (
       task.status !== "assigned" ||
       !task.ownerAgentId ||
-      tasksWithOpenDeliveries.has(task.id) ||
       !task.dependencies.every((dependency) =>
         terminalTaskIds.has(dependency),
       ) ||
@@ -119,6 +130,37 @@ export async function reconcileDispatchableTasks(
       (agent) => agent.id === task.ownerAgentId,
     );
     if (!owner) continue;
+    const openDeliveries = openDeliveriesByTask.get(task.id) ?? [];
+    if (openDeliveries.length > 0) {
+      // A delivery exists. It is only safe to replace when it is provably
+      // lost: every open handoff is older than the staleness threshold (the
+      // watchdog cycle plus a re-drive window passed), the owning Agent is
+      // idle (not merely busy with an earlier task in its queue), and no
+      // execution claim exists (checked above). Anything else means the
+      // handoff may still be picked up, so leave it alone.
+      if (!dependencies.closeStaleDelivery) continue;
+      const now = dependencies.now?.() ?? Date.now();
+      const staleMs = dependencies.staleDeliveryMs ?? durableTaskDeliveryStaleMs;
+      const newestDeliveryAt = Math.max(
+        ...openDeliveries.map((message) => Date.parse(message.createdAt ?? "")),
+      );
+      if (!Number.isFinite(newestDeliveryAt) || now - newestDeliveryAt < staleMs)
+        continue;
+      if (owner.status && owner.status !== "idle") continue;
+      let closedAll = true;
+      for (const message of openDeliveries) {
+        if (!(await dependencies.closeStaleDelivery(message))) {
+          closedAll = false;
+          break;
+        }
+      }
+      if (!closedAll) continue;
+      dependencies.emit(
+        "message.dispatch_reconciled",
+        `Stale handoff for task ${task.id} closed; dispatching a fresh handoff`,
+        owner.role,
+      );
+    }
     const dispatched = await dependencies.dispatchTask({
       senderId: task.createdByAgentId ?? lead?.id ?? "human",
       recipientId: owner.id,
@@ -127,7 +169,6 @@ export async function reconcileDispatchableTasks(
       ...(causationId ? { causationId } : {}),
     });
     if (dispatched.deliveryStatus !== "delivered") continue;
-    tasksWithOpenDeliveries.add(task.id);
     dispatchedTaskIds.push(task.id);
     dependencies.emit(
       "message.dispatch_reconciled",

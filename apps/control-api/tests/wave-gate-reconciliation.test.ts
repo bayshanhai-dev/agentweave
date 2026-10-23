@@ -263,6 +263,153 @@ describe("wave gate activation reconciliation", () => {
   });
 });
 
+function staleHandoffFixture(
+  options: { deliveryAgeMs?: number; ownerStatus?: string; claimed?: boolean } = {},
+) {
+  const now = 1_800_000_000_000;
+  const agents = [
+    { id: "pm-1", role: "pm" },
+    { id: "backend-1", role: "backend", status: options.ownerStatus ?? "idle" },
+  ];
+  const task = {
+    id: "task-stale",
+    title: "Implement the thing",
+    status: "assigned",
+    ownerAgentId: "backend-1",
+    createdByAgentId: "pm-1",
+    acceptanceCriteria: ["It works"],
+    dependencies: [] as string[],
+  };
+  const staleMessage = {
+    id: "request-stale",
+    senderId: "pm-1",
+    recipientIds: ["backend-1"],
+    messageType: "request",
+    taskId: task.id,
+    deliveryStatus: "delivered",
+    createdAt: new Date(now - (options.deliveryAgeMs ?? 600_000)).toISOString(),
+  };
+  const workstream = {
+    id: "ws-stale",
+    status: "active",
+    agents,
+    tasks: [task],
+    messages: [staleMessage] as Array<Record<string, unknown>>,
+  };
+  const closeStaleDelivery = vi.fn(
+    async (message: { deliveryStatus: string }) => {
+      message.deliveryStatus = "failed";
+      return true;
+    },
+  );
+  const dispatchTask = vi.fn(
+    async (input: {
+      senderId: string;
+      recipientId: string;
+      content: string;
+      taskId: string;
+      causationId?: string;
+    }) => {
+      workstream.messages.push({
+        id: `request-fresh-${input.taskId}`,
+        senderId: input.senderId,
+        recipientIds: [input.recipientId],
+        messageType: "request",
+        taskId: input.taskId,
+        deliveryStatus: "delivered",
+        createdAt: new Date(now).toISOString(),
+      });
+      return { deliveryStatus: "delivered" };
+    },
+  );
+  return {
+    workstream,
+    task,
+    staleMessage,
+    dependencies: {
+      hasExecutionClaim: vi.fn(async () => options.claimed ?? false),
+      dispatchTask,
+      emit: vi.fn(),
+      closeStaleDelivery,
+      now: () => now,
+    },
+  };
+}
+
+describe("stale handoff recovery", () => {
+  it("closes a stale handoff and re-dispatches when the owner is idle and unclaimed", async () => {
+    const fixture = staleHandoffFixture();
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream as never,
+      policy,
+      fixture.dependencies as never,
+    );
+
+    expect(dispatched).toEqual([fixture.task.id]);
+    expect(fixture.dependencies.closeStaleDelivery).toHaveBeenCalledOnce();
+    expect(fixture.staleMessage.deliveryStatus).toBe("failed");
+    expect(fixture.dependencies.dispatchTask).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a stale handoff alone while the owner agent is busy", async () => {
+    const fixture = staleHandoffFixture({ ownerStatus: "running" });
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream as never,
+      policy,
+      fixture.dependencies as never,
+    );
+
+    expect(dispatched).toEqual([]);
+    expect(fixture.dependencies.closeStaleDelivery).not.toHaveBeenCalled();
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+  });
+
+  it("leaves a fresh handoff alone even when the owner is idle", async () => {
+    const fixture = staleHandoffFixture({ deliveryAgeMs: 60_000 });
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream as never,
+      policy,
+      fixture.dependencies as never,
+    );
+
+    expect(dispatched).toEqual([]);
+    expect(fixture.dependencies.closeStaleDelivery).not.toHaveBeenCalled();
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+  });
+
+  it("leaves a stale handoff alone when a worker claim already exists", async () => {
+    const fixture = staleHandoffFixture({ claimed: true });
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream as never,
+      policy,
+      fixture.dependencies as never,
+    );
+
+    expect(dispatched).toEqual([]);
+    expect(fixture.dependencies.closeStaleDelivery).not.toHaveBeenCalled();
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+  });
+
+  it("does not re-drive without a closeStaleDelivery dependency", async () => {
+    const fixture = staleHandoffFixture();
+    const { closeStaleDelivery: _omitted, ...dependencies } = fixture.dependencies;
+
+    const dispatched = await reconcileDispatchableTasks(
+      fixture.workstream as never,
+      policy,
+      dependencies as never,
+    );
+
+    expect(dispatched).toEqual([]);
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+    expect(fixture.staleMessage.deliveryStatus).toBe("delivered");
+  });
+});
+
 describe("terminal task dispatch reconciliation", () => {
   it("dispatches appended final validation after the last implementation task completes", async () => {
     const fixture = finalValidationFixture();

@@ -423,7 +423,11 @@ app.get("/events", { websocket: true }, async (socket, request) => {
 });
 
 function emit(workstream: Workstream, type: string, message: string, role?: Role): void {
-  if (["workstream.completed", "workstream.emergency_stopped", "workstream.archived", "workstream.waiting_for_human", "orchestration.decomposition_failed"].includes(type)) {
+  // waiting_for_human deliberately does not clear dispatch watchdogs: a gate
+  // holds handoffs legitimately, and the watchdog callbacks defer (and
+  // re-arm) until the Workstream is active again. Clearing here would strip
+  // timeout protection from every handoff created before the gate.
+  if (["workstream.completed", "workstream.emergency_stopped", "workstream.archived", "orchestration.decomposition_failed"].includes(type)) {
     dispatchWatchdog.clear(workstream.id);
   }
   const event: WorkflowEvent = { id: randomUUID(), type, message, occurredAt: new Date().toISOString(), ...(role ? { role } : {}) };
@@ -529,8 +533,14 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
 }
 
 function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Message, recipientId: string, lead: Agent | undefined): void {
-  if (lead && armTriggerWatchdogForDispatch(dispatchWatchdog, workstream.id, message.correlationId, message.content, recipientId, lead.id, async () => {
-      if (shouldDeferDispatchTimeout(workstream.status)) return;
+  if (lead) {
+    const onTriggerWatchdogExpired = async (): Promise<void> => {
+      if (shouldDeferDispatchTimeout(workstream.status)) {
+        // A gate defers the decision; re-arm instead of consuming the
+        // one-shot timer, so protection resumes when the gate releases.
+        dispatchWatchdog.arm(workstream.id, message.correlationId, onTriggerWatchdogExpired);
+        return;
+      }
       try {
         app.log.error({ workstreamId: workstream.id, recipientId: lead.id, messageId: message.id, correlationId: message.correlationId }, "implementation trigger dispatch timed out");
         await setAgentStatus(lead, "idle");
@@ -538,10 +548,17 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
       } catch (error) {
         app.log.error({ error, workstreamId: workstream.id, recipientId: lead.id, messageId: message.id }, "implementation trigger recovery failed");
       }
-    })) return;
+    };
+    if (armTriggerWatchdogForDispatch(dispatchWatchdog, workstream.id, message.correlationId, message.content, recipientId, lead.id, onTriggerWatchdogExpired)) return;
+  }
   if (!shouldArmDurableTaskWatchdog(message.taskId, message.content, recipientId)) return;
-  dispatchWatchdog.arm(workstream.id, message.correlationId, async () => {
-    if (shouldDeferDispatchTimeout(workstream.status)) return;
+  const onDurableWatchdogExpired = async (): Promise<void> => {
+    if (shouldDeferDispatchTimeout(workstream.status)) {
+      // A gate defers the decision; re-arm instead of consuming the
+      // one-shot timer, so protection resumes when the gate releases.
+      dispatchWatchdog.arm(workstream.id, message.correlationId, onDurableWatchdogExpired);
+      return;
+    }
     const task = workstream.tasks.find((candidate) => candidate.id === message.taskId);
     const priorHandoff = message.causationId
       ? workstream.messages.find((candidate) => candidate.id === message.causationId && candidate.taskId === message.taskId)
@@ -577,7 +594,8 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
       return;
     }
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "message.dispatch_redriven", message: `Durable task handoff re-driven with fresh correlation ${redrive.correlationId}`, occurredAt: new Date().toISOString(), taskId: task.id, correlationId: redrive.correlationId, ...(recipient?.role ? { role: recipient.role } : {}), ...(recipient?.id ? { agentId: recipient.id } : {}) });
-  });
+  };
+  dispatchWatchdog.arm(workstream.id, message.correlationId, onDurableWatchdogExpired);
 }
 
 function emitMessage(workstream: Workstream, type: string, message: Message): void {
@@ -645,6 +663,14 @@ function dispatchReconciliationDependencies(workstream: Workstream) {
         ...(causationId ? { causationId } : {}),
       }),
     emit: (type: string, message: string, role?: string) => emit(workstream, type, message, role),
+    closeStaleDelivery: async (message: { id: string; recipientIds: string[]; deliveryStatus: string }) => {
+      for (const recipientId of message.recipientIds) {
+        const aggregate = await messageRepository.updateDelivery(message.id, recipientId, "failed");
+        if (!aggregate) return false;
+        message.deliveryStatus = aggregate;
+      }
+      return message.deliveryStatus === "failed";
+    },
   };
 }
 
@@ -759,6 +785,18 @@ await eventBus.consumer(subjects.events, async (message) => {
   return "ack";
 });
 setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000);
+// Periodic dispatch reconciliation: event-driven reconciliation only runs
+// when something else happens, so a lost handoff in an otherwise quiet
+// Workstream would never be retried. The sweep re-drives stale, unclaimed
+// handoffs (and dispatches newly dependency-ready tasks) every minute.
+setInterval(() => {
+  for (const workstream of workstreams.values()) {
+    if (workstream.status !== "active") continue;
+    void reconcileTaskDispatches(workstream).catch((error) => {
+      app.log.error({ error, workstreamId: workstream.id }, "dispatch reconciliation sweep failed");
+    });
+  }
+}, 60_000).unref();
 
 async function startOrchestration(workstream: Workstream): Promise<void> {
   const policy = orchestrationPolicyFor(workstream);
