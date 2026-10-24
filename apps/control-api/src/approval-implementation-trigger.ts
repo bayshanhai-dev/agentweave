@@ -5,8 +5,67 @@ export const implementationTriggerMarker = "[agentweave implementation-trigger]"
 export const implementationTriggerInstructionSeparator =
   "\n\nDecompose this into concrete implementation tasks.";
 
-export const implementationTriggerInstruction = (_workstreamId: string): string =>
-  "Decompose this into concrete implementation tasks and return ONLY one JSON object, with no markdown fences or prose. The object must contain schemaVersion set to 1, a summary string, empty insights and messages arrays, and a tasks array. Each task must contain an id, a non-empty title, an ownerRole that is one of backend, frontend, pe, qa, or devops, and acceptanceCriteria as an array of strings. Provide between 1 and 12 real implementation tasks; the platform appends a final full-suite validation task automatically. The platform creates and assigns the tasks from this structured reply automatically. Do NOT call any API or URL, do NOT use tools to submit decisions, and do not write the code yourself — delegate to the execution roles.";
+const defaultOwnerRoles = ["backend", "frontend", "pe", "qa", "devops"];
+
+const humanizeKey = (key: string): string =>
+  key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+
+function renderStructuredValue(value: unknown, depth = 0): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value !== "object") return String(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => `${"  ".repeat(depth)}- ${renderStructuredValue(item, depth + 1)}`).join("\n");
+  }
+  return Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => {
+      const rendered = renderStructuredValue(item, depth + 1);
+      if (!rendered) return "";
+      return typeof item === "object" && item !== null
+        ? `${humanizeKey(key)}:\n${rendered}`
+        : `${humanizeKey(key)}: ${rendered}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Render JSON-shaped synthesis content for a model without centering a raw document dump. */
+export function renderImplementationSynthesis(content: unknown): string {
+  let value = content;
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    if (!trimmed) return "No collaboration synthesis was available.";
+    try { value = JSON.parse(trimmed) as unknown; } catch { return trimmed.slice(0, 2000); }
+  }
+  return (renderStructuredValue(value).trim() || "No collaboration synthesis was available.").slice(0, 2000);
+}
+
+export function implementationTriggerInstruction(
+  goal: string,
+  synthesisContent: unknown,
+  ownerRoles: readonly string[] = defaultOwnerRoles,
+): string {
+  const roles = [...new Set(ownerRoles)].join(", ");
+  return `WORKSTREAM GOAL (verbatim):\n${goal}\n\nThe tasks must directly produce the deliverables required by this goal. The collaboration synthesis is guidance and constraints, not itself a deliverable. Meta-tasks that create, rewrite, verify, test, or validate the synthesis document are forbidden.\n\nCollaboration synthesis (guidance only):\n${renderImplementationSynthesis(synthesisContent)}${implementationTriggerInstructionSeparator} and return ONLY one JSON object, with no markdown fences or prose. The object must contain schemaVersion set to 1, a summary string, empty insights and messages arrays, and a tasks array. Each task must contain an id, a non-empty title, an ownerRole that is one of ${roles}, and acceptanceCriteria as an array of strings. Provide between 1 and 12 real implementation tasks; the platform appends a final full-suite validation task automatically. The platform creates and assigns the tasks from this structured reply automatically. Do NOT call any API or URL, do NOT use tools to submit decisions, and do not perform the implementation yourself — delegate it to the available execution roles.`;
+}
+
+export function implementationTriggerContent(
+  goal: string,
+  synthesisContent: unknown,
+  ownerRoles?: readonly string[],
+): string {
+  return `${implementationTriggerMarker}\n${implementationTriggerInstruction(goal, synthesisContent, ownerRoles)}`;
+}
+
+function synthesisFromTrigger(content: string, separatorIndex: number): string {
+  const prefix = content.slice(0, separatorIndex);
+  const guidanceHeading = "Collaboration synthesis (guidance only):";
+  const legacyHeading = "Here is the agreed synthesis:";
+  const heading = prefix.includes(guidanceHeading) ? guidanceHeading : legacyHeading;
+  const headingIndex = prefix.indexOf(heading);
+  return (headingIndex === -1 ? prefix : prefix.slice(headingIndex + heading.length))
+    .replace(implementationTriggerMarker, "")
+    .trim();
+}
 
 export function shouldDispatchMessage(senderId: string, content: string): boolean {
   return senderId === "human" || !content.includes(implementationTriggerMarker);
@@ -61,6 +120,8 @@ type TriggerMessage = {
 
 type ApprovalWorkstream = {
   id: string;
+  goal: string;
+  agents: Array<{ role: string }>;
   tasks: Array<{ title: string }>;
   messages: TriggerMessage[];
   events: Array<{ type: string; occurredAt: string }>;
@@ -115,10 +176,10 @@ export async function republishImplementationTriggerAfterResume(
   const content =
     separatorIndex === -1
       ? latestTrigger.content
-      : latestTrigger.content.slice(0, separatorIndex) +
-        implementationTriggerInstructionSeparator +
-        implementationTriggerInstruction(workstream.id).slice(
-          "Decompose this into concrete implementation tasks.".length,
+      : implementationTriggerContent(
+          workstream.goal,
+          synthesisFromTrigger(latestTrigger.content, separatorIndex),
+          workstream.agents.map((agent) => agent.role),
         );
 
   const created = await dependencies.createMessage(

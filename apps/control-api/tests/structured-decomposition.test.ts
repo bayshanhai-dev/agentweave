@@ -52,6 +52,15 @@ describe("structured decomposition task extraction", () => {
     ]))).toThrow(InvalidStructuredTurn);
   });
 
+  it("accepts template-defined owner and review roles", () => {
+    expect(extractStructuredTaskSpecs(result([
+      { id: "produce", title: "Produce the episode", ownerRole: "producer", acceptanceCriteria: [] },
+    ]), new Set(["showrunner", "producer", "editor"]), "editor")).toEqual([
+      { title: "Produce the episode", ownerRole: "producer", acceptanceCriteria: [] },
+      expect.objectContaining({ ownerRole: "editor", dependsOnAllPrevious: true }),
+    ]);
+  });
+
   it("rejects a placeholder title", () => {
     expect(() => extractStructuredTaskSpecs(result([
       { id: "placeholder", title: " TASK TITLE ", ownerRole: "qa", acceptanceCriteria: [] },

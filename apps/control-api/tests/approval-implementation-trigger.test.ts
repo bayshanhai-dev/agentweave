@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  implementationTriggerContent,
   implementationTriggerInstructionSeparator,
   implementationTriggerMarker,
   implementationTriggerExists,
@@ -29,6 +30,8 @@ function fixture(
 ) {
   const workstream = {
     id: "ws-1",
+    goal: "Ship the requested customer-facing deliverable",
+    agents: [{ role: "showrunner" }, { role: "producer" }, { role: "reviewer" }],
     tasks,
     events: [] as Array<{ type: string; occurredAt: string }>,
     messages: [
@@ -128,6 +131,30 @@ describe("approval implementation trigger recovery", () => {
     expect(await republishImplementationTriggerAfterResume(workstream, dependencies)).toBe(false);
     expect(createMessage).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe("implementation trigger instruction", () => {
+  it("leads with the verbatim goal and forbids synthesis-document meta-work", () => {
+    const goal = "Produce launch assets for the October campaign — preserve this wording.";
+    const content = implementationTriggerContent(goal, "Use the approved audience and tone.", ["showrunner", "producer", "reviewer"]);
+
+    expect(content.indexOf(goal)).toBeLessThan(content.indexOf("Collaboration synthesis"));
+    expect(content).toContain("must directly produce the deliverables required by this goal");
+    expect(content).toContain("not itself a deliverable");
+    expect(content).toContain("Meta-tasks that create, rewrite, verify, test, or validate the synthesis document are forbidden");
+    expect(content).toContain("ownerRole that is one of showrunner, producer, reviewer");
+  });
+
+  it("renders structured synthesis content as readable guidance rather than raw JSON", () => {
+    const content = implementationTriggerContent("Deliver the launch package", {
+      conclusion: "Lead with reliability",
+      constraints: ["Keep it concise", "Use approved claims"],
+    });
+
+    expect(content).toContain("Conclusion: Lead with reliability");
+    expect(content).toContain("Constraints:\n  - Keep it concise\n  - Use approved claims");
+    expect(content).not.toContain('"conclusion"');
   });
 });
 

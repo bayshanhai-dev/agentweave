@@ -16,13 +16,13 @@ export function isFinalValidationTask(task: { title: string }): boolean {
 }
 
 /** Ensure decomposition ends with one validation task that cannot run before the implementation tasks. */
-export function withFinalValidationTask(specs: TaskSpec[]): TaskSpec[] {
+export function withFinalValidationTask(specs: TaskSpec[], reviewRole = "qa"): TaskSpec[] {
   const existing = specs.find(isFinalValidationTask);
   const implementation = specs.filter((spec) => spec !== existing);
   const validation: TaskSpec = {
     ...(existing ?? {}),
     title: existing?.title ?? finalValidationTaskTitle,
-    ownerRole: "qa",
+    ownerRole: reviewRole,
     acceptanceCriteria: [
       ...new Set([
         ...(existing?.acceptanceCriteria ?? []),

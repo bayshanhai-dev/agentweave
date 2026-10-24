@@ -50,10 +50,14 @@ export function parseStructuredTurn(value: unknown): AgentTurnResult {
   return parsed.data;
 }
 
-const decompositionRoles = new Set(["backend", "frontend", "pe", "qa", "devops"]);
+const defaultDecompositionRoles = new Set(["backend", "frontend", "pe", "qa", "devops"]);
 
 /** Validate an implementation trigger's tasks atomically before any are persisted. */
-export function extractStructuredTaskSpecs(result: AgentTurnResult): TaskSpec[] {
+export function extractStructuredTaskSpecs(
+  result: AgentTurnResult,
+  allowedOwnerRoles: ReadonlySet<string> = defaultDecompositionRoles,
+  reviewRole = "qa",
+): TaskSpec[] {
   if (result.tasks.length < 1 || result.tasks.length > 12)
     throw new InvalidStructuredTurn("Decomposition must contain between 1 and 12 tasks");
 
@@ -61,7 +65,7 @@ export function extractStructuredTaskSpecs(result: AgentTurnResult): TaskSpec[] 
     const title = task.title.trim();
     if (!title || title.toLowerCase() === "task title")
       throw new InvalidStructuredTurn("Decomposition task title is invalid");
-    if (!decompositionRoles.has(task.ownerRole))
+    if (!allowedOwnerRoles.has(task.ownerRole))
       throw new InvalidStructuredTurn(`Invalid decomposition owner role: ${task.ownerRole}`);
     return {
       title,
@@ -69,7 +73,7 @@ export function extractStructuredTaskSpecs(result: AgentTurnResult): TaskSpec[] 
       acceptanceCriteria: task.acceptanceCriteria ?? [],
     };
   });
-  return withFinalValidationTask(specs);
+  return withFinalValidationTask(specs, reviewRole);
 }
 
 // Existing adapters may wrap legacy text in a summary-only result.

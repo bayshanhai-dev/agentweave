@@ -24,8 +24,7 @@ import { extractStructuredTaskSpecs, hasStructuredActions, InvalidStructuredTurn
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
 import {
-  implementationTriggerInstruction,
-  implementationTriggerInstructionSeparator,
+  implementationTriggerContent,
   implementationTriggerMarker,
   implementationTriggerExists,
   isImplementationTriggerResult,
@@ -860,13 +859,14 @@ async function recoverDecomposition(
     if (!triggerContent) {
       const insights = await insightRepository.listInsights(workstream.id);
       const synthesis = [...insights].reverse().find((candidate) => candidate.kind === "synthesis") ?? insights.at(-1);
-      const synthesisText = synthesis?.content.slice(0, 2000) ?? "No collaboration synthesis was available.";
-      const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
-        "Decompose this into concrete implementation tasks.".length,
+      triggerContent = implementationTriggerContent(
+        workstream.goal,
+        synthesis?.content,
+        workstream.agents.map((agent) => agent.role),
       );
-      triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
     }
-    const prefix = "Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from backend, frontend, pe, qa, or devops, and acceptanceCriteria as an array of strings. The platform appends final full-suite validation automatically. Do not write code yourself; delegate the work, and do not call any API.";
+    const ownerRoles = workstream.agents.map((agent) => agent.role).join(", ");
+    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, and acceptanceCriteria as an array of strings. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
@@ -993,7 +993,11 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (triggerDecomposition) {
     try {
       const result = parseStructuredTurn(payload.structuredResult);
-      triggerSpecs = extractStructuredTaskSpecs(result);
+      triggerSpecs = extractStructuredTaskSpecs(
+        result,
+        new Set(workstream.agents.map((agent) => agent.role)),
+        policy.reviewRole,
+      );
       triggerSummary = result.summary.trim();
     } catch (error) {
       const reason = error instanceof InvalidStructuredTurn ? error.message : String(error);
@@ -1074,12 +1078,12 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
                 if (implementationTriggerExists({ messages: workstream.messages, tasks: workstream.tasks, leadAgentId: lead.id })) {
                   emit(workstream, "orchestration.implementation_trigger_exists", "PM implementation trigger already exists", "human");
                 } else {
-                  const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
-                  const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
-                    "Decompose this into concrete implementation tasks.".length,
-                  );
                   const trigger = await createMessage(workstream, "human", [lead.id],
-                    `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`,
+                    implementationTriggerContent(
+                      workstream.goal,
+                      synthesis.content,
+                      workstream.agents.map((agent) => agent.role),
+                    ),
                     "directive", {});
                   if (trigger.deliveryStatus === "delivered") {
                     emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");
