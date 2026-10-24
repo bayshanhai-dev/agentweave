@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "fixtureVersion": 2,
+  "page": "docs/index.html",
+  "product": {"name":"AgentWeave","canonicalRepository":"https://github.com/bayshanhai-dev/agentweave","status":"Developer preview","license":"Apache 2.0"},
+  "languages": ["en", "zh-Hans"],
+  "localization": {"defaultLocale":"en","contentKeyAttribute":"data-i18n","ariaKeyAttribute":"data-i18n-aria-label","metadataKeys":["meta.title","meta.description"],"dynamicKeys":["nav.close"]},
+  "requiredSections": ["main", "why", "how", "runtime", "install"],
+  "requiredCopy": [
+    "AI agents that work like a real team",
+    "Agents propose, debate, and ship together while a human sets the goal, approves at gates, and judges the result.",
+    "像真正团队一样协作的 AI 智能体",
+    "智能体共同提出方案、展开辩论并完成交付；人类设定目标、在关键节点审批，并评判最终结果。",
+    "Developer preview"
+  ],
+  "requiredLinks": ["https://github.com/bayshanhai-dev/agentweave"],
+  "collaborationStages": ["Independent proposals", "Critique", "Synthesis", "Task decomposition", "Parallel execution", "QA validation", "Human approval"],
+  "runtimeFeatures": [
+    {"title":"Collaboration rounds","description":"Agents develop independent proposals, critique one another, and synthesize a stronger shared direction."},
+    {"title":"Structured decisions","description":"The control plane validates structured decisions before work moves forward."},
+    {"title":"Durable team state","description":"PostgreSQL stores durable state while NATS carries messages between collaborating agents."},
+    {"title":"Gates and mid-run steering","description":"Use the dashboard to approve gates or steer the team while a run is in progress."},
+    {"title":"Live per-agent token accounting","description":"Session Totals show live token accounting for each agent."},
+    {"title":"Provider-neutral adapters","description":"Use Codex today, with a deterministic mock for demos and CI."}
+  ],
+  "proofValues": ["1-sentence brief", "20 tasks completed", "51 automated tests passing", "770,485 tokens tracked per agent"],
+  "forbiddenClaims": ["observability", "provenance", "OpenTelemetry", "OTLP", "PROV-O", "decorators", "auto-instrumentation", "provider proxy", "session/run-42", "$0.014"],
+  "verifiedFacts": [
+    {"claim":"AgentWeave is an open-source runtime where multiple AI agents collaborate like a real team.","pageText":"AgentWeave is the open-source runtime where multiple AI agents collaborate like a real team.","source":"original product brief"},
+    {"claim":"The runtime uses PostgreSQL for durable state and NATS for messaging.","pageText":"PostgreSQL stores durable state while NATS carries messages between collaborating agents.","source":"original product brief"},
+    {"claim":"The project is in developer preview and licensed under Apache 2.0.","pageText":"Open source · Apache 2.0","source":"original product brief"}
+  ],
+  "constraints": {"selfContained":true,"thirdPartyRuntimeAssets":false,"singleH1":true,"skipLink":true,"minimumContrastTarget":"WCAG 2.2 AA"},
+  "deployment": {"provider":"GitHub Pages","artifactPath":"docs","workflow":".github/workflows/pages.yml"},
+  "lastVerified": "2026-10-23"
+}

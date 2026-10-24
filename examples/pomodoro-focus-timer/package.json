@@ -1,0 +1,16 @@
+{
+  "name": "pomodoro-timer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "dev": "python3 -m http.server 4173",
+    "start": "npm run dev",
+    "test": "node --test",
+    "build": "node scripts/build.mjs",
+    "build:check": "node scripts/verify-build.mjs",
+    "validate:docs": "node scripts/validate-docs.mjs",
+    "check": "npm test && npm run build:check && npm run validate:docs"
+  }
+}
