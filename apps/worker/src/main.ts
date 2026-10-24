@@ -1,5 +1,5 @@
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
-import { createProviderFromEnv } from "./providers/registry.js";
+import { createProviderRegistryFromEnv } from "./providers/registry.js";
 import type { ProviderRunEvent } from "./providers/types.js";
 import { AgentTaskExecutor } from "./runtime/execution.js";
 import { AgentRuntime } from "./runtime/agent-runtime.js";
@@ -10,10 +10,11 @@ import { inboxStatusGateDecision } from "./inbox-status-gate.js";
 import { ExecutionGatedError } from "./runtime/execution-control.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
-const provider = createProviderFromEnv();
+const providers = createProviderRegistryFromEnv();
+const provider = providers.get();
 const sessions = new PostgresAgentSessionRepository();
-const executor = new AgentTaskExecutor(provider, sessions, workerId, async (event) => {
-  if (currentEnvelope) await bus.publish(subjects.events.replace("*", currentEnvelope.workstreamId), { id: `${currentEnvelope.id}:${event.type}:${Date.now()}`, type: event.type, workstreamId: currentEnvelope.workstreamId, occurredAt: new Date().toISOString(), ...(currentEnvelope.correlationId ? { correlationId: currentEnvelope.correlationId } : {}), causationId: currentEnvelope.id, payload: event });
+const executor = new AgentTaskExecutor(providers, sessions, workerId, async (event) => {
+  if (event.workstreamId) await bus.publish(subjects.events.replace("*", event.workstreamId), { id: `${event.taskId}:${event.type}:${Date.now()}`, type: event.type, workstreamId: event.workstreamId, occurredAt: new Date().toISOString(), ...(event.correlationId ? { correlationId: event.correlationId } : {}), causationId: event.taskId, payload: event });
 });
 const runtimes = new Map<string, AgentRuntime>();
 const activeWorkstreams = new Set<string>();
@@ -21,8 +22,7 @@ const activeWorkstreams = new Set<string>();
 // Keep a process-local execution gate so a redelivery cannot start a second
 // provider turn for the same durable task while the first one is still live.
 const inFlightTasks = new Set<string>();
-let currentEnvelope: ReturnType<typeof bus.decode> | undefined;
-const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox-v2` });
+const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox-v2`, maxConcurrentHandlers: Number(process.env.WORKER_MAX_CONCURRENCY ?? 8) });
 
 const controlApiUrl = process.env.CONTROL_API_URL ?? "http://control-api:3000";
 async function registerWorker(): Promise<void> { const payload = JSON.stringify({ workerId, provider: provider.name, roles: (process.env.WORKER_ROLES ?? "").split(",").map((role) => role.trim()).filter(Boolean), capabilities: ["streaming", "checkpoint", "resume", "cancellation"] }); for (;;) { try { const response = await fetch(`${controlApiUrl}/api/runtime/workers/register`, { method: "POST", headers: { "content-type": "application/json" }, body: payload }); if (response.ok) return; } catch { /* Control Plane may still be starting. */ } await new Promise((resolve) => setTimeout(resolve, 1000)); } }
@@ -37,13 +37,12 @@ await bus.consumer(subjects.inbox, async (message) => {
     try {
       const envelope = bus.decode(message);
       console.log(JSON.stringify({ event: "worker.message.received", workerId, subject: message.subject, streamSequence: message.info.streamSequence, occurredAt: new Date().toISOString() }));
-      currentEnvelope = envelope;
       activeWorkstreams.add(envelope.workstreamId);
       const statusResponse = await fetch(`${controlApiUrl}/api/workstreams/${encodeURIComponent(envelope.workstreamId)}`).catch(() => undefined);
       if (!statusResponse?.ok) return "retry";
-      const workstream = await statusResponse.json() as { status?: string; workspaceRoot?: string; provider?: { model?: string } };
+      const workstream = await statusResponse.json() as { status?: string; workspaceRoot?: string };
       const status = workstream.status;
-      const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; model?: string; workspacePath?: string };
+      const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; provider?: string; model?: string; workspacePath?: string };
       const gateDecision = inboxStatusGateDecision(status, payload.content);
       if (gateDecision) return gateDecision;
       const targetFromSubject = message.subject.split(".")[2];
@@ -84,7 +83,7 @@ await bus.consumer(subjects.inbox, async (message) => {
         : payload.content;
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, autonomous: isProbe, occurredAt: new Date().toISOString() }));
       try {
-        await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt, ...(payload.model || workstream.provider?.model ? { model: payload.model ?? workstream.provider?.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
+        await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt, ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
         await executor.finishTask(executionKey, "completed");
       } catch (error) {
         await executor.finishTask(executionKey, "failed");
@@ -106,7 +105,7 @@ await bus.consumer(subjects.inbox, async (message) => {
       // and attempted the task, so terminate this delivery.
       console.error(JSON.stringify({ event: "worker.message.failed_terminal", workerId, subject: message.subject, error: String(error), occurredAt: new Date().toISOString() }));
       return "ack";
-      } finally { if (executionKeyForCleanup) inFlightTasks.delete(executionKeyForCleanup); currentEnvelope = undefined; }
+      } finally { if (executionKeyForCleanup) inFlightTasks.delete(executionKeyForCleanup); }
   });
 console.log(JSON.stringify({ event: "worker.inbox.ready", workerId, subject: subjects.inbox, durable: `${workerId}-inbox-v2`, occurredAt: new Date().toISOString() }));
 setInterval(() => { void heartbeat(); console.log(JSON.stringify({ event: "worker.heartbeat", workerId, subscription: subjects.inbox, provider: provider.name, occurredAt: new Date().toISOString() })); }, 15_000);

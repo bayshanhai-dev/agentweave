@@ -10,7 +10,8 @@ export type PersistedWorkstream = {
   goal: string;
   flavor: string;
   status: string;
-  provider: { tool: string; model: string };
+  provider: ProviderSelection;
+  roleProviders: RoleProviders;
   workspaceRoot: string;
   agents: PersistedAgent[];
 };
@@ -65,3 +66,4 @@ export type PersistedWorkflowEvent = {
   usage?: unknown;
   occurredAt: string;
 };
+import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";

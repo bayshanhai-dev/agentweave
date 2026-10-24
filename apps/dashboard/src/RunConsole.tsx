@@ -17,7 +17,7 @@ export type RunEvent = {
 
 type Props = {
   status: string;
-  provider: { tool: string; model: string };
+  provider: { tool?: string; model?: string };
   events: RunEvent[];
 };
 
@@ -83,7 +83,7 @@ export function RunConsole({ status, provider, events }: Props) {
       <SimpleGrid cols={{ base: 2, sm: 5 }} mt="lg">
         <div><Text size="xs" c="dimmed">ACTIVE AGENT</Text><Text fw={800} mt={3}>{roleLabels[run.role ?? ""] ?? run.role ?? "—"}</Text></div>
         <div><Text size="xs" c="dimmed">PHASE</Text><Text fw={800} mt={3}>{run.phase}</Text></div>
-        <div><Text size="xs" c="dimmed">PROVIDER</Text><Text fw={800} mt={3}>{provider.tool} · {providerModelLabel(provider.model)}</Text></div>
+        <div><Text size="xs" c="dimmed">PROVIDER</Text><Text fw={800} mt={3}>{run.latest?.provider ?? provider.tool ?? "Worker default"}{run.latest?.model ?? provider.model ? ` · ${providerModelLabel((run.latest?.model ?? provider.model)!)}` : ""}</Text></div>
         <div><Text size="xs" c="dimmed">LAST SIGNAL</Text><Text fw={800} mt={3}>{lastOutput}</Text></div>
         <div><Text size="xs" c="dimmed">USAGE</Text><Text fw={800} mt={3}>{run.usage?.totalTokens !== undefined ? `${run.usage.totalTokens.toLocaleString()} tokens` : "Unknown"}</Text><Text size="xs" c="dimmed">{run.usage?.costUsd !== undefined ? `$${run.usage.costUsd.toFixed(4)}` : "Provider did not report cost"}</Text></div>
       </SimpleGrid>

@@ -74,13 +74,16 @@ type Event = {
   recipientIds?: string[];
   messageType?: string;
   correlationId?: string;
+  provider?: string;
+  model?: string;
+  usage?: { source?: string; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
   role?: string;
   from?: string;
   to?: string;
   occurredAt?: string;
   createdAt?: string;
 };
-type Agent = { id: string; role: string; authority: string; status: string };
+type Agent = { id: string; role: string; authority: string; status: string; provider?: string; model?: string };
 type RuntimeAgent = { agentId: string; role: string; status: string; activity: string; waitingReason?: string; providerState: "healthy" | "degraded" | "unavailable"; lastSignalAt?: string; stale: boolean; latencyMs?: number; usage: { source: string; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } };
 type Workstream = {
   id: string;
@@ -88,7 +91,8 @@ type Workstream = {
   flavor: string;
   status: string;
   createdAt?: string;
-  provider: { tool: string; model: string };
+  provider: { tool?: string; model?: string };
+  roleProviders?: Record<string, { tool?: string; model?: string }>;
   workspaceRoot: string;
   agents: Agent[];
   tasks: Task[];
@@ -186,6 +190,11 @@ function MessageList({
                 <Text size="sm" mt={3}>
                   {event.message ?? event.content ?? "(empty message)"}
                 </Text>
+                {event.provider && (
+                  <Badge size="xs" variant="light" mt={5}>
+                    {event.provider}{event.model ? ` · ${providerModelLabel(event.model)}` : ""}
+                  </Badge>
+                )}
               </Box>
               <Text size="xs" c="dimmed" title={timestamp ?? undefined}>
                 {Number.isNaN(millis)
@@ -502,7 +511,7 @@ function App() {
             <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
               New Workstream
             </Button>
-            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : `${selected?.provider.tool} · ${selected ? providerModelLabel(selected.provider.model) : "—"}`}</Text>}
+            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : selected?.provider.tool ? `${selected.provider.tool}${selected.provider.model ? ` · ${providerModelLabel(selected.provider.model)}` : ""}` : "Worker default"}</Text>}
             <Tooltip
               label={colorScheme === "dark" ? "Light mode" : "Dark mode"}
             >

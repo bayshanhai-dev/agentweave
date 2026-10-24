@@ -2,8 +2,9 @@ import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from "@mantine/cor
 import { useEffect, useState } from "react";
 import { tokenUsage } from "./agentUsage";
 import { TokenDonutChart } from "./TokenDonutChart";
+import { providerModelLabel } from "./providerDisplay";
 
-type Agent = { id: string; role: string; status: string };
+type Agent = { id: string; role: string; status: string; provider?: string; model?: string };
 type ExecutionEvent = {
   id?: string;
   type?: string;
@@ -75,6 +76,7 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
     <SimpleGrid cols={{ base: 1, sm: 2, xl: 6 }} spacing="sm" className="agent-execution-grid">
       {cards.map(({ role, agent, status, latest, output, usage, projected }) => <Card key={agent.id} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
         <Group justify="space-between" align="flex-start"><div><Text fw={800}>{role.toUpperCase()}</Text><Text size="xs" c="dimmed">{agent?.id ?? "Not registered"}</Text></div><Badge size="sm" color={status === "failed" ? "red" : status === "running" ? "yellow" : "gray"}>{status}</Badge></Group>
+        <Badge size="xs" color="gray" variant="outline" mt="xs">{agent.provider ? `${agent.provider}${agent.model ? ` · ${providerModelLabel(agent.model)}` : ""}` : "Worker default"}</Badge>
         <div className="agent-presence" aria-label={status === "running" ? "Agent is processing" : "Agent is listening for work"}>
           <span className="agent-presence-dot" />
           <Text size="xs" fw={600}>{projected?.activity ?? (status === "running" ? "Processing a live turn" : status === "failed" ? "Needs attention" : "Listening for work")}</Text>

@@ -2,6 +2,7 @@ import { Badge, Text } from "@mantine/core";
 import { AgentAvatar, type AvatarState } from "./AgentAvatar";
 import { cardWorked, type AgentCard } from "./agentCards";
 import { roleColor, roleIcon, roleLabel, type TemplateRoleVisual } from "./roleVisuals";
+import { providerModelLabel } from "./providerDisplay";
 
 export type SteerMessage = {
   id?: string;
@@ -71,6 +72,11 @@ export function AgentsNow({ cards, templateRoles, steers }: Props) {
                   </Text>
                   {statusBadge(card.status)}
                 </div>
+                <Badge size="xs" color="gray" variant="outline" mt={3}>
+                  {card.agent.provider
+                    ? `${card.agent.provider}${card.agent.model ? ` · ${providerModelLabel(card.agent.model)}` : ""}`
+                    : "Worker default"}
+                </Badge>
                 <Text size="xs" c="dimmed" className="cc-agent-activity">
                   {untouched
                     ? "Not used in this run"
