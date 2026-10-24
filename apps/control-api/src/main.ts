@@ -670,7 +670,7 @@ async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<vo
 
 function dispatchReconciliationDependencies(workstream: Workstream) {
   return {
-    hasExecutionClaim: (taskId: string) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId),
+    hasExecutionClaim: (taskId: string, startedAfter?: string) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId, startedAfter),
     dispatchTask: ({ senderId, recipientId, content, taskId, causationId }: { senderId: string; recipientId: string; content: string; taskId: string; causationId?: string }) =>
       createMessage(workstream, senderId, [recipientId], content, "request", {
         taskId,

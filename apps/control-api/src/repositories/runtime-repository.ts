@@ -34,7 +34,7 @@ export class RuntimeRepository {
   async releaseEvent(id: string): Promise<void> {
     await this.sql`delete from consumed_runtime_events where id = ${id}`;
   }
-  async hasTaskExecutionClaim(workstreamId: string, taskId: string): Promise<boolean> {
+  async hasTaskExecutionClaim(workstreamId: string, taskId: string, startedAfter?: string): Promise<boolean> {
     const rows = await this.sql`
       select 1
       from task_execution_claims claim
@@ -44,6 +44,7 @@ export class RuntimeRepository {
         and message.workstream_id = ${workstreamId}
         and message.task_id = ${taskId}
         and claim.status = 'active'
+        ${startedAfter ? this.sql`and claim.started_at > ${startedAfter}` : this.sql``}
       limit 1`;
     return rows.length > 0;
   }
