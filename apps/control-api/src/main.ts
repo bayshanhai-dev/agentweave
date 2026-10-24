@@ -31,7 +31,7 @@ import {
   republishImplementationTriggerAfterResume,
   shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, implementationTriggerWatchdogMs, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
 import { reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
@@ -40,6 +40,7 @@ import { appendDependencyInputs, dependencyInputsSection, loadWrittenArtifacts }
 import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayload, serializeGatedLeadDecisionPayload } from "./gated-lead-decision.js";
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
+import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -429,7 +430,13 @@ app.get("/events", { websocket: true }, async (socket, request) => {
   socket.on("close", () => sockets.delete(socket));
 });
 
-function emit(workstream: Workstream, type: string, message: string, role?: Role): void {
+function emit(
+  workstream: Workstream,
+  type: string,
+  message: string,
+  role?: Role,
+  details: Partial<Omit<WorkflowEvent, "type" | "message" | "role" | "occurredAt">> = {},
+): void {
   // waiting_for_human deliberately does not clear dispatch watchdogs: a gate
   // holds handoffs legitimately, and the watchdog callbacks defer (and
   // re-arm) until the Workstream is active again. Clearing here would strip
@@ -437,7 +444,14 @@ function emit(workstream: Workstream, type: string, message: string, role?: Role
   if (["workstream.completed", "workstream.emergency_stopped", "workstream.archived", "orchestration.decomposition_failed"].includes(type)) {
     dispatchWatchdog.clear(workstream.id);
   }
-  const event: WorkflowEvent = { id: randomUUID(), type, message, occurredAt: new Date().toISOString(), ...(role ? { role } : {}) };
+  const event: WorkflowEvent = {
+    id: details.id ?? randomUUID(),
+    type,
+    message,
+    occurredAt: new Date().toISOString(),
+    ...(role ? { role } : {}),
+    ...details,
+  };
   recordWorkflowEvent(workstream, event);
   void (async () => {
     try {
@@ -545,13 +559,13 @@ function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Messag
       if (shouldDeferDispatchTimeout(workstream.status)) {
         // A gate defers the decision; re-arm instead of consuming the
         // one-shot timer, so protection resumes when the gate releases.
-        dispatchWatchdog.arm(workstream.id, message.correlationId, onTriggerWatchdogExpired);
+        dispatchWatchdog.arm(workstream.id, message.correlationId, onTriggerWatchdogExpired, implementationTriggerWatchdogMs);
         return;
       }
       try {
         app.log.error({ workstreamId: workstream.id, recipientId: lead.id, messageId: message.id, correlationId: message.correlationId }, "implementation trigger dispatch timed out");
         await setAgentStatus(lead, "idle");
-        await recoverDecomposition(workstream, lead, { id: message.id, correlationId: message.correlationId }, { reason: `no turn.started or result within 180 seconds for message ${message.id}` });
+        await recoverDecomposition(workstream, lead, { id: message.id, correlationId: message.correlationId }, { reason: `no turn.started or result within ${implementationTriggerWatchdogMs / 1_000} seconds for message ${message.id}` });
       } catch (error) {
         app.log.error({ error, workstreamId: workstream.id, recipientId: lead.id, messageId: message.id }, "implementation trigger recovery failed");
       }
@@ -805,6 +819,8 @@ async function reconcileGatedDecision(workstream: Workstream): Promise<boolean> 
     const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
     if (!lead) return false;
     return reconcileGatedLeadDecisionAfterActivation(workstream, lead.id, {
+      allowedOwnerRoles: new Set(workstream.agents.map((agent) => agent.role)),
+      reviewRole: policy.reviewRole,
       applyDecision: (decision) => handleWorkerResult({
         id: `${decision.eventId}:activation`,
         type: "task.completed",
@@ -973,9 +989,28 @@ async function recoverDecomposition(
   workstream: Workstream,
   sender: Agent,
   envelope: { id?: string; correlationId?: string },
-  failure?: { reason: string },
+  failure?: { reason: string; violations?: string[] },
   resultText = "",
 ): Promise<void> {
+  const rejectionFeedback = failure?.violations
+    ? decompositionRejectionFeedback(failure.violations)
+    : undefined;
+  if (rejectionFeedback) {
+    const rejectionEventId = `${envelope.id ?? envelope.correlationId ?? randomUUID()}:decomposition-rejected`;
+    if (!workstream.events.some((event) => event.id === rejectionEventId)) {
+      emit(
+        workstream,
+        rejectionFeedback.eventType,
+        rejectionFeedback.eventMessage,
+        sender.role,
+        {
+          id: rejectionEventId,
+          agentId: sender.id,
+          ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+        },
+      );
+    }
+  }
   const attempt = decompositionReprompts.get(workstream.id) ?? 0;
   if (attempt < maxDecompositionReprompts) {
     const nextAttempt = attempt + 1;
@@ -994,12 +1029,17 @@ async function recoverDecomposition(
       );
     }
     const ownerRoles = workstream.agents.map((agent) => agent.role).join(", ");
-    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, and a non-empty acceptanceCriteria array whose entries name the artifact and measurable properties such as file path, minimum length, required sections, or language. Dependencies are optional: omit them to depend on the immediately preceding task, use an explicit empty list for no dependencies, or reference earlier siblings by 1-based ordinal, id, or title. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
+    const retryIntroduction = rejectionFeedback?.retryInstruction ?? "Your previous reply did not contain a valid structured decomposition. Resend the full JSON.";
+    const genericSpec = `Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, and a non-empty acceptanceCriteria array of non-placeholder strings. Prefer criteria that name the artifact and measurable properties such as file path, minimum length, required sections, or language. Dependencies are optional: omit them to depend on the immediately preceding task, use an explicit empty list for no dependencies, or reference earlier siblings by 1-based ordinal, id, or title. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
+    const prefix = `${retryIntroduction}\n\n${genericSpec}`;
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
     if (reprompt.deliveryStatus !== "delivered") return;
-    emit(workstream, "orchestration.decomposition_reprompted", `PM decomposition re-prompted (attempt ${nextAttempt})`, "human");
+    emit(workstream, "orchestration.decomposition_reprompted", `PM decomposition re-prompted (attempt ${nextAttempt})`, "human", {
+      ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+      ...(failure?.reason ? { output: failure.reason } : {}),
+    });
     await setAgentStatus(sender, "idle");
     return;
   }
@@ -1011,7 +1051,13 @@ async function recoverDecomposition(
     createFailureMessage: (content) => createMessage(workstream, sender.id, ["human"], content, "decision", {
       ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
     }),
-    emitFailure: (message) => emit(workstream, "orchestration.decomposition_failed", message, sender.role),
+    emitFailure: (message) => {
+      emit(workstream, "orchestration.decomposition_failed", message, sender.role, {
+        agentId: sender.id,
+        ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+        ...(failure?.reason ? { output: failure.reason } : {}),
+      });
+    },
     persistWorkstreamStatus: () => persistWorkstreamStatus(workstream),
     setLeadIdle: () => setAgentStatus(sender, "idle"),
   });
@@ -1111,11 +1157,65 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   }
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
   const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string };
-  dispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId ?? (payload as { correlationId?: string }).correlationId);
+  const resultCorrelationId = envelope.correlationId ?? (payload as { correlationId?: string }).correlationId;
+  dispatchWatchdog.clearForCorrelation(workstream.id, resultCorrelationId);
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
   if (!sender) { app.log.warn({ event: "worker.result.ignored", workstreamId: envelope.workstreamId, agentId: payload.agentId, taskId: payload.taskId, payloadKeys: Object.keys(raw) }, "worker result agent not found"); return; }
   const policy = orchestrationPolicyFor(workstream);
   const durableTask = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+  const lateFailureReason = !durableTask && sender.role === policy.leadRole
+    ? decompositionFailureReasonForCorrelation(workstream.events, resultCorrelationId)
+    : undefined;
+  if (lateFailureReason && envelope.type !== "task.failed") {
+    const alreadyArbitrated = workstream.events.some((event) =>
+      event.correlationId === resultCorrelationId &&
+      [
+        "orchestration.decomposition_applied_late",
+        "orchestration.decomposition_discarded_late",
+      ].includes(event.type)
+    );
+    if (alreadyArbitrated) {
+      await setAgentStatus(sender, "idle");
+      return;
+    }
+    if (workstream.tasks.some((task) => !collaborationStage(task.title))) {
+      emit(workstream, "orchestration.decomposition_discarded_late", "Late decomposition discarded: implementation tasks already exist", sender.role, {
+        agentId: sender.id,
+        ...(resultCorrelationId ? { correlationId: resultCorrelationId } : {}),
+      });
+      await setAgentStatus(sender, "idle");
+      return;
+    }
+    const outcome = await arbitrateLateDecompositionResult({
+      structuredResult: payload.structuredResult,
+      allowedOwnerRoles: new Set(workstream.agents.map((agent) => agent.role)),
+      reviewRole: policy.reviewRole,
+      originalFailureReason: lateFailureReason,
+    }, {
+      apply: async (_result, specs) => {
+        const created = await createTasks(workstream, specs, sender.id);
+        decompositionReprompts.delete(workstream.id);
+        await setAgentStatus(sender, "idle");
+        recordWorkflowEvent(workstream, {
+          id: randomUUID(),
+          type: "task.decomposition.persisted",
+          message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from late ${policy.leadRole} output`,
+          occurredAt: new Date().toISOString(),
+          role: sender.role,
+          agentId: sender.id,
+          ...(resultCorrelationId ? { correlationId: resultCorrelationId } : {}),
+        });
+        if (workstream.status === "active") await reconcileTaskDispatches(workstream);
+        return created.length;
+      },
+      emit: (type, message) => emit(workstream, type, message, sender.role, {
+        agentId: sender.id,
+        ...(resultCorrelationId ? { correlationId: resultCorrelationId } : {}),
+      }),
+    });
+    if (outcome.kind === "discarded") await setAgentStatus(sender, "idle");
+    return;
+  }
   const triggerDecomposition = !durableTask && isImplementationTriggerResult({
     messages: workstream.messages.map((message) => ({ ...message, correlationId: message.correlationId ?? "" })),
     tasks: workstream.tasks,
@@ -1210,7 +1310,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       triggerSummary = result.summary.trim();
     } catch (error) {
       const reason = error instanceof InvalidStructuredTurn ? error.message : String(error);
-      await recoverDecomposition(workstream, sender, envelope, { reason }, payload.text?.trim() ?? "");
+      const violations = error instanceof InvalidStructuredTurn ? error.violations : [reason];
+      await recoverDecomposition(workstream, sender, envelope, { reason, violations }, payload.text?.trim() ?? "");
       return;
     }
   }

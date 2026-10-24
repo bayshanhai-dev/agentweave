@@ -194,6 +194,34 @@ describe("gated lead decomposition activation", () => {
     expect(applyDecision).toHaveBeenCalledOnce();
   });
 
+  it("replays a gated decision whose correlation belongs to a retry message without the trigger marker", async () => {
+    const { workstream, dependencies, applyDecision } = fixture();
+    workstream.messages[0] = {
+      correlationId: "implementation-trigger-correlation",
+      recipientIds: ["showrunner-1"],
+      content: "Your previous reply was rejected because: tasks empty. Fix it and resend the full JSON.",
+    };
+    workstream.status = "active";
+
+    expect(
+      await reconcileGatedLeadDecisionAfterActivation(
+        workstream,
+        "showrunner-1",
+        dependencies,
+      ),
+    ).toBe(true);
+    expect(applyDecision).toHaveBeenCalledOnce();
+
+    expect(
+      await reconcileGatedLeadDecisionAfterActivation(
+        workstream,
+        "showrunner-1",
+        dependencies,
+      ),
+    ).toBe(false);
+    expect(applyDecision).toHaveBeenCalledOnce();
+  });
+
   it("leaves the normal non-gated decomposition path untouched", async () => {
     const { workstream, dependencies, applyDecision } = fixture();
     workstream.status = "active";
