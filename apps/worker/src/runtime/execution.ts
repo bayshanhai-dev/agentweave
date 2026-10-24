@@ -112,22 +112,29 @@ export class AgentTaskExecutor {
       checkpoint: async () => { record.lastCheckpoint = await this.provider.checkpoint(currentSession); record.updatedAt = new Date().toISOString(); await this.sessions.save(record); },
       cancel: async () => { if (activeTurnId) for await (const event of this.provider.cancel(currentSession, activeTurnId, task.correlationId)) await this.emitProviderEvent(event, task, currentSession); },
     });
+    let result: ProviderRunResult | undefined;
+    let structuredResult: AgentTurnResult | undefined;
+    let totalUsage: ProviderUsage | undefined;
+    const turns: ExecutionTurnSummary[] = [];
+    let activeTurnText = "";
     try {
       let turn = 0;
       let input = task.prompt;
-      let result: ProviderRunResult | undefined;
-      let structuredResult: AgentTurnResult | undefined;
-      let totalUsage: ProviderUsage | undefined;
-      const turns: ExecutionTurnSummary[] = [];
       let turnBudgetExhausted = false;
       while (true) {
         turn += 1;
+        result = undefined;
+        structuredResult = undefined;
+        activeTurnId = undefined;
+        activeTurnText = "";
         control.assertRunnable();
         const run = this.provider.run({ session: currentSession, input, ...(task.model ? { model: task.model } : {}), ...(workspacePath ? { workspacePath } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), idempotencyKey: `${idempotencyBase}:turn:${turn}` });
         let turnUsage: ProviderUsage | undefined;
         let step = await run.next();
         while (!step.done) {
           const event = step.value;
+          if (event.type === "turn.started") activeTurnText = "";
+          else if (event.type === "turn.delta") activeTurnText += event.text;
           if (event.type === "usage.updated") turnUsage = event.usage;
           else if (event.type === "turn.completed" && event.usage) turnUsage = event.usage;
           await this.emitProviderEvent(event, task, currentSession);
@@ -173,8 +180,14 @@ export class AgentTaskExecutor {
       if (error instanceof ExecutionGatedError) {
         // A human gate interrupted the run. That is not a failure: keep the
         // session record active so the task can be re-driven after resume,
-        // and report the hold instead of a failure.
-        await this.sink({ type: "task.gated", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error.message });
+        // and report the hold instead of a failure. Preserve any completed
+        // structured output so activation can apply it without another model call.
+        if (!structuredResult && activeTurnText.trim()) {
+          try { structuredResult = parseAgentTurnResult(activeTurnText); } catch {}
+        }
+        const gatedTurnId = result?.turnId ?? activeTurnId;
+        const gatedText = result?.text ?? activeTurnText;
+        await this.sink({ type: "task.gated", ...(gatedTurnId ? { turnId: gatedTurnId } : {}), ...(structuredResult ? { structuredResult } : {}), ...(gatedText ? { text: gatedText } : {}), ...(turns.length ? { turns } : {}), ...(totalUsage ? { usage: totalUsage } : {}), taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error.message });
       } else {
         if (!(error instanceof SessionLeaseLostError)) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); }
         await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) });
