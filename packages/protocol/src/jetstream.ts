@@ -9,7 +9,7 @@ export const subjects = {
   deadLetters: "aw.dead-letter.*",
 } as const;
 
-export type JetStreamConfig = { url: string; stream?: string; durableName?: string; deliverPolicy?: DeliverPolicy };
+export type JetStreamConfig = { url: string; stream?: string; durableName?: string; deliverPolicy?: DeliverPolicy; maxConcurrentHandlers?: number };
 
 export class JetStreamEventBus {
   private connection?: Awaited<ReturnType<typeof connect>>;
@@ -55,7 +55,28 @@ export class JetStreamEventBus {
     catch { await this.manager.consumers.add(this.stream, desired); }
     const consumer = await this.client.consumers.get(this.stream, durable);
     const subscription = await consumer.consume();
-    void (async () => { for await (const message of subscription) { try { const outcome = await handler(message); if (outcome === "ack") message.ack(); else if (outcome === "retry") message.nak(); else { await this.publish(subjects.deadLetters.replace("*", this.stream), { id: message.info.streamSequence.toString(), type: "dead-letter", workstreamId: "unknown", occurredAt: new Date().toISOString(), payload: this.codec.decode(message.data) }); message.term(); } } catch (error) { console.error(JSON.stringify({ event: "jetstream.handler.failed", subject: message.subject, streamSequence: message.info.streamSequence, error: String(error), occurredAt: new Date().toISOString() })); message.nak(); } } })();
+    const maxConcurrentHandlers = Math.max(1, Math.floor(this.config.maxConcurrentHandlers ?? 1));
+    void (async () => {
+      const active = new Set<Promise<void>>();
+      const processMessage = async (message: JsMsg): Promise<void> => {
+        try {
+          const outcome = await handler(message);
+          if (outcome === "ack") message.ack();
+          else if (outcome === "retry") message.nak();
+          else { await this.publish(subjects.deadLetters.replace("*", this.stream), { id: message.info.streamSequence.toString(), type: "dead-letter", workstreamId: "unknown", occurredAt: new Date().toISOString(), payload: this.codec.decode(message.data) }); message.term(); }
+        } catch (error) {
+          console.error(JSON.stringify({ event: "jetstream.handler.failed", subject: message.subject, streamSequence: message.info.streamSequence, error: String(error), occurredAt: new Date().toISOString() }));
+          message.nak();
+        }
+      };
+      for await (const message of subscription) {
+        const operation = processMessage(message);
+        active.add(operation);
+        void operation.finally(() => active.delete(operation));
+        if (active.size >= maxConcurrentHandlers) await Promise.race(active);
+      }
+      await Promise.all(active);
+    })();
     return consumer;
   }
 

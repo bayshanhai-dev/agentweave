@@ -95,9 +95,9 @@ Providers are adapters behind one contract, so the model can follow the job:
 a strong reasoning model for planning and coordination, Codex for
 implementation, a local model via Ollama for lower-cost research, a fast
 model for QA validation. Adapters for Codex App Server, Claude Code, Ollama,
-and a deterministic mock are implemented today (see the capability matrix). A
-workstream currently runs on one selected provider; per-role routing within
-a workstream is the active direction.
+and a deterministic mock are implemented today (see the capability matrix).
+Workstreams may route each role to a different provider and model while
+unconfigured roles inherit the workstream default.
 
 > Use the right model for the right agent.
 
@@ -347,7 +347,7 @@ available on `main` from work that is intentionally still in progress.
 | Per-Workstream event sequence, reconnect cursor, and persisted Dashboard projections | Implemented   | Replays committed history; full crash-atomic publication is not yet guaranteed                                                                                      |
 | Deterministic Mock-provider operator journey                                         | Implemented   | Playwright covers create, start, activity, Human approval, and persisted completion                                                                                 |
 | Mock, Codex App Server, Claude Code, Kiro, and Ollama provider adapters              | Implemented   | Codex App Server is the primary real-provider path (stdio or host bridge); Kiro drives the Kiro CLI headlessly with a tolerant JSONL parser and hermetic stub-CLI tests (no real install in CI); Ollama runs local models through the same adapter contract; Mock remains the deterministic path for CI and demos |
-| Per-role model routing within one workstream                                         | Planned       | A workstream currently runs on a single selected provider; the adapter contract is provider-neutral, and role-level routing (e.g. Codex for the coder, a local model for research) is the active direction |
+| Per-role provider/model routing within one workstream                                | Implemented   | `roleProviders` overrides are resolved by recipient role in the Control API, stamped on every turn, and selected lazily by the Worker; unconfigured roles inherit the workstream route or Worker environment default |
 | Provider token-usage accounting                                                      | Implemented   | Per-agent usage from the provider's own usage notifications, aggregated into dashboard Session Totals; never estimated                                              |
 | Dashboard human gates and mid-run steering                                           | Implemented   | Gates pause the workstream for approve-and-continue, approve-and-complete, or reject; steering is delivered to agent inboxes and answered in the open event stream  |
 | Durable agent inboxes and structured Human ↔ Agent / Agent ↔ Agent messages          | Partial       | Transport and contracts exist; agent-owned collaboration policy is still evolving                                                                                   |

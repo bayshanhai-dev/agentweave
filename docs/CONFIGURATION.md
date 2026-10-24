@@ -26,6 +26,27 @@ The following settings are the core Docker configuration:
 | `CODEX_BRIDGE_TOKEN` | Optional bearer token for the bridge | unique local secret |
 | `PROVIDER_REQUEST_TIMEOUT_MS` | Provider turn timeout | `120000` |
 
+Workstream creation accepts a `roleProviders` map for heterogeneous routing:
+
+```json
+{
+  "goal": "Produce a podcast episode",
+  "templateId": "podcast-production",
+  "tool": "ollama",
+  "model": "llama3.1:8b",
+  "roleProviders": {
+    "showrunner": { "tool": "codex", "model": "gpt-5.6-sol" },
+    "host": { "tool": "codex" },
+    "researcher": { "tool": "ollama", "model": "llama3.1:8b" },
+    "editor": { "tool": "ollama", "model": "llama3.1:8b" }
+  }
+}
+```
+
+Roles without an override inherit the workstream `tool` and `model`. If the
+workstream omits `tool`, dispatches remain unstamped and the Worker uses
+`AGENTWEAVE_PROVIDER` and `AGENTWEAVE_MODEL`.
+
 Provider credentials and bridge tokens are intentionally not included in the
 committed example. Configure them only in the local `.env`, Docker secrets, or
 an equivalent secret manager. Never put them in task messages, event payloads,

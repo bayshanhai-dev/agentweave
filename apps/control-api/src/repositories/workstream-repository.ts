@@ -6,8 +6,8 @@ export class WorkstreamRepository {
 
   async create(workstream: PersistedWorkstream): Promise<void> {
     await this.sql.begin(async (transaction) => {
-      await transaction`insert into workstreams (id, goal, flavor, status, tool, model, workspace_root)
-        values (${workstream.id}, ${workstream.goal}, ${workstream.flavor}, ${workstream.status}, ${workstream.provider.tool}, ${workstream.provider.model}, ${workstream.workspaceRoot})`;
+      await transaction`insert into workstreams (id, goal, flavor, status, tool, model, role_providers, workspace_root)
+        values (${workstream.id}, ${workstream.goal}, ${workstream.flavor}, ${workstream.status}, ${workstream.provider.tool ?? null}, ${workstream.provider.model ?? null}, ${JSON.stringify(workstream.roleProviders)}, ${workstream.workspaceRoot})`;
       for (const agent of workstream.agents) {
         await transaction`insert into agents (id, workstream_id, role, authority, status)
           values (${agent.id}, ${workstream.id}, ${agent.role}, ${agent.authority}, ${agent.status})`;
@@ -36,7 +36,7 @@ export class WorkstreamRepository {
 
   async listRows() {
     return this
-      .sql`select id, goal, flavor, status, tool, model, workspace_root from workstreams order by created_at desc`;
+      .sql`select id, goal, flavor, status, tool, model, role_providers, workspace_root from workstreams order by created_at desc`;
   }
   async listAgentRows(workstreamId: string) {
     return this

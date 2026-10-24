@@ -41,6 +41,8 @@ import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayl
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
 import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
+import { agentsWithEffectiveProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
+import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -48,7 +50,7 @@ type WorkflowEvent = { id: string; sequence?: number; type: string; message: str
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
-type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
+type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes"> & { builtin: boolean };
 const templateSummary = (template: WorkstreamTemplate, builtin: boolean): WorkstreamTemplateSummary => ({
   id: template.id,
@@ -105,7 +107,8 @@ const resolveTemplate = (templateId: string): WorkstreamTemplate | undefined =>
 const allTemplates = (): WorkstreamTemplate[] => [...workstreamTemplates, ...customTemplates];
 const workstreamResponse = (workstream: Workstream) => {
   const template = resolveTemplate(workstream.flavor);
-  return { ...workstream, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
+  const agents = agentsWithEffectiveProviders(workstream.agents, workstream.provider, workstream.roleProviders);
+  return { ...workstream, agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
 };
 const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => {
   const template = resolveTemplate(workstream.flavor);
@@ -387,15 +390,21 @@ app.post("/api/workstreams/:id/start", async (request, reply) => {
   await startOrchestration(workstream); return workstream;
 });
 app.post("/api/workstreams", async (request, reply) => {
-  const body = request.body as { goal?: string; templateId?: string; flavor?: string; tool?: string; model?: string; workspaceRoot?: string } | undefined;
+  const body = request.body as { goal?: string; templateId?: string; flavor?: string; tool?: unknown; model?: unknown; roleProviders?: unknown; workspaceRoot?: string } | undefined;
   if (!body?.goal?.trim()) return reply.code(400).send({ error: "goal_required" });
   const flavor = body.templateId ?? body.flavor ?? "software-development";
   const template = resolveTemplate(flavor);
   if (!template) return reply.code(400).send({ error: "unsupported_template", availableTemplates: allTemplates().map((candidate) => candidate.id) });
+  const providerConfig = parseProviderConfig(body);
+  if (!providerConfig.ok) return reply.code(providerConfig.statusCode).send({ error: providerConfig.error, detail: providerConfig.detail });
+  const templateRoles = new Set(template.roles.map((role) => role.id));
+  const unknownRole = Object.keys(providerConfig.roleProviders).find((role) => !templateRoles.has(role));
+  if (unknownRole) return reply.code(400).send({ error: "unknown_role_provider", role: unknownRole });
   const id = randomUUID();
   const workstream: Workstream = {
     id, goal: body.goal.trim(), flavor, status: "draft",
-    provider: { tool: body.tool ?? "mock", model: body.model ?? "deterministic" },
+    provider: providerConfig.provider,
+    roleProviders: providerConfig.roleProviders,
     workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [], messages: [],
     agents: template.roles.map((role, index) => ({ id: `${id}:${role.id}-${index + 1}`, role: role.id, authority: role.authority, status: "idle", ...(role.id === template.orchestration.leadRole ? { orchestrator: true } : {}) })),
   };
@@ -528,7 +537,8 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
       await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipientId), {
         id: `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
         occurredAt: message.createdAt, correlationId: message.correlationId,
-        ...(message.causationId ? { causationId: message.causationId } : {}), payload: message,
+        ...(message.causationId ? { causationId: message.causationId } : {}),
+        payload: stampProviderRoute(message, routeForRecipient(workstream, recipientId)),
       }));
       armDispatchWatchdogAfterPublish(workstream, message, recipientId, lead);
     } catch (error) {
@@ -898,7 +908,12 @@ async function loadWorkstreams(): Promise<void> {
     const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
       id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus,
-      provider: { tool: String(row.tool), model: String(row.model) }, workspaceRoot: String(row.workspace_root),
+      provider: {
+        ...(row.tool ? { tool: String(row.tool) as ProviderSelection["tool"] } : {}),
+        ...(row.model ? { model: String(row.model) } : {}),
+      },
+      roleProviders: (row.role_providers && typeof row.role_providers === "object" ? row.role_providers : {}) as RoleProviders,
+      workspaceRoot: String(row.workspace_root),
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
       messages: [],

@@ -1,6 +1,6 @@
 import { tokenUsage, type AggregatedTokenUsage } from "./agentUsage";
 
-export type CardAgent = { id: string; role: string; status: string };
+export type CardAgent = { id: string; role: string; status: string; provider?: string; model?: string };
 export type CardEvent = {
   id?: string;
   type?: string;

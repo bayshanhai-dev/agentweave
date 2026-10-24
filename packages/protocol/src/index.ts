@@ -1,5 +1,22 @@
 import { z } from "zod";
 
+export const providerTools = ["mock", "codex", "claude", "ollama", "kiro"] as const;
+export const providerToolSchema = z.enum(providerTools);
+export type ProviderTool = z.infer<typeof providerToolSchema>;
+
+export const providerSelectionSchema = z
+  .object({
+    tool: providerToolSchema.optional(),
+    model: z.string().trim().min(1).optional(),
+  })
+  .refine((selection) => selection.tool !== undefined || selection.model !== undefined, {
+    message: "a provider override must specify tool or model",
+  });
+export type ProviderSelection = z.infer<typeof providerSelectionSchema>;
+
+export const roleProvidersSchema = z.record(z.string().min(1), providerSelectionSchema);
+export type RoleProviders = z.infer<typeof roleProvidersSchema>;
+
 export const actorSchema = z.object({
   type: z.enum(["human", "agent", "worker", "system"]),
   id: z.string().min(1),
