@@ -27,6 +27,7 @@ export type PersistedTask = {
   acceptanceCriteria: string[];
   dependencies: string[];
   evidence: string[];
+  qualityAttempts?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -56,6 +57,8 @@ export type PersistedWorkflowEvent = {
   to?: string;
   agentId?: string;
   taskId?: string;
+  toolName?: string;
+  output?: string;
   correlationId?: string;
   provider?: string;
   model?: string;

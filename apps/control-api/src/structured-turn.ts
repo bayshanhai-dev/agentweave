@@ -61,16 +61,36 @@ export function extractStructuredTaskSpecs(
   if (result.tasks.length < 1 || result.tasks.length > 12)
     throw new InvalidStructuredTurn("Decomposition must contain between 1 and 12 tasks");
 
-  const specs = result.tasks.map((task) => {
+  const titles = result.tasks.map((task) => task.title.trim());
+  if (new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length)
+    throw new InvalidStructuredTurn("Decomposition task ids must be unique");
+  if (new Set(titles.map((title) => title.toLowerCase())).size !== titles.length)
+    throw new InvalidStructuredTurn("Decomposition task titles must be unique");
+
+  const specs = result.tasks.map((task, index) => {
     const title = task.title.trim();
     if (!title || title.toLowerCase() === "task title")
       throw new InvalidStructuredTurn("Decomposition task title is invalid");
     if (!allowedOwnerRoles.has(task.ownerRole))
       throw new InvalidStructuredTurn(`Invalid decomposition owner role: ${task.ownerRole}`);
+    const acceptanceCriteria = task.acceptanceCriteria.map((criterion) => criterion.trim());
+    if (!acceptanceCriteria.length || acceptanceCriteria.some((criterion) => !criterion))
+      throw new InvalidStructuredTurn(`Decomposition task "${title}" requires concrete acceptance criteria`);
+    const dependencies = task.dependencies.map((reference) => {
+      const dependencyIndex = result.tasks.findIndex(
+        (candidate) => candidate.id === reference || candidate.title.trim() === reference.trim(),
+      );
+      if (dependencyIndex < 0)
+        throw new InvalidStructuredTurn(`Unknown decomposition dependency: ${reference}`);
+      if (dependencyIndex >= index)
+        throw new InvalidStructuredTurn(`Decomposition dependency must reference an earlier task: ${reference}`);
+      return titles[dependencyIndex]!;
+    });
     return {
       title,
       ownerRole: task.ownerRole,
-      acceptanceCriteria: task.acceptanceCriteria ?? [],
+      acceptanceCriteria,
+      dependencies,
     };
   });
   return withFinalValidationTask(specs, reviewRole);
@@ -134,6 +154,12 @@ export function planStructuredTurn(
     for (const evidenceId of ids)
       if (!evidence.has(evidenceId)) fail(`Unverified evidence: ${evidenceId}`);
   };
+  const localTaskIds = new Map(
+    result.tasks.flatMap((task) => [
+      [task.id, scopedId("task", task.id)] as const,
+      [task.title.trim(), scopedId("task", task.id)] as const,
+    ]),
+  );
   const tasks: PersistedTask[] = result.tasks.map((task) => ({
     id: scopedId("task", task.id),
     workstreamId: context.workstreamId,
@@ -144,8 +170,11 @@ export function planStructuredTurn(
     ...(sourceTask ? { parentTaskId: sourceTask.id } : {}),
     relatedTaskIds: [],
     acceptanceCriteria: task.acceptanceCriteria,
-    dependencies: [],
+    dependencies: task.dependencies.map((dependency) =>
+      localTaskIds.get(dependency) ?? dependency
+    ),
     evidence: [],
+    qualityAttempts: 0,
     createdAt: context.now,
     updatedAt: context.now,
   }));

@@ -45,6 +45,7 @@ type DispatchReconciliationDependencies = {
     causationId?: string;
   }) => Promise<{ deliveryStatus?: string }>;
   emit: (type: string, message: string, role?: string) => void;
+  inputsFromEarlierTasks?: (task: ReconciliationTask) => Promise<string>;
   /**
    * Marks a lost handoff's deliveries failed so the task can be dispatched
    * again. Optional: without it, stale deliveries are left untouched.
@@ -66,6 +67,7 @@ function taskDispatchContent(
   task: ReconciliationTask,
   owner: ReconciliationAgent,
   policy: ReconciliationPolicy,
+  dependencyInputs = "",
 ): string {
   const phase =
     owner.role === policy.planningRole
@@ -77,7 +79,8 @@ function taskDispatchContent(
   const criteria = task.acceptanceCriteria.length
     ? task.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")
     : "- Task is completed with evidence";
-  return `${marker}\nContinue the workstream after Human approval.\n\nPlanned task:\n${task.title}\n\nAcceptance criteria:\n${criteria}`;
+  const content = `${marker}\nContinue the workstream after Human approval.\n\nPlanned task:\n${task.title}\n\nAcceptance criteria:\n${criteria}`;
+  return dependencyInputs ? `${content}\n\n${dependencyInputs}` : content;
 }
 
 /** Dispatch dependency-ready assigned tasks without duplicating durable work. */
@@ -165,10 +168,11 @@ export async function reconcileDispatchableTasks(
         owner.role,
       );
     }
+    const dependencyInputs = await dependencies.inputsFromEarlierTasks?.(task);
     const dispatched = await dependencies.dispatchTask({
       senderId: task.createdByAgentId ?? lead?.id ?? "human",
       recipientId: owner.id,
-      content: taskDispatchContent(task, owner, policy),
+      content: taskDispatchContent(task, owner, policy, dependencyInputs),
       taskId: task.id,
       ...(causationId ? { causationId } : {}),
     });

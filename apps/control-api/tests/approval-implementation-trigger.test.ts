@@ -111,6 +111,8 @@ describe("approval implementation trigger recovery", () => {
     expect(createMessage.mock.calls[0]?.[4]).toBe("trigger-2");
     expect(content).toContain("return ONLY one JSON object");
     expect(content).toContain("acceptanceCriteria");
+    expect(content).toContain("dependencies");
+    expect(content).toContain("minimum length");
     expect(content).not.toContain("[READY_FOR_DECOMPOSITION]");
     expect(content).not.toContain("old instruction");
   });

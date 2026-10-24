@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, resolveTaskDependencies, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -35,13 +35,15 @@ import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, publishWit
 import { reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
+import { applyArtifactQualityGate } from "./artifact-quality.js";
+import { appendDependencyInputs, dependencyInputsSection, loadWrittenArtifacts } from "./artifact-handoff.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
 type WorkflowEvent = { id: string; sequence?: number; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; occurredAt: string };
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
-type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; createdAt: string; updatedAt: string };
+type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: { tool: string; model: string }; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
 type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes"> & { builtin: boolean };
 const templateSummary = (template: WorkstreamTemplate, builtin: boolean): WorkstreamTemplateSummary => ({
@@ -349,7 +351,7 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   if (messageType === "request" && !taskId) {
     const now = new Date().toISOString();
     const pmOwner = humanToLead ? workstream.agents.find((agent) => agent.role === orchestrationPolicyFor(workstream).leadRole) : undefined;
-    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], relatedTaskIds: [], createdAt: now, updatedAt: now };
+    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], qualityAttempts: 0, relatedTaskIds: [], createdAt: now, updatedAt: now };
     workstream.tasks.push(task);
     await persistTask(task);
     emit(workstream, "task.created", `Human request queued: ${task.title}`);
@@ -639,9 +641,26 @@ async function persistTask(task: Task): Promise<void> {
   await taskRepository.save(task);
 }
 
+async function inputsFromEarlierTasks(workstream: Workstream, task: Task): Promise<string> {
+  return dependencyInputsSection(task, workstream.tasks, (dependencyId) =>
+    loadWrittenArtifacts(workstream.workspaceRoot, workstream.events, dependencyId, undefined, true)
+  );
+}
+
+async function taskDispatchContent(
+  workstream: Workstream,
+  actionContent: string,
+  task: Task,
+): Promise<string> {
+  const criteria = task.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n");
+  const content = `${actionContent}\n\nPlanned task:\n${task.title}\n\nAcceptance criteria:\n${criteria}`;
+  return appendDependencyInputs(content, await inputsFromEarlierTasks(workstream, task));
+}
+
 async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAgentId?: string): Promise<Task[]> {
   const now = new Date().toISOString();
   const taskIds = specs.map(() => `${workstream.id}:task-${randomUUID()}`);
+  const resolvedDependencies = resolveTaskDependencies(specs, taskIds);
   const created: Task[] = specs.map((spec, index) => {
     const owner = spec.ownerRole ? workstream.agents.find((agent) => agent.role === spec.ownerRole) : undefined;
     return {
@@ -649,7 +668,7 @@ async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAge
       ...(owner ? { ownerAgentId: owner.id } : {}), ...(creatorAgentId ? { createdByAgentId: creatorAgentId } : {}),
       ...(spec.parentTaskId ? { parentTaskId: spec.parentTaskId } : {}), relatedTaskIds: spec.relatedTaskIds ?? [],
       acceptanceCriteria: spec.acceptanceCriteria?.length ? spec.acceptanceCriteria : ["Task is completed with evidence"],
-      dependencies: spec.dependsOnAllPrevious ? taskIds.slice(0, index) : spec.dependencies ?? [], evidence: [], createdAt: now, updatedAt: now,
+      dependencies: resolvedDependencies[index]!, evidence: [], qualityAttempts: 0, createdAt: now, updatedAt: now,
     };
   });
   workstream.tasks.push(...created);
@@ -675,6 +694,10 @@ function dispatchReconciliationDependencies(workstream: Workstream) {
         taskId,
         ...(causationId ? { causationId } : {}),
       }),
+    inputsFromEarlierTasks: (task: { id: string }) => {
+      const durableTask = workstream.tasks.find((candidate) => candidate.id === task.id);
+      return durableTask ? inputsFromEarlierTasks(workstream, durableTask) : Promise.resolve("");
+    },
     emit: (type: string, message: string, role?: string) => emit(workstream, type, message, role),
     closeStaleDelivery: async (message: { id: string; recipientIds: string[]; deliveryStatus: string }) => {
       for (const recipientId of message.recipientIds) {
@@ -750,7 +773,7 @@ async function loadWorkstreams(): Promise<void> {
     const agents = await workstreamRepository.listAgentRows(String(row.id));
     const tasks = await taskRepository.listRows(String(row.id));
     const events = await workflowEventRepository.listRows(String(row.id));
-    const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), ...(task.created_by_agent_id ? { createdByAgentId: String(task.created_by_agent_id) } : {}), ...(task.parent_task_id ? { parentTaskId: String(task.parent_task_id) } : {}), relatedTaskIds: jsonArray(task.related_task_ids), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
+    const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), ...(task.created_by_agent_id ? { createdByAgentId: String(task.created_by_agent_id) } : {}), ...(task.parent_task_id ? { parentTaskId: String(task.parent_task_id) } : {}), relatedTaskIds: jsonArray(task.related_task_ids), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), qualityAttempts: Number(task.quality_attempts ?? 0), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
     const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
       id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus,
@@ -758,7 +781,7 @@ async function loadWorkstreams(): Promise<void> {
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
       messages: [],
-      events: events.map((event) => ({ id: String(event.id), sequence: Number(event.sequence), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.correlation_id ? { correlationId: String(event.correlation_id) } : {}), ...(event.provider ? { provider: String(event.provider) } : {}), ...(event.model ? { model: String(event.model) } : {}), ...(event.usage ? { usage: event.usage as ProviderUsage } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
+      events: events.map((event) => ({ id: String(event.id), sequence: Number(event.sequence), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) as Role } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.tool_name ? { toolName: String(event.tool_name) } : {}), ...(event.output ? { output: String(event.output) } : {}), ...(event.correlation_id ? { correlationId: String(event.correlation_id) } : {}), ...(event.provider ? { provider: String(event.provider) } : {}), ...(event.model ? { model: String(event.model) } : {}), ...(event.usage ? { usage: event.usage as ProviderUsage } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() })),
     });
     if (normalizedStatus !== String(row.status)) await workstreamRepository.updateStatus(String(row.id), normalizedStatus);
     const messages = await messageRepository.listRows(String(row.id));
@@ -834,7 +857,7 @@ async function dispatchCollaboration(workstream: Workstream, roundId: string, di
   let task = workstream.tasks.find((candidate) => candidate.id === taskId);
   if (!task) {
     const now = new Date().toISOString();
-    task = { id: taskId, workstreamId: workstream.id, title: `[Collaboration:${dispatch.stage}] ${dispatch.title}`, status: "assigned", ownerAgentId: dispatch.agentId, ...(senderId !== "human" ? { createdByAgentId: senderId } : {}), relatedTaskIds: [], acceptanceCriteria: ["Return one valid structured collaboration insight with auditable evidence"], dependencies: [], evidence: [], createdAt: now, updatedAt: now };
+    task = { id: taskId, workstreamId: workstream.id, title: `[Collaboration:${dispatch.stage}] ${dispatch.title}`, status: "assigned", ownerAgentId: dispatch.agentId, ...(senderId !== "human" ? { createdByAgentId: senderId } : {}), relatedTaskIds: [], acceptanceCriteria: ["Return one valid structured collaboration insight with auditable evidence"], dependencies: [], evidence: [], qualityAttempts: 0, createdAt: now, updatedAt: now };
     workstream.tasks.push(task); await persistTask(task);
     emit(workstream, "task.created", `Collaboration task assigned: ${dispatch.title}`, dispatch.role);
   }
@@ -866,7 +889,7 @@ async function recoverDecomposition(
       );
     }
     const ownerRoles = workstream.agents.map((agent) => agent.role).join(", ");
-    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, and acceptanceCriteria as an array of strings. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
+    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, dependencies naming every earlier sibling task whose output it consumes (ids or exact titles), and a non-empty acceptanceCriteria array whose entries name the artifact and measurable properties such as file path, minimum length, required sections, or language. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
@@ -886,6 +909,51 @@ async function recoverDecomposition(
   emit(workstream, "orchestration.decomposition_failed", `PM decomposition failed after ${maxDecompositionReprompts} retries`, sender.role);
   await persistWorkstreamStatus(workstream);
   await setAgentStatus(sender, "idle");
+}
+
+async function enforceCompletionArtifactQuality(
+  workstream: Workstream,
+  task: Task,
+  sender: Agent,
+  correlationId: string | undefined,
+  allAttempts = false,
+): Promise<boolean> {
+  if (collaborationStage(task.title)) return true;
+  const artifacts = await loadWrittenArtifacts(
+    workstream.workspaceRoot,
+    workstream.events,
+    task.id,
+    correlationId,
+    allAttempts,
+  );
+  const outcome = await applyArtifactQualityGate(
+    workstream,
+    task,
+    artifacts,
+    allAttempts ? task.ownerAgentId ?? sender.id : sender.id,
+    {
+      persistTask: async () => {
+        task.updatedAt = new Date().toISOString();
+        await persistTask(task);
+      },
+      persistWorkstream: () => persistWorkstreamStatus(workstream),
+      setAgentIdle: () => setAgentStatus(sender, "idle"),
+      emit: (event) => recordWorkflowEvent(workstream, {
+        id: randomUUID(),
+        type: event.type,
+        message: event.message,
+        occurredAt: new Date().toISOString(),
+        role: sender.role,
+        agentId: sender.id,
+        ...(event.taskId ? { taskId: event.taskId } : {}),
+        ...(correlationId ? { correlationId } : {}),
+      }),
+      dispatchRework: async ({ recipientId, taskId, content }) => {
+        await createMessage(workstream, "human", [recipientId], content, "request", { taskId });
+      },
+    },
+  );
+  return outcome === "accepted";
 }
 
 async function handleWorkerResult(envelope: { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string }): Promise<void> {
@@ -1201,6 +1269,18 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       await reconcileCompletion(workstream);
       return;
     }
+    for (const completedTaskId of completedTaskIds) {
+      const candidate = workstream.tasks.find((item) => item.id === completedTaskId);
+      if (!candidate || candidate.status === "done") continue;
+      const isCompletingTask = candidate.id === task.id;
+      if (!await enforceCompletionArtifactQuality(
+        workstream,
+        candidate,
+        sender,
+        isCompletingTask ? envelope.correlationId : undefined,
+        !isCompletingTask,
+      )) return;
+    }
     task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "idle"); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: isFinalValidationTask(task) ? resultText : `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
   }
   for (const completedTaskId of completedTaskIds) {
@@ -1251,7 +1331,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         const owner = workstream.agents.find((candidate) => candidate.id === selected.ownerAgentId && policy.executionRoles.includes(candidate.role));
         handoffRecipientId = owner?.id;
         const actionContent = owner ? action.content.replace(/recipient=[^\s\]]+/, `recipient=${owner.role}`) : action.content;
-        dispatchContent = `${actionContent}\n\nPlanned task:\n${selected.title}\n\nAcceptance criteria:\n${selected.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+        dispatchContent = await taskDispatchContent(workstream, actionContent, selected);
       }
     } else {
       handoffTaskId = created[0]?.id;
@@ -1269,7 +1349,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
           const owner = workstream.agents.find((candidate) => candidate.id === selected.ownerAgentId && policy.executionRoles.includes(candidate.role));
           handoffRecipientId = owner?.id;
           const actionContent = owner ? action.content.replace(/recipient=[^\s\]]+/, `recipient=${owner.role}`) : action.content;
-          dispatchContent = `${actionContent}\n\nPlanned task:\n${selected.title}\n\nAcceptance criteria:\n${selected.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`;
+          dispatchContent = await taskDispatchContent(workstream, actionContent, selected);
         } else {
           const created = await createTasks(workstream, [{ title: deriveHandoffTitle(action.content, `Continue the ${workstream.flavor} workstream`), ownerRole, ...(parentTaskId ? { parentTaskId } : {}) }], sender.id);
           handoffTaskId = created[0]?.id;
