@@ -1,8 +1,13 @@
 import type { WorkstreamTemplate } from "@agentweave/domain";
 import type { Sql } from "postgres";
 
-const fromRow = (row: Record<string, unknown>): WorkstreamTemplate =>
-  row.template as WorkstreamTemplate;
+const fromRow = (row: Record<string, unknown>): WorkstreamTemplate => {
+  let template = row.template;
+  for (let attempt = 0; attempt < 2 && typeof template === "string"; attempt += 1) {
+    template = JSON.parse(template) as unknown;
+  }
+  return template as WorkstreamTemplate;
+};
 
 export class TemplateRepository {
   constructor(private readonly sql: Sql) {}
@@ -13,7 +18,7 @@ export class TemplateRepository {
   }
 
   async saveCustom(template: WorkstreamTemplate): Promise<void> {
-    await this.sql`insert into custom_workstream_templates (id, template) values (${template.id}, ${JSON.stringify(template)}::jsonb)`;
+    await this.sql`insert into custom_workstream_templates (id, template) values (${template.id}, ${this.sql.json(template)})`;
   }
 
   async deleteCustom(id: string): Promise<boolean> {
