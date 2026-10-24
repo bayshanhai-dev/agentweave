@@ -37,6 +37,7 @@ import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
 import { applyArtifactQualityGate } from "./artifact-quality.js";
 import { appendDependencyInputs, dependencyInputsSection, loadWrittenArtifacts } from "./artifact-handoff.js";
+import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayload, serializeGatedLeadDecisionPayload } from "./gated-lead-decision.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -69,6 +70,7 @@ const workstreams = new Map<string, Workstream>();
 const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const decompositionReprompts = new Map<string, number>();
 const completionGateTransitions = new Map<string, Promise<boolean>>();
+const gatedDecisionTransitions = new Map<string, Promise<boolean>>();
 const maxDecompositionReprompts = 2;
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
@@ -719,6 +721,7 @@ async function reconcileTaskDispatches(workstream: Workstream): Promise<void> {
 }
 
 async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
+  await reconcileGatedDecision(workstream);
   await reconcileWaveGateAfterActivation(workstream, orchestrationPolicyFor(workstream), {
     acknowledgeGateMessage: async (message) => {
       const aggregateStatus = await messageRepository.updateDelivery(message.id, "human", "acknowledged");
@@ -730,6 +733,46 @@ async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
     ...dispatchReconciliationDependencies(workstream),
   });
   await reconcileCompletion(workstream);
+}
+
+async function reconcileGatedDecision(workstream: Workstream): Promise<boolean> {
+  const existing = gatedDecisionTransitions.get(workstream.id);
+  if (existing) return existing;
+  const transition = (async () => {
+    const policy = orchestrationPolicyFor(workstream);
+    const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+    if (!lead) return false;
+    return reconcileGatedLeadDecisionAfterActivation(workstream, lead.id, {
+      applyDecision: (decision) => handleWorkerResult({
+        id: `${decision.eventId}:activation`,
+        type: "task.completed",
+        workstreamId: workstream.id,
+        correlationId: decision.correlationId,
+        payload: decision.payload,
+      }),
+      decisionApplied: (decision) => workstream.events.some(
+        (event) =>
+          event.type === "task.decomposition.persisted" &&
+          event.correlationId === decision.correlationId,
+      ),
+      recordApplied: (decision) => recordWorkflowEvent(workstream, {
+        id: `${decision.eventId}:applied`,
+        type: "orchestration.gated_decision_applied",
+        message: "Held lead decomposition decision applied after activation",
+        occurredAt: new Date().toISOString(),
+        role: lead.role,
+        agentId: lead.id,
+        correlationId: decision.correlationId,
+      }),
+    });
+  })();
+  gatedDecisionTransitions.set(workstream.id, transition);
+  try {
+    return await transition;
+  } finally {
+    if (gatedDecisionTransitions.get(workstream.id) === transition)
+      gatedDecisionTransitions.delete(workstream.id);
+  }
 }
 
 async function reconcileCompletion(workstream: Workstream): Promise<boolean> {
@@ -1035,7 +1078,32 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       }
     }
     await setAgentStatus(sender, "idle");
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.gated", message: `${task?.title ?? sender.role} → ${reason}; task stays dispatchable and will be re-driven after resume`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    let gatedDecisionOutput: string | undefined;
+    if (triggerDecomposition) {
+      const held = recoverGatedLeadDecisionPayload(workstream.events, {
+        agentId: sender.id,
+        ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+        ...(payload.taskId ? { taskId: payload.taskId } : {}),
+        ...(payload.turnId ? { turnId: payload.turnId } : {}),
+        ...(payload.text ? { text: payload.text } : {}),
+        ...(payload.structuredResult !== undefined ? { structuredResult: payload.structuredResult } : {}),
+        ...(payload.evidenceIds ? { evidenceIds: payload.evidenceIds } : {}),
+        ...(payload.provider ? { provider: payload.provider } : {}),
+        ...(payload.model ? { model: payload.model } : {}),
+        ...(payload.usage ? { usage: payload.usage } : {}),
+      });
+      if (held) {
+        try {
+          extractStructuredTaskSpecs(
+            held.structuredResult,
+            new Set(workstream.agents.map((agent) => agent.role)),
+            policy.reviewRole,
+          );
+          gatedDecisionOutput = serializeGatedLeadDecisionPayload(held);
+        } catch {}
+      }
+    }
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.gated", message: `${task?.title ?? sender.role} → ${reason}; ${gatedDecisionOutput ? "lead decision held for application after resume" : "task stays dispatchable and will be re-driven after resume"}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(gatedDecisionOutput ? { output: gatedDecisionOutput } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     return;
   }
   if (envelope.type === "task.failed") {
@@ -1336,7 +1404,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     } else {
       handoffTaskId = created[0]?.id;
     }
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.decomposition.persisted", message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from ${policy.leadRole} output`, occurredAt: new Date().toISOString(), role: sender.role });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.decomposition.persisted", message: `${created.length} durable task${created.length === 1 ? "" : "s"} created from ${policy.leadRole} output`, occurredAt: new Date().toISOString(), role: sender.role, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
   } else if (action.recipientRole !== "human") {
     const targetAgent = workstream.agents.find((candidate) => candidate.role === action.recipientRole);
     const ownerRole = targetAgent?.role;

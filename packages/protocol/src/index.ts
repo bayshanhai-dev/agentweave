@@ -260,6 +260,7 @@ const workflowEventTypes = [
   "orchestration.decomposition_failed",
   "orchestration.decomposition_reprompted",
   "orchestration.decision.applied",
+  "orchestration.gated_decision_applied",
   "orchestration.human_input_requested",
   "orchestration.implementation_trigger_exists",
   "orchestration.implementation_triggered",
