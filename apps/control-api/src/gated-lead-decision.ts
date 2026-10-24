@@ -1,7 +1,6 @@
 import type { AgentTurnResult } from "@agentweave/protocol";
-import { implementationTriggerMarker } from "./approval-implementation-trigger.js";
 import { collaborationStage } from "./collaboration-runtime.js";
-import { parseStructuredTurn } from "./structured-turn.js";
+import { extractStructuredTaskSpecs, parseStructuredTurn } from "./structured-turn.js";
 
 type DecisionEvent = {
   id: string;
@@ -34,11 +33,6 @@ export type GatedLeadDecision = {
 type DecisionWorkstream = {
   status: string;
   tasks: Array<{ title: string }>;
-  messages: Array<{
-    correlationId: string;
-    recipientIds: string[];
-    content: string;
-  }>;
   events: DecisionEvent[];
 };
 
@@ -189,6 +183,10 @@ function storedGatedLeadDecision(
 export function unappliedGatedLeadDecision(
   workstream: DecisionWorkstream,
   leadAgentId: string,
+  validation?: {
+    allowedOwnerRoles: ReadonlySet<string>;
+    reviewRole: string;
+  },
 ): GatedLeadDecision | undefined {
   if (
     workstream.status !== "active" ||
@@ -204,19 +202,16 @@ export function unappliedGatedLeadDecision(
       )
       .map((event) => event.correlationId!),
   );
-  for (let index = workstream.events.length - 1; index >= 0; index -= 1) {
+  const currentRoundBoundary = workstream.events.findLastIndex(
+    (event) => event.type === "collaboration.round.completed",
+  );
+  for (let index = workstream.events.length - 1; index > currentRoundBoundary; index -= 1) {
     const event = workstream.events[index]!;
     if (
       event.type !== "task.gated" ||
       event.agentId !== leadAgentId ||
       !event.correlationId ||
-      appliedCorrelations.has(event.correlationId) ||
-      !workstream.messages.some(
-        (message) =>
-          message.correlationId === event.correlationId &&
-          message.recipientIds.includes(leadAgentId) &&
-          message.content.includes(implementationTriggerMarker),
-      )
+      appliedCorrelations.has(event.correlationId)
     )
       continue;
     const payload = storedGatedLeadDecision(event) ?? recoverGatedLeadDecisionPayload(
@@ -227,12 +222,26 @@ export function unappliedGatedLeadDecision(
         ...(event.taskId ? { taskId: event.taskId } : {}),
       },
     );
-    if (payload)
+    if (payload) {
+      try {
+        if (validation) {
+          extractStructuredTaskSpecs(
+            payload.structuredResult,
+            validation.allowedOwnerRoles,
+            validation.reviewRole,
+          );
+        } else if (!payload.structuredResult.tasks.length) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
       return {
         eventId: event.id,
         correlationId: event.correlationId,
         payload,
       };
+    }
   }
   return undefined;
 }
@@ -245,9 +254,21 @@ export async function reconcileGatedLeadDecisionAfterActivation(
     applyDecision: (decision: GatedLeadDecision) => Promise<void>;
     decisionApplied: (decision: GatedLeadDecision) => boolean;
     recordApplied: (decision: GatedLeadDecision) => void;
+    allowedOwnerRoles?: ReadonlySet<string>;
+    reviewRole?: string;
   },
 ): Promise<boolean> {
-  const decision = unappliedGatedLeadDecision(workstream, leadAgentId);
+  const validation = dependencies.allowedOwnerRoles && dependencies.reviewRole
+    ? {
+        allowedOwnerRoles: dependencies.allowedOwnerRoles,
+        reviewRole: dependencies.reviewRole,
+      }
+    : undefined;
+  const decision = unappliedGatedLeadDecision(
+    workstream,
+    leadAgentId,
+    validation,
+  );
   if (!decision) return false;
   await dependencies.applyDecision(decision);
   if (!dependencies.decisionApplied(decision)) return false;

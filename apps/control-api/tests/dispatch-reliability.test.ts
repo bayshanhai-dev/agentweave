@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, durableDispatchTimeoutDecision, executionClaimCutoffForTask, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, durableDispatchTimeoutDecision, executionClaimCutoffForTask, implementationTriggerWatchdogMs, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
 
 describe("publishWithRetry", () => {
   it("retries a failed publish with the configured backoff", async () => {
@@ -25,6 +25,31 @@ describe("publishWithRetry", () => {
 });
 
 describe("TriggerDispatchWatchdog", () => {
+  it("gives lead decomposition turns a 600-second no-result window", async () => {
+    vi.useFakeTimers();
+    try {
+      const expired = vi.fn();
+      const watchdog = new TriggerDispatchWatchdog();
+      expect(implementationTriggerWatchdogMs).toBe(600_000);
+      expect(armTriggerWatchdogForDispatch(
+        watchdog,
+        "workstream-1",
+        "correlation-1",
+        "[agentweave implementation-trigger] decompose",
+        "lead-1",
+        "lead-1",
+        expired,
+      )).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(599_999);
+      expect(expired).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(expired).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("arms for a decomposition re-prompt dispatched to the lead", () => {
     const reprompt = "Reply with a task list.\n\n[agentweave implementation-trigger] Original trigger";
     const watchdog = new TriggerDispatchWatchdog();

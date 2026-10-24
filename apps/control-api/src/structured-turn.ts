@@ -12,7 +12,17 @@ import type {
 import type { TaskSpec } from "./orchestrator.js";
 import { withFinalValidationTask } from "./final-validation.js";
 
-export class InvalidStructuredTurn extends Error {}
+export class InvalidStructuredTurn extends Error {
+  readonly violations: string[];
+
+  constructor(messageOrViolations: string | readonly string[]) {
+    const violations = typeof messageOrViolations === "string"
+      ? [messageOrViolations]
+      : [...messageOrViolations];
+    super(violations.join("; "));
+    this.violations = violations;
+  }
+}
 export type TurnContext = {
   workstreamId: string;
   agentId: string;
@@ -45,12 +55,90 @@ export function parseStructuredTurn(value: unknown): AgentTurnResult {
   const parsed = agentTurnResultSchema.safeParse(value);
   if (!parsed.success)
     throw new InvalidStructuredTurn(
-      `Invalid AgentTurnResult: ${parsed.error.message}`,
+      parsed.error.issues.map((issue) => {
+        const path = issue.path.reduce<string>(
+          (rendered, segment) =>
+            typeof segment === "number"
+              ? `${rendered}[${segment}]`
+              : rendered
+                ? `${rendered}.${String(segment)}`
+                : String(segment),
+          "",
+        );
+        return `Invalid AgentTurnResult: ${path || "reply"} ${issue.message}`;
+      }),
     );
   return parsed.data;
 }
 
 const defaultDecompositionRoles = new Set(["backend", "frontend", "pe", "qa", "devops"]);
+const acceptanceCriterionPlaceholders = new Set([
+  "acceptance criteria",
+  "criterion",
+  "criteria",
+  "fill me in",
+  "fill this in",
+  "n/a",
+  "na",
+  "placeholder",
+  "tbd",
+  "todo",
+  "to be defined",
+  "to be determined",
+]);
+
+function isPlaceholderCriterion(value: string): boolean {
+  const normalized = value
+    .trim()
+    .replace(/^[[<(]+|[\]>)]+$/g, "")
+    .replace(/[.!:;]+$/g, "")
+    .trim()
+    .toLowerCase();
+  return acceptanceCriterionPlaceholders.has(normalized);
+}
+
+/** Return every concrete decomposition violation in deterministic task/field order. */
+export function structuredTaskSpecViolations(
+  result: AgentTurnResult,
+  allowedOwnerRoles: ReadonlySet<string> = defaultDecompositionRoles,
+): string[] {
+  const violations: string[] = [];
+  if (result.tasks.length === 0)
+    violations.push("tasks empty (expected between 1 and 12 tasks)");
+  else if (result.tasks.length > 12)
+    violations.push(`tasks has ${result.tasks.length} entries (expected between 1 and 12 tasks)`);
+
+  const firstIdIndex = new Map<string, number>();
+  const firstTitleIndex = new Map<string, number>();
+  result.tasks.forEach((task, index) => {
+    const firstWithId = firstIdIndex.get(task.id);
+    if (firstWithId === undefined) firstIdIndex.set(task.id, index);
+    else violations.push(`tasks[${index}].id ${JSON.stringify(task.id)} duplicates tasks[${firstWithId}].id`);
+
+    const title = task.title.trim();
+    const normalizedTitle = title.toLowerCase();
+    const firstWithTitle = firstTitleIndex.get(normalizedTitle);
+    if (firstWithTitle === undefined) firstTitleIndex.set(normalizedTitle, index);
+    else violations.push(`tasks[${index}].title ${JSON.stringify(title)} duplicates tasks[${firstWithTitle}].title`);
+
+    if (!title) violations.push(`tasks[${index}].title empty`);
+    else if (normalizedTitle === "task title")
+      violations.push(`tasks[${index}].title ${JSON.stringify(title)} is a placeholder`);
+    if (!allowedOwnerRoles.has(task.ownerRole))
+      violations.push(`tasks[${index}].ownerRole ${JSON.stringify(task.ownerRole)} not in template roles`);
+
+    const acceptanceCriteria = task.acceptanceCriteria.map((criterion) => criterion.trim());
+    if (!acceptanceCriteria.length)
+      violations.push(`tasks[${index}].acceptanceCriteria empty`);
+    acceptanceCriteria.forEach((criterion, criterionIndex) => {
+      if (!criterion)
+        violations.push(`tasks[${index}].acceptanceCriteria[${criterionIndex}] empty`);
+      else if (isPlaceholderCriterion(criterion))
+        violations.push(`tasks[${index}].acceptanceCriteria[${criterionIndex}] placeholder ${JSON.stringify(criterion)}`);
+    });
+  });
+  return violations;
+}
 
 /** Validate an implementation trigger's tasks atomically before any are persisted. */
 export function extractStructuredTaskSpecs(
@@ -58,24 +146,13 @@ export function extractStructuredTaskSpecs(
   allowedOwnerRoles: ReadonlySet<string> = defaultDecompositionRoles,
   reviewRole = "qa",
 ): TaskSpec[] {
-  if (result.tasks.length < 1 || result.tasks.length > 12)
-    throw new InvalidStructuredTurn("Decomposition must contain between 1 and 12 tasks");
-
+  const violations = structuredTaskSpecViolations(result, allowedOwnerRoles);
+  if (violations.length) throw new InvalidStructuredTurn(violations);
   const titles = result.tasks.map((task) => task.title.trim());
-  if (new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length)
-    throw new InvalidStructuredTurn("Decomposition task ids must be unique");
-  if (new Set(titles.map((title) => title.toLowerCase())).size !== titles.length)
-    throw new InvalidStructuredTurn("Decomposition task titles must be unique");
 
   const specs = result.tasks.map((task, index) => {
     const title = task.title.trim();
-    if (!title || title.toLowerCase() === "task title")
-      throw new InvalidStructuredTurn("Decomposition task title is invalid");
-    if (!allowedOwnerRoles.has(task.ownerRole))
-      throw new InvalidStructuredTurn(`Invalid decomposition owner role: ${task.ownerRole}`);
     const acceptanceCriteria = task.acceptanceCriteria.map((criterion) => criterion.trim());
-    if (!acceptanceCriteria.length || acceptanceCriteria.some((criterion) => !criterion))
-      throw new InvalidStructuredTurn(`Decomposition task "${title}" requires concrete acceptance criteria`);
     const dependencyRepairReasons: string[] = [];
     const dependencies = task.dependencies?.flatMap((reference) => {
       const dependencyIndex = typeof reference === "number"

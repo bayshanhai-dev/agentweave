@@ -1,6 +1,8 @@
 export const inboxPublishAttempts = 3;
 export const inboxPublishBackoffsMs = [250, 1_000] as const;
-export const implementationTriggerWatchdogMs = 180_000;
+/** Three times the observed ~200s local-model generation time. */
+export const implementationTriggerWatchdogMs = 600_000;
+export const durableTaskWatchdogMs = 180_000;
 /**
  * A durable task handoff whose newest delivery is older than this is treated
  * as lost when the owning Agent is idle and no execution claim exists: the
@@ -102,7 +104,12 @@ export function armTriggerWatchdogForDispatch(
   onExpired: () => void | Promise<void>,
 ): boolean {
   if (!shouldArmTriggerWatchdog(content, recipientId, leadAgentId)) return false;
-  watchdog.arm(workstreamId, correlationId, onExpired);
+  watchdog.arm(
+    workstreamId,
+    correlationId,
+    onExpired,
+    implementationTriggerWatchdogMs,
+  );
   return true;
 }
 
@@ -140,20 +147,25 @@ export async function publishWithRetry(
 export class TriggerDispatchWatchdog {
   private readonly timers = new Map<string, { workstreamId: string; timer: TimerHandle }>();
 
-  constructor(private readonly timeoutMs = implementationTriggerWatchdogMs) {}
+  constructor(private readonly timeoutMs = durableTaskWatchdogMs) {}
 
   private key(workstreamId: string, correlationId: string): string {
     return `${workstreamId}:${correlationId}`;
   }
 
-  arm(workstreamId: string, correlationId: string, onExpired: () => void | Promise<void>): void {
+  arm(
+    workstreamId: string,
+    correlationId: string,
+    onExpired: () => void | Promise<void>,
+    timeoutMs = this.timeoutMs,
+  ): void {
     const key = this.key(workstreamId, correlationId);
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing.timer);
     const timer = setTimeout(() => {
       this.timers.delete(key);
       void onExpired();
-    }, this.timeoutMs);
+    }, timeoutMs);
     timer.unref();
     this.timers.set(key, { workstreamId, timer });
   }

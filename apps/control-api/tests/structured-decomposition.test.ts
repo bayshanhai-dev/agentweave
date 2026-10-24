@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveTaskDependencies, resolveTaskDependencyPlan } from "../src/orchestrator.js";
-import { parseStructuredTurn, extractStructuredTaskSpecs, InvalidStructuredTurn } from "../src/structured-turn.js";
+import { parseStructuredTurn, extractStructuredTaskSpecs, InvalidStructuredTurn, structuredTaskSpecViolations } from "../src/structured-turn.js";
 
 const result = (tasks: Array<{ id: string; title: string; ownerRole: string; acceptanceCriteria?: string[]; dependencies?: Array<string | number> }>) =>
   parseStructuredTurn({ schemaVersion: 1, summary: "Implementation decomposition", insights: [], messages: [], tasks });
@@ -44,13 +44,21 @@ describe("structured decomposition task extraction", () => {
   });
 
   it("rejects an empty task set", () => {
+    expect(structuredTaskSpecViolations(result([]))).toEqual([
+      "tasks empty (expected between 1 and 12 tasks)",
+    ]);
     expect(() => extractStructuredTaskSpecs(result([]))).toThrow(InvalidStructuredTurn);
   });
 
   it("rejects an invalid role", () => {
-    expect(() => extractStructuredTaskSpecs(result([
+    const invalid = result([
       { id: "docs", title: "Write docs", ownerRole: "writer", acceptanceCriteria: [] },
-    ]))).toThrow(InvalidStructuredTurn);
+    ]);
+    expect(structuredTaskSpecViolations(invalid)).toEqual([
+      'tasks[0].ownerRole "writer" not in template roles',
+      "tasks[0].acceptanceCriteria empty",
+    ]);
+    expect(() => extractStructuredTaskSpecs(invalid)).toThrow(InvalidStructuredTurn);
   });
 
   it("accepts template-defined owner and review roles", () => {
@@ -68,10 +76,24 @@ describe("structured decomposition task extraction", () => {
     ]))).toThrow(InvalidStructuredTurn);
   });
 
-  it("rejects decomposition tasks without concrete acceptance criteria", () => {
+  it("accepts one plain-language acceptance criterion without requiring artifact metrics", () => {
+    expect(extractStructuredTaskSpecs(result([
+      { id: "docs", title: "Write docs", ownerRole: "backend", acceptanceCriteria: ["A reader can follow the setup instructions"] },
+    ]))[0]?.acceptanceCriteria).toEqual([
+      "A reader can follow the setup instructions",
+    ]);
+  });
+
+  it("rejects decomposition tasks with empty acceptance criteria", () => {
     expect(() => extractStructuredTaskSpecs(result([
       { id: "docs", title: "Write docs", ownerRole: "backend", acceptanceCriteria: [] },
-    ]))).toThrow(/requires concrete acceptance criteria/);
+    ]))).toThrow(/tasks\[0\]\.acceptanceCriteria empty/);
+  });
+
+  it("rejects placeholder acceptance criteria and names their index", () => {
+    expect(() => extractStructuredTaskSpecs(result([
+      { id: "docs", title: "Write docs", ownerRole: "backend", acceptanceCriteria: ["TBD"] },
+    ]))).toThrow(/tasks\[0\]\.acceptanceCriteria\[0\] placeholder "TBD"/);
   });
 
   it("validates sibling dependencies and resolves them to durable task ids", () => {
