@@ -1,6 +1,22 @@
 export type OrchestratorStage = "lead" | "planning" | "execution" | "review" | "waiting_for_human" | "completed";
 export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected" | "human.clarification.replied"; content: string; evidenceIds?: string[] };
 export type TaskSpec = { title: string; ownerRole?: string; acceptanceCriteria?: string[]; dependencies?: string[]; dependsOnAllPrevious?: boolean; parentTaskId?: string; relatedTaskIds?: string[] };
+
+/** Resolves sibling title references in a decomposition to durable task IDs. */
+export function resolveTaskDependencies(
+  specs: readonly TaskSpec[],
+  taskIds: readonly string[],
+): string[][] {
+  return specs.map((spec, index) => {
+    if (spec.dependsOnAllPrevious) return taskIds.slice(0, index);
+    return (spec.dependencies ?? []).map((reference) => {
+      const siblingIndex = specs.findIndex(
+        (candidate) => candidate.title.trim() === reference.trim(),
+      );
+      return siblingIndex >= 0 ? taskIds[siblingIndex]! : reference;
+    });
+  });
+}
 export type OrchestrationPolicy = { templateId: string; leadRole: string; planningRole: string; executionRoles: readonly string[]; reviewRole: string };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: string | "human"; messageType: "request" | "decision"; content: string; attempt: number; taskSpecs?: TaskSpec[] };
 export type OrchestrationDecision = {

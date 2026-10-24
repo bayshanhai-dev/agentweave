@@ -9,7 +9,19 @@ describe("AgentTurnResult contract", () => {
     });
     expect(result.schemaVersion).toBe(1);
     expect(result.tasks[0]?.acceptanceCriteria).toEqual([]);
+    expect(result.tasks[0]?.dependencies).toEqual([]);
     expect(result.insights).toEqual([]);
+  });
+
+  it("accepts sibling dependency references in structured task specs", () => {
+    const result = agentTurnResultSchema.parse({
+      summary: "Plan is ready",
+      tasks: [
+        { id: "research", title: "Research", ownerRole: "analyst", acceptanceCriteria: ["research.md cites three sources"], dependencies: [] },
+        { id: "draft", title: "Draft", ownerRole: "writer", acceptanceCriteria: ["draft.md is at least 1,000 words"], dependencies: ["research"] },
+      ],
+    });
+    expect(result.tasks[1]?.dependencies).toEqual(["research"]);
   });
 
   it("rejects malformed results with actionable paths", () => {
