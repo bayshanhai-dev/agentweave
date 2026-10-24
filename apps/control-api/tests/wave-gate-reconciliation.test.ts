@@ -161,6 +161,23 @@ function finalValidationFixture() {
 }
 
 describe("wave gate activation reconciliation", () => {
+  it("leaves collaboration tasks to the round-aware reconciler", async () => {
+    const fixture = waveFixture();
+    const task = fixture.secondWave[0]!;
+    task.title = "[Collaboration:proposal] Independent proposal from backend";
+    task.dependencies = [];
+    fixture.workstream.tasks = [task];
+
+    const result = await reconcileWaveGateAfterActivation(
+      fixture.workstream,
+      policy,
+      fixture.dependencies,
+    );
+
+    expect(result.dispatchedTaskIds).toEqual([]);
+    expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
+  });
+
   it("holds the next wave before approval, then releases the gate and delivers its task requests after resume", async () => {
     const fixture = waveFixture("waiting_for_human");
 

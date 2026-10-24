@@ -251,6 +251,7 @@ const workflowEventTypes = [
   "collaboration.round.started",
   "collaboration.round.stopped",
   "collaboration.turn.accepted",
+  "collaboration.turn.redriven",
   "message.dispatch_failed",
   "message.dispatch_reconciled",
   "message.gate_released",

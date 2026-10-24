@@ -38,6 +38,7 @@ import { isFinalValidationTask } from "./final-validation.js";
 import { applyArtifactQualityGate } from "./artifact-quality.js";
 import { appendDependencyInputs, dependencyInputsSection, loadWrittenArtifacts } from "./artifact-handoff.js";
 import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayload, serializeGatedLeadDecisionPayload } from "./gated-lead-decision.js";
+import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -71,6 +72,7 @@ const orchestrators = new Map<string, WorkstreamOrchestrator>();
 const decompositionReprompts = new Map<string, number>();
 const completionGateTransitions = new Map<string, Promise<boolean>>();
 const gatedDecisionTransitions = new Map<string, Promise<boolean>>();
+const collaborationRoundTransitions = new Map<string, Promise<string[]>>();
 const maxDecompositionReprompts = 2;
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
@@ -721,6 +723,7 @@ async function reconcileTaskDispatches(workstream: Workstream): Promise<void> {
 }
 
 async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
+  await reconcileCollaborationRound(workstream);
   await reconcileGatedDecision(workstream);
   await reconcileWaveGateAfterActivation(workstream, orchestrationPolicyFor(workstream), {
     acknowledgeGateMessage: async (message) => {
@@ -733,6 +736,28 @@ async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
     ...dispatchReconciliationDependencies(workstream),
   });
   await reconcileCompletion(workstream);
+}
+
+async function reconcileCollaborationRound(workstream: Workstream): Promise<string[]> {
+  const existing = collaborationRoundTransitions.get(workstream.id);
+  if (existing) return existing;
+  const transition = reconcileCollaborationRoundAfterActivation(workstream, {
+    listRounds: (workstreamId) => insightRepository.listRounds(workstreamId),
+    listInsights: (workstreamId) => insightRepository.listInsights(workstreamId),
+    hasExecutionClaim: (taskId, startedAfter) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId, startedAfter),
+    persistTask: async (candidate) => {
+      const task = workstream.tasks.find((item) => item.id === candidate.id);
+      if (task) await persistTask(task);
+    },
+    dispatchTurn: async ({ roundId, dispatch, task, senderId }) => createMessage(workstream, senderId, [dispatch.agentId], dispatch.prompt, "request", { taskId: task.id, causationId: roundId }),
+    emit: (type, message, details) => recordWorkflowEvent(workstream, { id: randomUUID(), type, message, occurredAt: new Date().toISOString(), ...details }),
+  });
+  collaborationRoundTransitions.set(workstream.id, transition);
+  try {
+    return await transition;
+  } finally {
+    if (collaborationRoundTransitions.get(workstream.id) === transition) collaborationRoundTransitions.delete(workstream.id);
+  }
 }
 
 async function reconcileGatedDecision(workstream: Workstream): Promise<boolean> {
@@ -1108,13 +1133,23 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   }
   if (envelope.type === "task.failed") {
     const task = durableTask;
-    if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     const reason = payload.error?.trim() || "provider execution failed";
     if (triggerDecomposition) {
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
       await recoverDecomposition(workstream, sender, envelope, { reason });
       return;
     }
+    if (task && await parkFailedCollaborationTurn(workstream, task, reason, {
+      persistTask: async (candidate) => {
+        const durable = workstream.tasks.find((item) => item.id === candidate.id);
+        if (durable) await persistTask(durable);
+      },
+      setAgentIdle: () => setAgentStatus(sender, "idle"),
+      recordFailure: (failureReason) => recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → ${failureReason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) }),
+      recordWaiting: () => recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: "Provider execution failed; Human decision required", occurredAt: new Date().toISOString() }),
+      persistWorkstreamStatus: () => persistWorkstreamStatus(workstream),
+    })) return;
+    if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "idle");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
     if (task) await reconcileTaskDispatches(workstream);

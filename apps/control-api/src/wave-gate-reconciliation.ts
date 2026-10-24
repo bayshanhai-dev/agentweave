@@ -1,5 +1,6 @@
 import { durableTaskDeliveryStaleMs, executionClaimCutoffForTask } from "./dispatch-reliability.js";
 import { isFinalValidationTask } from "./final-validation.js";
+import { collaborationStage } from "./collaboration-runtime.js";
 
 type ReconciliationAgent = { id: string; role: string; status?: string };
 type ReconciliationTask = {
@@ -113,6 +114,10 @@ export async function reconcileDispatchableTasks(
   for (const task of workstream.tasks) {
     if (
       task.status !== "assigned" ||
+      // Collaboration tasks carry stage-specific structured insight contracts.
+      // Their active-round reconciler owns any re-drive so this generic task
+      // path cannot replace one with an implementation-task prompt.
+      Boolean(collaborationStage(task.title)) ||
       !task.ownerAgentId ||
       !task.dependencies.every((dependency) =>
         terminalTaskIds.has(dependency),
