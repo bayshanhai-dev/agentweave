@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -241,8 +241,10 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   const workstream = workstreams.get(id);
   const body = request.body as OrchestrationDecision & { actorId?: string } | undefined;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  const pm = workstream.agents.find((agent) => agent.role === "pm");
-  if (!pm || body?.actorId !== pm.id) return reply.code(403).send({ error: "orchestration_decision_requires_pm_lead" });
+  const policy = orchestrationPolicyFor(workstream);
+  const authorization = authorizeOrchestrationDecision(workstream.agents, policy, body?.actorId);
+  if (!authorization.accepted) return reply.code(authorization.statusCode).send({ error: authorization.error });
+  const lead = authorization.lead;
   if (["paused", "completed", "emergency_stopped", "archived"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_runnable", status: workstream.status });
   const orchestrator = orchestrators.get(id);
   if (!orchestrator || !body) return reply.code(400).send({ error: "decision_required" });
@@ -250,27 +252,25 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   try { decision = orchestrator.validateDecision(body); } catch (error) { return reply.code(400).send({ error: "invalid_orchestration_decision", detail: String(error).replace(/^Error: /, "") }); }
   if (decision.action === "complete") {
     workstream.status = "completing";
-    emit(workstream, "orchestration.complete.requested", decision.reason, "pm");
+    emit(workstream, "orchestration.complete.requested", decision.reason, lead.role);
     workstream.status = "waiting_for_human";
     await persistWorkstreamStatus(workstream);
   } else if (decision.action === "ask_human") {
     workstream.status = "waiting_for_human";
-    emit(workstream, "orchestration.human_input_requested", decision.content ?? decision.reason, "pm");
+    emit(workstream, "orchestration.human_input_requested", decision.content ?? decision.reason, lead.role);
     await persistWorkstreamStatus(workstream);
   } else if (decision.action === "wait") {
-    emit(workstream, "orchestration.waiting", decision.reason, "pm");
+    emit(workstream, "orchestration.waiting", decision.reason, lead.role);
   } else {
     const target = workstream.agents.find((agent) => agent.role === decision.targetRole);
     if (!target) return reply.code(404).send({ error: "target_agent_not_found", role: decision.targetRole });
     let taskId: string | undefined;
     if (decision.action === "create_task") {
-      const fallbackOwner: TaskSpec["ownerRole"] = decision.targetRole === "coder" ? "coder" : decision.targetRole === "qa" ? "qa" : "pe";
-      const specs: TaskSpec[] = decision.tasks?.length ? decision.tasks : [{ title: decision.taskTitle!, ownerRole: fallbackOwner }];
-      const created = await createTasks(workstream, specs, pm.id);
+      const created = await createTasks(workstream, taskSpecsForDecision(decision, target.role), lead.id);
       taskId = created[0]?.id;
     }
-    await createMessage(workstream, pm.id, [target.id], decision.content ?? decision.taskTitle!, "request", { ...(taskId ? { taskId } : {}) });
-    emit(workstream, "orchestration.decision.applied", decision.reason, "pm");
+    await createMessage(workstream, lead.id, [target.id], decision.content ?? decision.taskTitle!, "request", { ...(taskId ? { taskId } : {}) });
+    emit(workstream, "orchestration.decision.applied", decision.reason, lead.role);
   }
   return { accepted: true, workstreamId: id, decision };
 });

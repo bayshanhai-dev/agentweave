@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, reviewedTaskFor, selectPlannedTask, sliceFromDecompositionMarker, taskWasDispatchedToAgent, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, orchestrationDecisionLead, reviewedTaskFor, selectPlannedTask, sliceFromDecompositionMarker, taskSpecsForDecision, taskWasDispatchedToAgent, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
 
 describe("sliceFromDecompositionMarker", () => {
   it("slices from a marker at the start of the reply", () => {
@@ -83,6 +83,46 @@ describe("WorkstreamOrchestrator", () => {
     expect(flow.validateDecision({ action: "create_task", targetRole: "qa", taskTitle: "Run API integration checks", reason: "The implementation changed materially" }).targetRole).toBe("qa");
     expect(() => flow.validateDecision({ action: "create_task", targetRole: "qa", reason: "missing title" })).toThrow("taskTitle");
     expect(() => flow.validateDecision({ action: "message_agent", targetRole: "coder", reason: "missing content" })).toThrow("content");
+  });
+
+  it("accepts create_task decisions from a custom template lead and assigns the resolved target role", () => {
+    const policy: OrchestrationPolicy = { templateId: "production", leadRole: "showrunner", planningRole: "writer", executionRoles: ["producer"], reviewRole: "editor" };
+    const agents = [
+      { id: "showrunner-1", role: "showrunner" },
+      { id: "producer-1", role: "producer" },
+    ];
+    const flow = new WorkstreamOrchestrator("production-1", "Produce the episode", policy);
+    const decision = flow.validateDecision({ action: "create_task", targetRole: "producer", taskTitle: "Produce the final episode", reason: "The approved plan is ready" });
+
+    expect(authorizeOrchestrationDecision(agents, policy, "showrunner-1")).toEqual({ accepted: true, lead: agents[0] });
+    expect(taskSpecsForDecision(decision, agents[1]!.role)).toEqual([
+      { title: "Produce the final episode", ownerRole: "producer" },
+    ]);
+  });
+
+  it("rejects a non-lead decision actor for a custom template", () => {
+    const policy: OrchestrationPolicy = { templateId: "production", leadRole: "showrunner", planningRole: "writer", executionRoles: ["producer"], reviewRole: "editor" };
+    const agents = [
+      { id: "showrunner-1", role: "showrunner" },
+      { id: "producer-1", role: "producer" },
+    ];
+
+    expect(authorizeOrchestrationDecision(agents, policy, "producer-1")).toEqual({
+      accepted: false,
+      statusCode: 403,
+      error: "orchestration_decision_requires_pm_lead",
+    });
+  });
+
+  it("keeps software-development decision authorization on the pm agent", () => {
+    const agents = [
+      { id: "pm-1", role: "pm" },
+      { id: "backend-1", role: "backend" },
+    ];
+    const policy: OrchestrationPolicy = { templateId: "software-development", leadRole: "pm", planningRole: "pe", executionRoles: ["backend", "frontend"], reviewRole: "qa" };
+
+    expect(orchestrationDecisionLead(agents, policy, "pm-1")).toEqual(agents[0]);
+    expect(orchestrationDecisionLead(agents, policy, "backend-1")).toBeUndefined();
   });
 
   it("extracts multiple independent owned tasks from PM output", () => {

@@ -12,6 +12,39 @@ export type OrchestrationDecision = {
   reason: string;
 };
 
+type OrchestrationDecisionAgent = { id: string; role: string };
+
+/** Resolve the policy lead authorized to submit an orchestration decision. */
+export function orchestrationDecisionLead<T extends OrchestrationDecisionAgent>(
+  agents: readonly T[],
+  policy: OrchestrationPolicy,
+  actorId: string | undefined,
+): T | undefined {
+  const lead = agents.find((agent) => agent.role === policy.leadRole);
+  return lead?.id === actorId ? lead : undefined;
+}
+
+export function authorizeOrchestrationDecision<T extends OrchestrationDecisionAgent>(
+  agents: readonly T[],
+  policy: OrchestrationPolicy,
+  actorId: string | undefined,
+): { accepted: true; lead: T } | { accepted: false; statusCode: 403; error: "orchestration_decision_requires_pm_lead" } {
+  const lead = orchestrationDecisionLead(agents, policy, actorId);
+  return lead
+    ? { accepted: true, lead }
+    : { accepted: false, statusCode: 403, error: "orchestration_decision_requires_pm_lead" };
+}
+
+/** Preserve explicit task specs; otherwise assign the fallback task to its resolved target role. */
+export function taskSpecsForDecision(
+  decision: OrchestrationDecision,
+  targetRole: string,
+): TaskSpec[] {
+  return decision.tasks?.length
+    ? decision.tasks
+    : [{ title: decision.taskTitle!, ownerRole: targetRole }];
+}
+
 type RoutableTask = { id: string; status: string; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds?: string[]; dependencies?: string[] };
 type RoutableMessage = { taskId?: string; recipientIds: readonly string[]; correlationId?: string };
 
