@@ -1,21 +1,56 @@
 export type OrchestratorStage = "lead" | "planning" | "execution" | "review" | "waiting_for_human" | "completed";
 export type OrchestratorEvent = { type: "goal.received" | "task.decomposed" | "design.completed" | "implementation.completed" | "qa.passed" | "qa.failed" | "human.approved" | "human.rejected" | "human.clarification.replied"; content: string; evidenceIds?: string[] };
-export type TaskSpec = { title: string; ownerRole?: string; acceptanceCriteria?: string[]; dependencies?: string[]; dependsOnAllPrevious?: boolean; parentTaskId?: string; relatedTaskIds?: string[] };
+export type TaskSpec = { title: string; ownerRole?: string; acceptanceCriteria?: string[]; dependencies?: Array<string | number>; dependencyRepairReasons?: string[]; dependsOnAllPrevious?: boolean; parentTaskId?: string; relatedTaskIds?: string[] };
 
-/** Resolves sibling title references in a decomposition to durable task IDs. */
+export type TaskDependencyPlan = {
+  dependencies: string[][];
+  repairs: string[];
+};
+
+const normalizedTitle = (title: string): string => title.trim().toLowerCase();
+
+/** Resolves sibling ids, titles, normalized titles, and one-based ordinals to durable task IDs. */
+export function resolveTaskDependencyPlan(
+  specs: readonly TaskSpec[],
+  taskIds: readonly string[],
+): TaskDependencyPlan {
+  const repairs = specs.flatMap((spec) => spec.dependencyRepairReasons ?? []);
+  const dependencies = specs.map((spec, index) => {
+    if (spec.dependsOnAllPrevious) return taskIds.slice(0, index);
+    if (spec.dependencies === undefined)
+      return index === 0 ? [] : [taskIds[index - 1]!];
+    if (spec.dependencies.length === 0) return [];
+
+    const resolved = spec.dependencies.flatMap((reference) => {
+      const siblingIndex = typeof reference === "number"
+        ? reference - 1
+        : specs.findIndex((candidate, candidateIndex) =>
+            candidateIndex < index && (
+              taskIds[candidateIndex] === reference.trim() ||
+              candidate.title.trim() === reference.trim() ||
+              normalizedTitle(candidate.title) === normalizedTitle(reference)
+            )
+          );
+      if (siblingIndex < 0 || siblingIndex >= index) {
+        repairs.push(`Task "${spec.title.trim()}" dropped unresolved dependency ${JSON.stringify(reference)}`);
+        return [];
+      }
+      return [taskIds[siblingIndex]!];
+    });
+    const unique = [...new Set(resolved)];
+    if (unique.length || index === 0) return unique;
+    repairs.push(`Task "${spec.title.trim()}" uses the previous task as its dependency fallback`);
+    return [taskIds[index - 1]!];
+  });
+  return { dependencies, repairs };
+}
+
+/** Compatibility wrapper for callers that only need the resolved graph. */
 export function resolveTaskDependencies(
   specs: readonly TaskSpec[],
   taskIds: readonly string[],
 ): string[][] {
-  return specs.map((spec, index) => {
-    if (spec.dependsOnAllPrevious) return taskIds.slice(0, index);
-    return (spec.dependencies ?? []).map((reference) => {
-      const siblingIndex = specs.findIndex(
-        (candidate) => candidate.title.trim() === reference.trim(),
-      );
-      return siblingIndex >= 0 ? taskIds[siblingIndex]! : reference;
-    });
-  });
+  return resolveTaskDependencyPlan(specs, taskIds).dependencies;
 }
 export type OrchestrationPolicy = { templateId: string; leadRole: string; planningRole: string; executionRoles: readonly string[]; reviewRole: string };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: string | "human"; messageType: "request" | "decision"; content: string; attempt: number; taskSpecs?: TaskSpec[] };

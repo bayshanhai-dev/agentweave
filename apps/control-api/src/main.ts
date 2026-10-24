@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, resolveTaskDependencies, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, resolveTaskDependencyPlan, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -39,6 +39,7 @@ import { applyArtifactQualityGate } from "./artifact-quality.js";
 import { appendDependencyInputs, dependencyInputsSection, loadWrittenArtifacts } from "./artifact-handoff.js";
 import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayload, serializeGatedLeadDecisionPayload } from "./gated-lead-decision.js";
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
+import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -73,6 +74,7 @@ const decompositionReprompts = new Map<string, number>();
 const completionGateTransitions = new Map<string, Promise<boolean>>();
 const gatedDecisionTransitions = new Map<string, Promise<boolean>>();
 const collaborationRoundTransitions = new Map<string, Promise<string[]>>();
+const decompositionFailureTransitions = new Map<string, Promise<boolean>>();
 const maxDecompositionReprompts = 2;
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
@@ -303,6 +305,7 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
   try {
     const previousStatus = workstream.status;
     const response = await lifecycleCommandHandler.approve(workstream, body, (type, message) => emit(workstream, type, message));
+    if (previousStatus === "waiting_for_human" && workstream.status === "active") await reconcileAfterActivation(workstream);
     if (body.decision === "resume") {
       await republishImplementationTriggerAfterResume(workstream, {
         listRounds: (workstreamId) => insightRepository.listRounds(workstreamId),
@@ -311,7 +314,6 @@ app.post("/api/workstreams/:id/approval", async (request, reply) => {
         emit: (type, message, role) => emit(workstream, type, message, role),
       });
     }
-    if (previousStatus === "waiting_for_human" && workstream.status === "active") await reconcileAfterActivation(workstream);
     return response;
   }
   catch (error) { if (error instanceof WorkstreamCommandError) return reply.code(error.statusCode).send(error.body); throw error; }
@@ -664,7 +666,7 @@ async function taskDispatchContent(
 async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAgentId?: string): Promise<Task[]> {
   const now = new Date().toISOString();
   const taskIds = specs.map(() => `${workstream.id}:task-${randomUUID()}`);
-  const resolvedDependencies = resolveTaskDependencies(specs, taskIds);
+  const dependencyPlan = resolveTaskDependencyPlan(specs, taskIds);
   const created: Task[] = specs.map((spec, index) => {
     const owner = spec.ownerRole ? workstream.agents.find((agent) => agent.role === spec.ownerRole) : undefined;
     return {
@@ -672,10 +674,18 @@ async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAge
       ...(owner ? { ownerAgentId: owner.id } : {}), ...(creatorAgentId ? { createdByAgentId: creatorAgentId } : {}),
       ...(spec.parentTaskId ? { parentTaskId: spec.parentTaskId } : {}), relatedTaskIds: spec.relatedTaskIds ?? [],
       acceptanceCriteria: spec.acceptanceCriteria?.length ? spec.acceptanceCriteria : ["Task is completed with evidence"],
-      dependencies: resolvedDependencies[index]!, evidence: [], qualityAttempts: 0, createdAt: now, updatedAt: now,
+      dependencies: dependencyPlan.dependencies[index]!, evidence: [], qualityAttempts: 0, createdAt: now, updatedAt: now,
     };
   });
   workstream.tasks.push(...created);
+  if (dependencyPlan.repairs.length) {
+    emit(
+      workstream,
+      "orchestration.decomposition_dependencies_repaired",
+      `Decomposition dependency references repaired: ${dependencyPlan.repairs.join("; ").slice(0, 600)}`,
+      creatorAgentId ? workstream.agents.find((agent) => agent.id === creatorAgentId)?.role : undefined,
+    );
+  }
   for (const task of created) { await persistTask(task); emit(workstream, "task.created", `${task.ownerAgentId ? "Task assigned" : "Task queued"}: ${task.title}`, creatorAgentId ? workstream.agents.find((agent) => agent.id === creatorAgentId)?.role : undefined); }
   return created;
 }
@@ -725,6 +735,7 @@ async function reconcileTaskDispatches(workstream: Workstream): Promise<void> {
 async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
   await reconcileCollaborationRound(workstream);
   await reconcileGatedDecision(workstream);
+  await reconcileDecompositionFailure(workstream);
   await reconcileWaveGateAfterActivation(workstream, orchestrationPolicyFor(workstream), {
     acknowledgeGateMessage: async (message) => {
       const aggregateStatus = await messageRepository.updateDelivery(message.id, "human", "acknowledged");
@@ -736,6 +747,32 @@ async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
     ...dispatchReconciliationDependencies(workstream),
   });
   await reconcileCompletion(workstream);
+}
+
+async function reconcileDecompositionFailure(workstream: Workstream): Promise<boolean> {
+  const existing = decompositionFailureTransitions.get(workstream.id);
+  if (existing) return existing;
+  const policy = orchestrationPolicyFor(workstream);
+  const transition = reconcileDecompositionFailureAfterActivation(workstream, {
+    leadRole: policy.leadRole,
+    listRounds: (workstreamId) => insightRepository.listRounds(workstreamId),
+    listInsights: (workstreamId) => insightRepository.listInsights(workstreamId),
+    dispatchTrigger: async ({ leadAgentId, content, causationId }) => {
+      const trigger = await createMessage(workstream, "human", [leadAgentId], content, "directive", {
+        ...(causationId ? { causationId } : {}),
+      });
+      if (trigger.deliveryStatus === "delivered") decompositionReprompts.delete(workstream.id);
+      return trigger;
+    },
+    emit: (type, message) => emit(workstream, type, message, "human"),
+  });
+  decompositionFailureTransitions.set(workstream.id, transition);
+  try {
+    return await transition;
+  } finally {
+    if (decompositionFailureTransitions.get(workstream.id) === transition)
+      decompositionFailureTransitions.delete(workstream.id);
+  }
 }
 
 async function reconcileCollaborationRound(workstream: Workstream): Promise<string[]> {
@@ -957,7 +994,7 @@ async function recoverDecomposition(
       );
     }
     const ownerRoles = workstream.agents.map((agent) => agent.role).join(", ");
-    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, dependencies naming every earlier sibling task whose output it consumes (ids or exact titles), and a non-empty acceptanceCriteria array whose entries name the artifact and measurable properties such as file path, minimum length, required sections, or language. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
+    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, and a non-empty acceptanceCriteria array whose entries name the artifact and measurable properties such as file path, minimum length, required sections, or language. Dependencies are optional: omit them to depend on the immediately preceding task, use an explicit empty list for no dependencies, or reference earlier siblings by 1-based ordinal, id, or title. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
@@ -970,13 +1007,14 @@ async function recoverDecomposition(
   const detail = failure
     ? `The PM's turn failed or timed out: ${failure.reason}`
     : `The PM's last reply began:\n\n${JSON.stringify(resultText.slice(0, 500))}`;
-  await createMessage(workstream, sender.id, ["human"], `Implementation decomposition failed after ${maxDecompositionReprompts} retries. ${detail}`, "decision", {
-    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+  await parkTerminalDecompositionFailure(workstream, maxDecompositionReprompts, detail, {
+    createFailureMessage: (content) => createMessage(workstream, sender.id, ["human"], content, "decision", {
+      ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+    }),
+    emitFailure: (message) => emit(workstream, "orchestration.decomposition_failed", message, sender.role),
+    persistWorkstreamStatus: () => persistWorkstreamStatus(workstream),
+    setLeadIdle: () => setAgentStatus(sender, "idle"),
   });
-  workstream.status = "waiting_for_human";
-  emit(workstream, "orchestration.decomposition_failed", `PM decomposition failed after ${maxDecompositionReprompts} retries`, sender.role);
-  await persistWorkstreamStatus(workstream);
-  await setAgentStatus(sender, "idle");
 }
 
 async function enforceCompletionArtifactQuality(

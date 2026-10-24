@@ -9,7 +9,7 @@ describe("AgentTurnResult contract", () => {
     });
     expect(result.schemaVersion).toBe(1);
     expect(result.tasks[0]?.acceptanceCriteria).toEqual([]);
-    expect(result.tasks[0]?.dependencies).toEqual([]);
+    expect(result.tasks[0]?.dependencies).toBeUndefined();
     expect(result.insights).toEqual([]);
   });
 
@@ -22,6 +22,17 @@ describe("AgentTurnResult contract", () => {
       ],
     });
     expect(result.tasks[1]?.dependencies).toEqual(["research"]);
+  });
+
+  it("accepts one-based ordinal dependency references", () => {
+    const result = agentTurnResultSchema.parse({
+      summary: "Plan is ready",
+      tasks: [
+        { id: "research", title: "Research", ownerRole: "analyst" },
+        { id: "draft", title: "Draft", ownerRole: "writer", dependencies: [1] },
+      ],
+    });
+    expect(result.tasks[1]?.dependencies).toEqual([1]);
   });
 
   it("rejects malformed results with actionable paths", () => {

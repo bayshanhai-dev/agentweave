@@ -76,21 +76,39 @@ export function extractStructuredTaskSpecs(
     const acceptanceCriteria = task.acceptanceCriteria.map((criterion) => criterion.trim());
     if (!acceptanceCriteria.length || acceptanceCriteria.some((criterion) => !criterion))
       throw new InvalidStructuredTurn(`Decomposition task "${title}" requires concrete acceptance criteria`);
-    const dependencies = task.dependencies.map((reference) => {
-      const dependencyIndex = result.tasks.findIndex(
-        (candidate) => candidate.id === reference || candidate.title.trim() === reference.trim(),
-      );
-      if (dependencyIndex < 0)
-        throw new InvalidStructuredTurn(`Unknown decomposition dependency: ${reference}`);
-      if (dependencyIndex >= index)
-        throw new InvalidStructuredTurn(`Decomposition dependency must reference an earlier task: ${reference}`);
-      return titles[dependencyIndex]!;
+    const dependencyRepairReasons: string[] = [];
+    const dependencies = task.dependencies?.flatMap((reference) => {
+      const dependencyIndex = typeof reference === "number"
+        ? reference - 1
+        : result.tasks.findIndex((candidate) =>
+            candidate.id === reference ||
+            candidate.title.trim() === reference.trim() ||
+            candidate.title.trim().toLowerCase() === reference.trim().toLowerCase()
+          );
+      if (dependencyIndex < 0 || dependencyIndex >= index) {
+        dependencyRepairReasons.push(
+          `Task "${title}" dropped unresolved dependency ${JSON.stringify(reference)}`,
+        );
+        return [];
+      }
+      return [titles[dependencyIndex]!];
     });
+    const uniqueDependencies = dependencies === undefined
+      ? undefined
+      : [...new Set(dependencies)];
+    if (task.dependencies?.length && !uniqueDependencies?.length && index > 0) {
+      dependencyRepairReasons.push(
+        `Task "${title}" uses the previous task as its dependency fallback`,
+      );
+    }
     return {
       title,
       ownerRole: task.ownerRole,
       acceptanceCriteria,
-      dependencies,
+      ...(uniqueDependencies?.length || task.dependencies?.length === 0
+        ? { dependencies: uniqueDependencies ?? [] }
+        : {}),
+      ...(dependencyRepairReasons.length ? { dependencyRepairReasons } : {}),
     };
   });
   return withFinalValidationTask(specs, reviewRole);
@@ -158,6 +176,7 @@ export function planStructuredTurn(
     result.tasks.flatMap((task) => [
       [task.id, scopedId("task", task.id)] as const,
       [task.title.trim(), scopedId("task", task.id)] as const,
+      [task.title.trim().toLowerCase(), scopedId("task", task.id)] as const,
     ]),
   );
   const tasks: PersistedTask[] = result.tasks.map((task) => ({
@@ -170,9 +189,15 @@ export function planStructuredTurn(
     ...(sourceTask ? { parentTaskId: sourceTask.id } : {}),
     relatedTaskIds: [],
     acceptanceCriteria: task.acceptanceCriteria,
-    dependencies: task.dependencies.map((dependency) =>
-      localTaskIds.get(dependency) ?? dependency
-    ),
+    dependencies: (task.dependencies ?? []).map((dependency) => {
+      if (typeof dependency === "number")
+        return result.tasks[dependency - 1]
+          ? scopedId("task", result.tasks[dependency - 1]!.id)
+          : String(dependency);
+      return localTaskIds.get(dependency) ??
+        localTaskIds.get(dependency.trim().toLowerCase()) ??
+        dependency;
+    }),
     evidence: [],
     qualityAttempts: 0,
     createdAt: context.now,
