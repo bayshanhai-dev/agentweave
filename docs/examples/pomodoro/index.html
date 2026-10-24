@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Focus Timer — built by an AgentWeave run</title>
+<meta name="description" content="A single-page Pomodoro focus timer built end to end by an AgentWeave agent team from a one-sentence brief.">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <p class="eyebrow">Pomodoro · Focus timer</p>
+    <p class="day-mark"><time id="today-label"></time></p>
+  </header>
+  <main>
+    <section class="timer-card" id="timer-panel" data-mode="focus" aria-label="Timer">
+      <div class="mode-tabs" role="tablist" aria-label="Session mode">
+        <button class="mode-tab is-selected" role="tab" data-mode="focus" aria-selected="true">Focus</button>
+        <button class="mode-tab" role="tab" data-mode="break" aria-selected="false">Break</button>
+      </div>
+      <div class="timer-meta">
+        <h2 class="mode-label" id="timer-heading">Focus session</h2>
+        <span class="state-badge"><span class="state-dot"></span><span id="state-label">Ready</span></span>
+      </div>
+      <div class="timer-wrap">
+        <div class="timer-ring" id="timer-ring"><div class="timer-ring-inner"></div></div>
+        <div class="timer" id="timer" role="timer" aria-label="Time remaining">25:00</div>
+      </div>
+      <div class="progress-track" id="progress-track" role="progressbar" aria-label="Focus session progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-bar"></span></div>
+      <p class="status" id="status">Ready when you are.</p>
+      <div class="controls">
+        <button class="button button-primary" id="start-pause">Start focus</button>
+        <button class="button button-secondary" id="reset">Reset</button>
+      </div>
+      <p class="shortcut-hint">Press <kbd>Space</kbd> to start or pause · <kbd>R</kbd> to reset</p>
+    </section>
+    <section class="stats-card" aria-label="Today">
+      <div><h2>Today</h2><p class="stats-note">Progress is stored locally in your browser.</p></div>
+      <div class="stat-grid">
+        <div class="stat"><span class="stat-value" id="completed-count">0</span><span class="stat-label">Focus sessions</span></div>
+        <div class="stat"><span class="stat-value" id="focus-minutes">0</span><span class="stat-label">Focus minutes</span></div>
+      </div>
+    </section>
+    <section class="history-card" aria-label="History">
+      <div class="section-heading"><h2>History</h2><p class="history-caption">Last 7 days</p></div>
+      <div class="history-list" id="history-list"></div>
+    </section>
+  </main>
+  <div class="sr-only" id="announcer" aria-live="polite"></div>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
