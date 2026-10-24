@@ -134,6 +134,17 @@ describe("approval implementation trigger recovery", () => {
     expect(createMessage).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
   });
+
+  it("leaves terminal decomposition failures to activation reconciliation", async () => {
+    const { workstream, dependencies, createMessage } = fixture();
+    workstream.events.push({
+      type: "orchestration.decomposition_failed",
+      occurredAt: "2026-01-01T00:00:02.000Z",
+    });
+
+    expect(await republishImplementationTriggerAfterResume(workstream, dependencies)).toBe(false);
+    expect(createMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe("implementation trigger instruction", () => {
@@ -146,6 +157,8 @@ describe("implementation trigger instruction", () => {
     expect(content).toContain("not itself a deliverable");
     expect(content).toContain("Meta-tasks that create, rewrite, verify, test, or validate the synthesis document are forbidden");
     expect(content).toContain("ownerRole that is one of showrunner, producer, reviewer");
+    expect(content).toContain("omit dependencies to depend on the immediately preceding task");
+    expect(content).toContain("1-based ordinal, id, or title");
   });
 
   it("renders structured synthesis content as readable guidance rather than raw JSON", () => {

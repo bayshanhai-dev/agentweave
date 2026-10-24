@@ -19,6 +19,8 @@ describe("scaling contracts", () => {
       "message.gate_released",
       "orchestration.agent_directive_suppressed",
       "orchestration.decomposition_failed",
+      "orchestration.decomposition_dependencies_repaired",
+      "orchestration.decomposition_redriven",
       "orchestration.decomposition_reprompted",
       "orchestration.implementation_trigger_exists",
       "orchestration.lead",

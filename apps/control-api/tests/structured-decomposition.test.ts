@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveTaskDependencies } from "../src/orchestrator.js";
+import { resolveTaskDependencies, resolveTaskDependencyPlan } from "../src/orchestrator.js";
 import { parseStructuredTurn, extractStructuredTaskSpecs, InvalidStructuredTurn } from "../src/structured-turn.js";
 
-const result = (tasks: Array<{ id: string; title: string; ownerRole: string; acceptanceCriteria?: string[]; dependencies?: string[] }>) =>
+const result = (tasks: Array<{ id: string; title: string; ownerRole: string; acceptanceCriteria?: string[]; dependencies?: Array<string | number> }>) =>
   parseStructuredTurn({ schemaVersion: 1, summary: "Implementation decomposition", insights: [], messages: [], tasks });
 
 describe("structured decomposition task extraction", () => {
@@ -11,7 +11,7 @@ describe("structured decomposition task extraction", () => {
       { id: "api", title: "  Build the API  ", ownerRole: "backend", acceptanceCriteria: ["api.ts exposes a tested GET /episodes endpoint"] },
       { id: "ui", title: "Build the UI", ownerRole: "frontend", dependencies: ["api"], acceptanceCriteria: ["EpisodeList.tsx renders every API result"] },
     ]))).toEqual([
-      { title: "Build the API", ownerRole: "backend", acceptanceCriteria: ["api.ts exposes a tested GET /episodes endpoint"], dependencies: [] },
+      { title: "Build the API", ownerRole: "backend", acceptanceCriteria: ["api.ts exposes a tested GET /episodes endpoint"] },
       { title: "Build the UI", ownerRole: "frontend", acceptanceCriteria: ["EpisodeList.tsx renders every API result"], dependencies: ["Build the API"] },
       {
         title: "Final validation: run the full project suite",
@@ -57,7 +57,7 @@ describe("structured decomposition task extraction", () => {
     expect(extractStructuredTaskSpecs(result([
       { id: "produce", title: "Produce the episode", ownerRole: "producer", acceptanceCriteria: ["episode.md contains at least 1,200 words"] },
     ]), new Set(["showrunner", "producer", "editor"]), "editor")).toEqual([
-      { title: "Produce the episode", ownerRole: "producer", acceptanceCriteria: ["episode.md contains at least 1,200 words"], dependencies: [] },
+      { title: "Produce the episode", ownerRole: "producer", acceptanceCriteria: ["episode.md contains at least 1,200 words"] },
       expect.objectContaining({ ownerRole: "editor", dependsOnAllPrevious: true }),
     ]);
   });
@@ -84,6 +84,35 @@ describe("structured decomposition task extraction", () => {
     expect(resolveTaskDependencies(specs, ["task-101", "task-102"])).toEqual([
       [],
       ["task-101"],
+    ]);
+  });
+
+  it("resolves ordinals and normalized titles, chains omissions, and preserves explicit empty lists", () => {
+    const specs = extractStructuredTaskSpecs(result([
+      { id: "research", title: "Research the Market", ownerRole: "backend", acceptanceCriteria: ["research.md cites three sources"] },
+      { id: "outline", title: "Create Outline", ownerRole: "frontend", acceptanceCriteria: ["outline.md has five sections"] },
+      { id: "draft", title: "Draft Copy", ownerRole: "frontend", dependencies: [1, "  CREATE OUTLINE  "], acceptanceCriteria: ["draft.md is at least 1,000 words"] },
+      { id: "independent", title: "Create Artwork", ownerRole: "frontend", dependencies: [], acceptanceCriteria: ["artwork.svg has a 1200x630 viewBox"] },
+    ])).slice(0, -1);
+
+    expect(resolveTaskDependencies(specs, ["task-1", "task-2", "task-3", "task-4"])).toEqual([
+      [],
+      ["task-1"],
+      ["task-1", "task-2"],
+      [],
+    ]);
+  });
+
+  it("accepts valid tasks with an unresolvable reference and records the deterministic repair", () => {
+    const specs = extractStructuredTaskSpecs(result([
+      { id: "research", title: "Research", ownerRole: "backend", dependencies: [], acceptanceCriteria: ["research.md cites three sources"] },
+      { id: "draft", title: "Draft", ownerRole: "frontend", dependencies: ["research", "missing-task"], acceptanceCriteria: ["draft.md is at least 1,000 words"] },
+    ])).slice(0, -1);
+    const plan = resolveTaskDependencyPlan(specs, ["task-1", "task-2"]);
+
+    expect(plan.dependencies).toEqual([[], ["task-1"]]);
+    expect(plan.repairs).toEqual([
+      'Task "Draft" dropped unresolved dependency "missing-task"',
     ]);
   });
 

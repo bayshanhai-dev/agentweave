@@ -45,7 +45,7 @@ export function implementationTriggerInstruction(
   ownerRoles: readonly string[] = defaultOwnerRoles,
 ): string {
   const roles = [...new Set(ownerRoles)].join(", ");
-  return `WORKSTREAM GOAL (verbatim):\n${goal}\n\nThe tasks must directly produce the deliverables required by this goal. The collaboration synthesis is guidance and constraints, not itself a deliverable. Meta-tasks that create, rewrite, verify, test, or validate the synthesis document are forbidden.\n\nCollaboration synthesis (guidance only):\n${renderImplementationSynthesis(synthesisContent)}${implementationTriggerInstructionSeparator} and return ONLY one JSON object, with no markdown fences or prose. The object must contain schemaVersion set to 1, a summary string, empty insights and messages arrays, and a tasks array. Each task must contain an id, a non-empty title, an ownerRole that is one of ${roles}, dependencies as an array naming every earlier sibling task whose output it consumes (use sibling task ids or exact titles; use an empty array only when there are no inputs), and concrete acceptanceCriteria as a non-empty array. Every acceptance criterion must name the artifact and checkable properties such as its file path, minimum length, required sections, or language. Provide between 1 and 12 real implementation tasks; the platform appends a final full-suite validation task automatically. The platform creates and assigns the tasks from this structured reply automatically. Do NOT call any API or URL, do NOT use tools to submit decisions, and do not perform the implementation yourself — delegate it to the available execution roles.`;
+  return `WORKSTREAM GOAL (verbatim):\n${goal}\n\nThe tasks must directly produce the deliverables required by this goal. The collaboration synthesis is guidance and constraints, not itself a deliverable. Meta-tasks that create, rewrite, verify, test, or validate the synthesis document are forbidden.\n\nCollaboration synthesis (guidance only):\n${renderImplementationSynthesis(synthesisContent)}${implementationTriggerInstructionSeparator} and return ONLY one JSON object, with no markdown fences or prose. The object must contain schemaVersion set to 1, a summary string, empty insights and messages arrays, and a tasks array. Each task must contain an id, a non-empty title, an ownerRole that is one of ${roles}, and concrete acceptanceCriteria as a non-empty array. Dependencies are optional: omit dependencies to depend on the immediately preceding task (the first task then has none), use an explicit empty array for no dependencies, or name earlier siblings by 1-based ordinal, id, or title. Every acceptance criterion must name the artifact and checkable properties such as its file path, minimum length, required sections, or language. Provide between 1 and 12 real implementation tasks; the platform appends a final full-suite validation task automatically. The platform creates and assigns the tasks from this structured reply automatically. Do NOT call any API or URL, do NOT use tools to submit decisions, and do not perform the implementation yourself — delegate it to the available execution roles.`;
 }
 
 export function implementationTriggerContent(
@@ -145,6 +145,15 @@ export async function republishImplementationTriggerAfterResume(
   dependencies: TriggerDependencies,
 ): Promise<boolean> {
   if (workstream.tasks.some((task) => !collaborationStage(task.title))) return false;
+  const latestDecompositionBoundary = [...workstream.events].reverse().find((event) =>
+    [
+      "orchestration.decomposition_failed",
+      "orchestration.decomposition_redriven",
+      "task.decomposition.persisted",
+    ].includes(event.type),
+  );
+  if (["orchestration.decomposition_failed", "orchestration.decomposition_redriven"].includes(latestDecompositionBoundary?.type ?? ""))
+    return false;
 
   const rounds = await dependencies.listRounds(workstream.id);
   if (rounds.at(-1)?.status !== "completed") return false;
