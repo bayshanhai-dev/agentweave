@@ -13,6 +13,15 @@ const placeholderPatterns = [
   /\blorem ipsum\b/gi,
 ];
 
+/** Unfilled template variables, e.g. `${agentweave:template}`, `${user.name}`, `${env.FOO}`. */
+const templateVariablePattern =
+  /\$\{[A-Za-z_][\w:.-]*(?:\s*(?:\||:-)[^}]*)?\}/g;
+
+/** Removes fenced code blocks, where template literals are legitimate content. */
+function withoutFencedCode(content: string): string {
+  return content.replace(/```[\s\S]*?(?:```|$)/g, " ");
+}
+
 function isText(content: string): boolean {
   return !content.includes("\0") && !content.includes("\uFFFD");
 }
@@ -67,6 +76,19 @@ export function checkArtifactQuality(
         });
         break;
       }
+    }
+    const templateVariables = new Set<string>();
+    for (const match of withoutFencedCode(artifact.content).matchAll(
+      templateVariablePattern,
+    )) {
+      templateVariables.add(match[0]);
+      if (templateVariables.size >= 3) break;
+    }
+    if (templateVariables.size) {
+      reasons.push({
+        path: artifact.path,
+        reason: `unfilled template placeholders (${[...templateVariables].join(", ")})`,
+      });
     }
     if (/\[agentweave\s+template=/i.test(artifact.content)) {
       const substantiveLength = nonWhitespaceLength(protocolRemainder(artifact.content));

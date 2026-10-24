@@ -683,7 +683,7 @@ async function taskDispatchContent(
   task: Task,
 ): Promise<string> {
   const criteria = task.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n");
-  const content = `${actionContent}\n\nPlanned task:\n${task.title}\n\nAcceptance criteria:\n${criteria}`;
+  const content = `${actionContent}\n\nPlanned task:\n${task.title}\n\nAcceptance criteria:\n${criteria}\n\nWrite the actual deliverable content in every file you produce. Never leave template placeholders such as \${...}, [Insert ...], or TODO markers in an artifact.`;
   return appendDependencyInputs(content, await inputsFromEarlierTasks(workstream, task));
 }
 

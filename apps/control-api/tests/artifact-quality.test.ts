@@ -59,6 +59,44 @@ describe("artifact quality checker", () => {
       expect(result.reasons.some(({ reason }) => reason.startsWith("protocol echo ("))).toBe(true);
   });
 
+  it("rejects an unfilled template-variable form and names the variables", () => {
+    const result = checkArtifactQuality([{
+      path: "plan.md",
+      content: "创建资料包工作流:\n\n阶段: ${agentweave:template}\n\n审查: ${agentweave:phase}\n\n负责人: ${agentweave:lead}",
+    }]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reasons).toContainEqual({
+        path: "plan.md",
+        reason: expect.stringContaining("unfilled template placeholders (${agentweave:template}"),
+      });
+    }
+  });
+
+  it("rejects a long document full of template variables (no size backstop needed)", () => {
+    const filler = "This section describes the production workflow in general terms. ".repeat(8);
+    const result = checkArtifactQuality([{
+      path: "plan.md",
+      content: `${filler}\n\nOwner: ${"${user.name}"}\nReviewer: ${"${reviewer}"}\nDue: ${"${env.DUE_DATE}"}`,
+    }]);
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.reasons.some(({ reason }) => reason.startsWith("unfilled template placeholders"))).toBe(true);
+  });
+
+  it("rejects a JSON artifact whose values are template variables", () => {
+    const result = checkArtifactQuality([{
+      path: "metadata.json",
+      content: '{"title":"${episode.title}","host":"${host.name}"}',
+    }]);
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts template literals inside fenced code blocks", () => {
+    const doc = `# Implementation notes\n\n${"The handler renders a greeting for the signed-in user and logs the outcome. ".repeat(4)}\n\n\`\`\`ts\nconst message = \`hello \${user.name}, see \${link}\`;\n\`\`\`\n\n${"Ship only after review. ".repeat(6)}`;
+    expect(checkArtifactQuality([{ path: "notes.md", content: doc }])).toEqual({ ok: true });
+  });
+
   it("accepts a substantive multi-paragraph script", () => {
     expect(checkArtifactQuality([{ path: "episode-script.md", content: realScript }])).toEqual({ ok: true });
   });
