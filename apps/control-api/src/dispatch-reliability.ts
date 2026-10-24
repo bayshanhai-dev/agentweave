@@ -9,6 +9,26 @@ export const implementationTriggerWatchdogMs = 180_000;
  */
 export const durableTaskDeliveryStaleMs = 360_000;
 
+type TaskRuntimeEvent = { type: string; taskId?: string; occurredAt: string };
+
+/**
+ * A gated execution claim describes the interrupted handoff, not work that is
+ * still running. Scope claim checks to handoffs started after the latest gate
+ * so activation reconciliation can replace the interrupted delivery while
+ * still suppressing duplicates once the replacement has been claimed.
+ */
+export function executionClaimCutoffForTask(
+  events: readonly TaskRuntimeEvent[] | undefined,
+  taskId: string,
+): string | undefined {
+  return events
+    ?.filter((event) => event.type === "task.gated" && event.taskId === taskId)
+    .reduce<string | undefined>(
+      (latest, event) => !latest || event.occurredAt > latest ? event.occurredAt : latest,
+      undefined,
+    );
+}
+
 export function shouldArmTriggerWatchdog(
   content: string,
   recipientId: string,

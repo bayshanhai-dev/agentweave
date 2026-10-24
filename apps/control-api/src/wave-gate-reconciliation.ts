@@ -1,4 +1,4 @@
-import { durableTaskDeliveryStaleMs } from "./dispatch-reliability.js";
+import { durableTaskDeliveryStaleMs, executionClaimCutoffForTask } from "./dispatch-reliability.js";
 import { isFinalValidationTask } from "./final-validation.js";
 
 type ReconciliationAgent = { id: string; role: string; status?: string };
@@ -26,6 +26,7 @@ type ReconciliationWorkstream = {
   agents: ReconciliationAgent[];
   tasks: ReconciliationTask[];
   messages: ReconciliationMessage[];
+  events?: Array<{ type: string; taskId?: string; occurredAt: string }>;
 };
 type ReconciliationPolicy = {
   templateId: string;
@@ -35,7 +36,7 @@ type ReconciliationPolicy = {
   reviewRole: string;
 };
 type DispatchReconciliationDependencies = {
-  hasExecutionClaim: (taskId: string) => Promise<boolean>;
+  hasExecutionClaim: (taskId: string, startedAfter?: string) => Promise<boolean>;
   dispatchTask: (input: {
     senderId: string;
     recipientId: string;
@@ -123,7 +124,10 @@ export async function reconcileDispatchableTasks(
           (other) =>
             other.id !== task.id && !terminalTaskStatuses.has(other.status),
         )) ||
-      (await dependencies.hasExecutionClaim(task.id))
+      (await dependencies.hasExecutionClaim(
+        task.id,
+        executionClaimCutoffForTask(workstream.events, task.id),
+      ))
     )
       continue;
     const owner = workstream.agents.find(

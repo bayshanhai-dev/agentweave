@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -24,8 +24,7 @@ import { extractStructuredTaskSpecs, hasStructuredActions, InvalidStructuredTurn
 import { StructuredTurnRepository } from "./repositories/structured-turn-repository.js";
 import { collaborationStage, createCollaborationRound, dispatchForDecision, type CollaborationDispatch } from "./collaboration-runtime.js";
 import {
-  implementationTriggerInstruction,
-  implementationTriggerInstructionSeparator,
+  implementationTriggerContent,
   implementationTriggerMarker,
   implementationTriggerExists,
   isImplementationTriggerResult,
@@ -242,8 +241,10 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   const workstream = workstreams.get(id);
   const body = request.body as OrchestrationDecision & { actorId?: string } | undefined;
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
-  const pm = workstream.agents.find((agent) => agent.role === "pm");
-  if (!pm || body?.actorId !== pm.id) return reply.code(403).send({ error: "orchestration_decision_requires_pm_lead" });
+  const policy = orchestrationPolicyFor(workstream);
+  const authorization = authorizeOrchestrationDecision(workstream.agents, policy, body?.actorId);
+  if (!authorization.accepted) return reply.code(authorization.statusCode).send({ error: authorization.error });
+  const lead = authorization.lead;
   if (["paused", "completed", "emergency_stopped", "archived"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_runnable", status: workstream.status });
   const orchestrator = orchestrators.get(id);
   if (!orchestrator || !body) return reply.code(400).send({ error: "decision_required" });
@@ -251,27 +252,25 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   try { decision = orchestrator.validateDecision(body); } catch (error) { return reply.code(400).send({ error: "invalid_orchestration_decision", detail: String(error).replace(/^Error: /, "") }); }
   if (decision.action === "complete") {
     workstream.status = "completing";
-    emit(workstream, "orchestration.complete.requested", decision.reason, "pm");
+    emit(workstream, "orchestration.complete.requested", decision.reason, lead.role);
     workstream.status = "waiting_for_human";
     await persistWorkstreamStatus(workstream);
   } else if (decision.action === "ask_human") {
     workstream.status = "waiting_for_human";
-    emit(workstream, "orchestration.human_input_requested", decision.content ?? decision.reason, "pm");
+    emit(workstream, "orchestration.human_input_requested", decision.content ?? decision.reason, lead.role);
     await persistWorkstreamStatus(workstream);
   } else if (decision.action === "wait") {
-    emit(workstream, "orchestration.waiting", decision.reason, "pm");
+    emit(workstream, "orchestration.waiting", decision.reason, lead.role);
   } else {
     const target = workstream.agents.find((agent) => agent.role === decision.targetRole);
     if (!target) return reply.code(404).send({ error: "target_agent_not_found", role: decision.targetRole });
     let taskId: string | undefined;
     if (decision.action === "create_task") {
-      const fallbackOwner: TaskSpec["ownerRole"] = decision.targetRole === "coder" ? "coder" : decision.targetRole === "qa" ? "qa" : "pe";
-      const specs: TaskSpec[] = decision.tasks?.length ? decision.tasks : [{ title: decision.taskTitle!, ownerRole: fallbackOwner }];
-      const created = await createTasks(workstream, specs, pm.id);
+      const created = await createTasks(workstream, taskSpecsForDecision(decision, target.role), lead.id);
       taskId = created[0]?.id;
     }
-    await createMessage(workstream, pm.id, [target.id], decision.content ?? decision.taskTitle!, "request", { ...(taskId ? { taskId } : {}) });
-    emit(workstream, "orchestration.decision.applied", decision.reason, "pm");
+    await createMessage(workstream, lead.id, [target.id], decision.content ?? decision.taskTitle!, "request", { ...(taskId ? { taskId } : {}) });
+    emit(workstream, "orchestration.decision.applied", decision.reason, lead.role);
   }
   return { accepted: true, workstreamId: id, decision };
 });
@@ -670,7 +669,7 @@ async function setAgentStatus(agent: Agent, status: Agent["status"]): Promise<vo
 
 function dispatchReconciliationDependencies(workstream: Workstream) {
   return {
-    hasExecutionClaim: (taskId: string) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId),
+    hasExecutionClaim: (taskId: string, startedAfter?: string) => runtimeRepository.hasTaskExecutionClaim(workstream.id, taskId, startedAfter),
     dispatchTask: ({ senderId, recipientId, content, taskId, causationId }: { senderId: string; recipientId: string; content: string; taskId: string; causationId?: string }) =>
       createMessage(workstream, senderId, [recipientId], content, "request", {
         taskId,
@@ -860,13 +859,14 @@ async function recoverDecomposition(
     if (!triggerContent) {
       const insights = await insightRepository.listInsights(workstream.id);
       const synthesis = [...insights].reverse().find((candidate) => candidate.kind === "synthesis") ?? insights.at(-1);
-      const synthesisText = synthesis?.content.slice(0, 2000) ?? "No collaboration synthesis was available.";
-      const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
-        "Decompose this into concrete implementation tasks.".length,
+      triggerContent = implementationTriggerContent(
+        workstream.goal,
+        synthesis?.content,
+        workstream.agents.map((agent) => agent.role),
       );
-      triggerContent = `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`;
     }
-    const prefix = "Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from backend, frontend, pe, qa, or devops, and acceptanceCriteria as an array of strings. The platform appends final full-suite validation automatically. Do not write code yourself; delegate the work, and do not call any API.";
+    const ownerRoles = workstream.agents.map((agent) => agent.role).join(", ");
+    const prefix = `Your previous reply did not contain a valid structured decomposition. Reply ONLY with one JSON object, with no markdown fences or prose. Set schemaVersion to 1, provide a summary string, empty insights and messages arrays, and between 1 and 12 implementation tasks. Every task must contain an id, a real non-placeholder title, an ownerRole from ${ownerRoles}, and acceptanceCriteria as an array of strings. Tasks must directly produce the Workstream goal's deliverables; do not create tasks about the synthesis document. The platform appends final full-suite validation automatically. Delegate the work, and do not call any API.`;
     const reprompt = await createMessage(workstream, "human", [sender.id], `${prefix}\n\n${triggerContent}`, "directive", {
       ...((latestTrigger?.id ?? envelope.id) ? { causationId: latestTrigger?.id ?? envelope.id } : {}),
     });
@@ -993,7 +993,11 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (triggerDecomposition) {
     try {
       const result = parseStructuredTurn(payload.structuredResult);
-      triggerSpecs = extractStructuredTaskSpecs(result);
+      triggerSpecs = extractStructuredTaskSpecs(
+        result,
+        new Set(workstream.agents.map((agent) => agent.role)),
+        policy.reviewRole,
+      );
       triggerSummary = result.summary.trim();
     } catch (error) {
       const reason = error instanceof InvalidStructuredTurn ? error.message : String(error);
@@ -1074,12 +1078,12 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
                 if (implementationTriggerExists({ messages: workstream.messages, tasks: workstream.tasks, leadAgentId: lead.id })) {
                   emit(workstream, "orchestration.implementation_trigger_exists", "PM implementation trigger already exists", "human");
                 } else {
-                  const synthesisText = typeof synthesis.content === "string" ? synthesis.content.slice(0, 2000) : JSON.stringify(synthesis).slice(0, 2000);
-                  const restOfInstruction = implementationTriggerInstruction(workstream.id).slice(
-                    "Decompose this into concrete implementation tasks.".length,
-                  );
                   const trigger = await createMessage(workstream, "human", [lead.id],
-                    `${implementationTriggerMarker} The collaboration round is complete. Here is the agreed synthesis:\n\n${synthesisText}${implementationTriggerInstructionSeparator}${restOfInstruction}`,
+                    implementationTriggerContent(
+                      workstream.goal,
+                      synthesis.content,
+                      workstream.agents.map((agent) => agent.role),
+                    ),
                     "directive", {});
                   if (trigger.deliveryStatus === "delivered") {
                     emit(workstream, "orchestration.implementation_triggered", "PM prompted to decompose synthesis into implementation tasks", "human");

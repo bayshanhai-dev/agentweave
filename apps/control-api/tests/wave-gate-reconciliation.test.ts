@@ -261,6 +261,33 @@ describe("wave gate activation reconciliation", () => {
     expect(result.dispatchedTaskIds).toEqual([]);
     expect(fixture.dependencies.dispatchTask).not.toHaveBeenCalled();
   });
+
+  it("re-dispatches a gated assigned task after resume while ignoring its interrupted claim", async () => {
+    const fixture = waveFixture("waiting_for_human");
+    const task = fixture.secondWave[0]!;
+    task.dependencies = [];
+    fixture.workstream.tasks = [task];
+    fixture.workstream.events = [{
+      type: "task.gated",
+      taskId: task.id,
+      occurredAt: "2026-10-23T23:18:46.000Z",
+    }];
+    fixture.dependencies.hasExecutionClaim.mockImplementation(async (_taskId, startedAfter) => !startedAfter);
+
+    fixture.workstream.status = "active";
+    const result = await reconcileWaveGateAfterActivation(
+      fixture.workstream,
+      policy,
+      fixture.dependencies,
+    );
+
+    expect(fixture.dependencies.hasExecutionClaim).toHaveBeenCalledWith(
+      task.id,
+      "2026-10-23T23:18:46.000Z",
+    );
+    expect(result.dispatchedTaskIds).toEqual([task.id]);
+    expect(fixture.dependencies.dispatchTask).toHaveBeenCalledOnce();
+  });
 });
 
 function staleHandoffFixture(

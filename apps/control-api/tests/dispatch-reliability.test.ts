@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, durableDispatchTimeoutDecision, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
+import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, durableDispatchTimeoutDecision, executionClaimCutoffForTask, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "../src/dispatch-reliability.js";
 
 describe("publishWithRetry", () => {
   it("retries a failed publish with the configured backoff", async () => {
@@ -106,6 +106,15 @@ describe("TriggerDispatchWatchdog", () => {
 });
 
 describe("durable task dispatch recovery", () => {
+  it("scopes execution claims to handoffs started after the latest task gate", () => {
+    expect(executionClaimCutoffForTask([
+      { type: "task.gated", taskId: "task-1", occurredAt: "2026-10-23T23:18:46.000Z" },
+      { type: "task.gated", taskId: "task-2", occurredAt: "2026-10-23T23:19:00.000Z" },
+      { type: "task.gated", taskId: "task-1", occurredAt: "2026-10-23T23:20:00.000Z" },
+    ], "task-1")).toBe("2026-10-23T23:20:00.000Z");
+    expect(executionClaimCutoffForTask([], "task-1")).toBeUndefined();
+  });
+
   it("watches executable orchestration handoffs but not Human decisions", () => {
     const prompt = "[agentweave template=software-development phase=execution recipient=backend]";
     expect(shouldArmDurableTaskWatchdog("task-1", prompt, "backend-1")).toBe(true);
