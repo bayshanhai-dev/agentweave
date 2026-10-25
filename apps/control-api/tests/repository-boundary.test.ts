@@ -21,6 +21,7 @@ describe("Control API persistence boundary", () => {
       "runtime-repository.ts",
       "evidence-repository.ts",
       "insight-repository.ts",
+      "trigger-repository.ts",
     ]) {
       expect(
         readFileSync(

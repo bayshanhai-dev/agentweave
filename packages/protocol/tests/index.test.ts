@@ -30,6 +30,8 @@ describe("scaling contracts", () => {
       "provider.authentication_required",
       "provider.limit_reached",
       "provider.timed_out",
+      "trigger.fired",
+      "trigger.skipped",
     ]) expect(allowedRuntimeEventTypes.has(type), type).toBe(true);
   });
 
