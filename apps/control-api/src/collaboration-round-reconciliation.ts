@@ -80,6 +80,12 @@ const boundaryEventTypes = new Set([
   "collaboration.turn.redriven",
   "task.completed",
 ]);
+const interruptionEventTypes = new Set([
+  "workstream.waiting_for_human",
+  "workstream.paused",
+  "workstream.pause",
+]);
+export const staleCollaborationAssignmentMs = 120_000;
 
 function latestTaskBoundary(
   workstream: CollaborationWorkstream,
@@ -92,10 +98,18 @@ function latestTaskBoundary(
     );
 }
 
+function latestInterruption(
+  workstream: CollaborationWorkstream,
+): CollaborationEvent | undefined {
+  return [...workstream.events]
+    .reverse()
+    .find((event) => interruptionEventTypes.has(event.type));
+}
+
 /**
- * Re-drives only failed or gated source turns that are still missing from the
- * current active round. Fresh handoffs make Worker execution reclaimable while
- * the stable collaboration task continues to identify the logical turn.
+ * Re-drives interrupted source turns that are still missing from the current
+ * active round. Fresh handoffs make Worker execution reclaimable while the
+ * stable collaboration task continues to identify the logical turn.
  */
 export async function reconcileCollaborationRoundAfterActivation(
   workstream: CollaborationWorkstream,
@@ -113,6 +127,8 @@ export async function reconcileCollaborationRoundAfterActivation(
     workstream.agents,
   );
   const redrivenTaskIds: string[] = [];
+  const now = dependencies.now?.() ?? new Date();
+  const interruption = latestInterruption(workstream);
 
   for (const dispatch of expected) {
     const taskId = `${round.id}:task:${dispatch.key}`;
@@ -122,9 +138,19 @@ export async function reconcileCollaborationRoundAfterActivation(
     const boundary = latestTaskBoundary(workstream, task.id);
     const failed = task.status === "failed";
     const gated = task.status === "assigned" && boundary?.type === "task.gated";
-    if (!failed && !gated) continue;
+    const updatedAt = Date.parse(task.updatedAt);
+    const staleAssigned =
+      task.status === "assigned" &&
+      Number.isFinite(updatedAt) &&
+      now.getTime() - updatedAt >= staleCollaborationAssignmentMs;
+    if (!failed && !gated && !staleAssigned) continue;
 
-    const interruptedAt = boundary?.occurredAt ?? task.updatedAt;
+    const taskInterruption =
+      boundary?.type === "task.failed" || boundary?.type === "task.gated"
+        ? boundary.occurredAt
+        : undefined;
+    const interruptedAt =
+      taskInterruption ?? interruption?.occurredAt ?? task.updatedAt;
     if (
       workstream.messages.some(
         (message) =>
@@ -138,7 +164,7 @@ export async function reconcileCollaborationRoundAfterActivation(
 
     const previousStatus = task.status;
     task.status = "assigned";
-    task.updatedAt = (dependencies.now?.() ?? new Date()).toISOString();
+    task.updatedAt = now.toISOString();
     await dependencies.persistTask(task);
     const handoff = await dependencies.dispatchTurn({
       roundId: round.id,
@@ -148,17 +174,21 @@ export async function reconcileCollaborationRoundAfterActivation(
     });
     if (handoff.deliveryStatus !== "delivered") {
       task.status = previousStatus;
-      task.updatedAt = (dependencies.now?.() ?? new Date()).toISOString();
+      task.updatedAt = now.toISOString();
       await dependencies.persistTask(task);
       continue;
     }
 
     redrivenTaskIds.push(task.id);
-    const interruption = failed ? "failure" : "Human gate";
+    const interruptionReason = failed
+      ? "failure"
+      : gated
+        ? "Human gate"
+        : "stale unclaimed assignment";
     const detail = boundary?.message.trim();
     dependencies.emit(
       "collaboration.turn.redriven",
-      `${dispatch.stage} turn re-dispatched after ${interruption}${detail ? `: ${detail}` : ""}`,
+      `${dispatch.stage} turn re-dispatched after ${interruptionReason}${detail ? `: ${detail}` : ""}`,
       {
         role: dispatch.role,
         agentId: dispatch.agentId,

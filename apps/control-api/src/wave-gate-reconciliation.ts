@@ -1,6 +1,7 @@
 import { durableTaskDeliveryStaleMs, executionClaimCutoffForTask } from "./dispatch-reliability.js";
 import { isFinalValidationTask } from "./final-validation.js";
 import { collaborationStage } from "./collaboration-runtime.js";
+import { taskOwnerDefaultedMessage } from "./task-ownership.js";
 
 type ReconciliationAgent = { id: string; role: string; status?: string };
 type ReconciliationTask = {
@@ -11,6 +12,7 @@ type ReconciliationTask = {
   createdByAgentId?: string;
   acceptanceCriteria: string[];
   dependencies: string[];
+  updatedAt?: string;
 };
 type ReconciliationMessage = {
   id: string;
@@ -60,9 +62,52 @@ type DispatchReconciliationDependencies = {
 type ReconciliationDependencies = DispatchReconciliationDependencies & {
   acknowledgeGateMessage: (message: ReconciliationMessage) => Promise<boolean>;
 };
+type OwnerlessTaskHealingDependencies = {
+  persistTask: (task: ReconciliationTask) => Promise<void>;
+  emit: (type: string, message: string, role?: string) => void;
+  now?: () => number;
+  staleMs?: number;
+};
 
 const openDeliveryStatuses = new Set(["pending", "delivered"]);
 const terminalTaskStatuses = new Set(["done", "failed", "cancelled"]);
+export const ownerlessTaskStaleMs = 60_000;
+
+/** Assigns old ownerless tasks to the policy lead so persisted zombies become dispatchable. */
+export async function healOwnerlessTasks(
+  workstream: ReconciliationWorkstream,
+  policy: Pick<ReconciliationPolicy, "leadRole">,
+  dependencies: OwnerlessTaskHealingDependencies,
+): Promise<string[]> {
+  if (workstream.status !== "active") return [];
+  const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+  if (!lead) return [];
+  const now = dependencies.now?.() ?? Date.now();
+  const staleMs = dependencies.staleMs ?? ownerlessTaskStaleMs;
+  const healedTaskIds: string[] = [];
+
+  for (const task of workstream.tasks) {
+    const updatedAt = Date.parse(task.updatedAt ?? "");
+    if (
+      task.status !== "ready" ||
+      task.ownerAgentId ||
+      !Number.isFinite(updatedAt) ||
+      now - updatedAt <= staleMs
+    )
+      continue;
+    task.status = "assigned";
+    task.ownerAgentId = lead.id;
+    task.updatedAt = new Date(now).toISOString();
+    await dependencies.persistTask(task);
+    dependencies.emit(
+      "orchestration.task_owner_defaulted",
+      taskOwnerDefaultedMessage(task.title, undefined, lead.role),
+      lead.role,
+    );
+    healedTaskIds.push(task.id);
+  }
+  return healedTaskIds;
+}
 
 function taskDispatchContent(
   task: ReconciliationTask,

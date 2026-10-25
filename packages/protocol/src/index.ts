@@ -297,6 +297,7 @@ const workflowEventTypes = [
   "orchestration.implementation_trigger_exists",
   "orchestration.implementation_triggered",
   "orchestration.lead",
+  "orchestration.task_owner_defaulted",
   "orchestration.waiting",
   "task.created",
   "task.decomposition.persisted",
@@ -317,6 +318,7 @@ const workflowEventTypes = [
   "workstream.resumed_by_human_message",
   "workstream.resuming",
   "workstream.starting",
+  "workstream.stalled",
   "workstream.waiting_for_human",
 ] as const;
 

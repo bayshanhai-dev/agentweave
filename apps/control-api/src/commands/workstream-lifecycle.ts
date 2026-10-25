@@ -201,6 +201,10 @@ export class WorkstreamLifecycleCommandHandler {
       workstream.status = "paused";
     } else {
       workstream.status = target;
+      workstream.agents.forEach((agent) => {
+        if (agent.status !== "done" && agent.status !== "stopped")
+          agent.status = "idle";
+      });
       emit(
         `approval.${body.decision}`,
         body.reason?.trim() || `Human approval: ${body.decision}`,
