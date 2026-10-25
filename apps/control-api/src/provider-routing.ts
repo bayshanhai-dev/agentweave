@@ -18,6 +18,23 @@ export type ProviderConfigResult =
   | { ok: true; provider: ProviderSelection; roleProviders: RoleProviders }
   | { ok: false; statusCode: 400; error: string; detail: string };
 
+export function normalizeRoleProviders(value: unknown): RoleProviders {
+  let candidate = value;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return {};
+    }
+  }
+
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return {};
+  const prototype = Object.getPrototypeOf(candidate);
+  if (prototype !== Object.prototype && prototype !== null) return {};
+  const parsed = roleProvidersSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : {};
+}
+
 export function parseProviderConfig(input: {
   tool?: unknown;
   model?: unknown;

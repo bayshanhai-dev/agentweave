@@ -41,7 +41,7 @@ import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayl
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
 import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
-import { agentsWithEffectiveProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
+import { agentsWithEffectiveProviders, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
@@ -1071,7 +1071,7 @@ async function loadWorkstreams(): Promise<void> {
         ...(row.tool ? { tool: String(row.tool) as ProviderSelection["tool"] } : {}),
         ...(row.model ? { model: String(row.model) } : {}),
       },
-      roleProviders: (row.role_providers && typeof row.role_providers === "object" ? row.role_providers : {}) as RoleProviders,
+      roleProviders: normalizeRoleProviders(row.role_providers),
       workspaceRoot: String(row.workspace_root),
       tasks: loadedTasks,
       agents: agents.map((agent) => ({ id: String(agent.id), role: String(agent.role) as Role, authority: String(agent.authority) as Agent["authority"], status: String(agent.status) as Agent["status"] })),
