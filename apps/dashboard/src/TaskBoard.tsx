@@ -1,5 +1,5 @@
-import { Alert, Badge, Card, Group, List, Modal, SimpleGrid, Stack, Text, Title } from "@mantine/core";
-import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
+import { Badge, Card, Group, List, Modal, SimpleGrid, Stack, Text, Title } from "@mantine/core";
+import { IconCheck } from "@tabler/icons-react";
 import { useState } from "react";
 import { displayTaskTitle } from "./unified-stream";
 
@@ -89,25 +89,12 @@ function taskKind(title: string): string | undefined {
 
 export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: Task[]; lanes?: TaskLane[]; agents?: AgentLike[]; embedded?: boolean }) {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  if (!tasks.length) {
-    const empty = (
-      <Alert icon={<IconAlertCircle size={18} />} title="No tasks yet">
-        Tasks created by the Orchestrator will appear here.
-      </Alert>
-    );
-    return embedded ? empty : <div className="cc-panel">{empty}</div>;
-  }
   const columns = lanes?.length ? lanes : DEFAULT_LANES;
   const overflow = tasks.filter((task) => !columns.some((column) => column.status === task.status));
-  // Only populated lanes earn a column, in the page tab and in the
-  // sidecar (embedded) alike: empty lanes are named once, in one muted
-  // line, and the board's width goes to the lanes that hold work.
-  const populated = columns
-    .map((column) => ({ column, columnTasks: tasks.filter((task) => task.status === column.status) }))
-    .filter(({ columnTasks }) => columnTasks.length > 0);
-  const emptyLabels = columns
-    .filter((column) => !populated.some(({ column: kept }) => kept.status === column.status))
-    .map((column) => column.label);
+  const lanesWithTasks = columns.map((column) => ({
+    column,
+    columnTasks: tasks.filter((task) => task.status === column.status),
+  }));
 
   return (
     <div className={embedded ? "cc-taskboard cc-taskboard-embedded" : "cc-panel cc-taskboard"}>
@@ -117,13 +104,8 @@ export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: T
           <Badge variant="light">{tasks.length} tasks</Badge>
         </Group>
       )}
-      {emptyLabels.length > 0 && (
-        <Text size="xs" c="dimmed" mb="sm">
-          No tasks in {emptyLabels.join(" · ")}
-        </Text>
-      )}
       <div className="cc-kanban">
-        {populated.map(({ column, columnTasks }) => {
+        {lanesWithTasks.map(({ column, columnTasks }) => {
           return (
             <div key={column.status} className="cc-kanban-lane">
               <div className="cc-kanban-lane-header">
