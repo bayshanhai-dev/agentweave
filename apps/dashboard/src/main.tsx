@@ -49,6 +49,7 @@ import { TraceDebugger } from "./TraceDebugger";
 import { WorkstreamControls } from "./WorkstreamControls";
 import { LiveMessageBus } from "./LiveMessageBus";
 import { TemplateManager } from "./TemplateManager";
+import { TriggersPanel } from "./TriggersPanel";
 import { providerModelLabel } from "./providerDisplay";
 import type { StreamInsight } from "./unified-stream";
 import "./styles.css";
@@ -575,6 +576,7 @@ function App() {
             <Paper withBorder radius="lg" p={{ base: "xl", sm: 40 }}>
               <TemplateManager api={api} />
             </Paper>
+            <TriggersPanel api={api} />
             </Stack>
           ) : (
             <Stack gap="lg" className="cc-workspace">
@@ -669,6 +671,7 @@ function App() {
                 lanes={selected.template?.taskLanes}
                 agents={selected.agents}
               />
+              <TriggersPanel api={api} />
               <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
                 <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
                 <ScrollArea h="65vh" type="auto">
