@@ -1,5 +1,6 @@
 import {
   providerToolSchema,
+  resolveProviderModel,
   roleProvidersSchema,
   type ProviderSelection,
   type RoleProviders,
@@ -68,16 +69,17 @@ export function resolveEffectiveProvider(
 ): EffectiveProvider {
   const override = roleProviders[role];
   if (!override) {
-    return provider.tool
-      ? { provider: provider.tool, ...(provider.model ? { model: provider.model } : {}) }
-      : {};
+    if (!provider.tool) return {};
+    const model = resolveProviderModel(provider.tool, provider.model);
+    return { provider: provider.tool, ...(model ? { model } : {}) };
   }
   const tool = override.tool ?? provider.tool;
   if (!tool) return {};
   const model =
     override.model ??
     (override.tool === undefined || override.tool === provider.tool ? provider.model : undefined);
-  return { provider: tool, ...(model ? { model } : {}) };
+  const effectiveModel = resolveProviderModel(tool, model);
+  return { provider: tool, ...(effectiveModel ? { model: effectiveModel } : {}) };
 }
 
 export function routeForRecipient(

@@ -4,6 +4,15 @@ export const providerTools = ["mock", "codex", "claude", "ollama", "kiro"] as co
 export const providerToolSchema = z.enum(providerTools);
 export type ProviderTool = z.infer<typeof providerToolSchema>;
 
+/** Server-side defaults for providers that require an explicit model. */
+export const providerDefaultModels: Readonly<Partial<Record<ProviderTool, string>>> = {
+  ollama: "llama3.1:8b",
+};
+
+export function resolveProviderModel(provider: string | undefined, model?: string): string | undefined {
+  return model ?? (provider ? providerDefaultModels[provider as ProviderTool] : undefined);
+}
+
 export const providerSelectionSchema = z
   .object({
     tool: providerToolSchema.optional(),

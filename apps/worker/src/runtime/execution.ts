@@ -4,7 +4,7 @@ import type { AgentSessionRecord, AgentSessionRepository } from "../providers/se
 import { ExecutionControl, ExecutionGatedError } from "./execution-control.js";
 import { ensureWorkspace, collectWorkspaceEvidence, persistWorkspaceEvidence, validateWorkspacePath } from "../workspace/index.js";
 import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
-import { agentTurnResultSchema, type AgentTurnResult } from "@agentweave/protocol";
+import { agentTurnResultSchema, resolveProviderModel, type AgentTurnResult } from "@agentweave/protocol";
 import type { ProviderRunResult } from "../providers/types.js";
 import { parseAgentTurnResult } from "../providers/agent-turn-result.js";
 
@@ -79,7 +79,8 @@ export class AgentTaskExecutor {
   async finishTask(taskId: string, status: "completed" | "failed"): Promise<void> { await this.sessions.finishTask(taskId, status); }
   async execute(task: AgentTask, control = new ExecutionControl()): Promise<void> {
     const provider = "get" in this.providers ? this.providers.get(task.provider) : this.providers;
-    const model = task.model ?? (task.provider === undefined && "get" in this.providers ? this.providers.defaultModel : undefined);
+    const configuredModel = task.model ?? (task.provider === undefined && "get" in this.providers ? this.providers.defaultModel : undefined);
+    const model = resolveProviderModel(provider.name, configuredModel);
     if (task.workstreamId) {
       const controls = this.controls.get(task.workstreamId) ?? new Set<ExecutionControl>();
       controls.add(control);

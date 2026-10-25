@@ -11,6 +11,7 @@ import type {
 } from "../../src/providers/types.js";
 import type { AgentSessionRepository } from "../../src/providers/session-repository.js";
 import { AgentTaskExecutor } from "../../src/runtime/execution.js";
+import { resolveProviderModel } from "@agentweave/protocol";
 
 const sessions = (): AgentSessionRepository => ({
   listUnfinished: vi.fn(async () => []),
@@ -64,6 +65,12 @@ class TestAdapter implements ProviderAdapter {
 }
 
 describe("per-turn provider adapter routing", () => {
+  it("resolves only the declared provider default and preserves explicit models", () => {
+    expect(resolveProviderModel("ollama")).toBe("llama3.1:8b");
+    expect(resolveProviderModel("ollama", "qwen3:8b")).toBe("qwen3:8b");
+    expect(resolveProviderModel("codex")).toBeUndefined();
+  });
+
   it("executes concurrent stamped turns through their corresponding lazy adapters", async () => {
     let arrivals = 0;
     let release!: () => void;
@@ -96,7 +103,7 @@ describe("per-turn provider adapter routing", () => {
     ]));
   });
 
-  it("uses the environment-selected default only for an unstamped turn", async () => {
+  it("uses the environment-selected default for an unstamped turn and the provider default for a tool-only route", async () => {
     const adapter = new TestAdapter("ollama", async () => {});
     const registry = new ProviderAdapterRegistry("ollama", { ollama: () => adapter }, "llama-env-default");
     const sink = vi.fn(async () => {});
@@ -114,8 +121,27 @@ describe("per-turn provider adapter routing", () => {
       taskId: "stamped-without-model",
       agentId: "host",
       provider: "ollama",
-      prompt: "Use the provider's native default",
+      prompt: "Use the provider default",
     });
-    expect(adapter.inputs[1]?.model).toBeUndefined();
+    expect(adapter.inputs[1]?.model).toBe("llama3.1:8b");
+  });
+
+  it("applies the Ollama default to a tool-only collaboration turn", async () => {
+    const adapter = new TestAdapter("ollama", async () => {});
+    const registry = new ProviderAdapterRegistry("codex", { ollama: () => adapter });
+    const sink = vi.fn(async () => {});
+
+    await new AgentTaskExecutor(registry, sessions(), "worker", sink).execute({
+      taskId: "round-1:task:critique",
+      agentId: "qa-agent",
+      workstreamId: "workstream-1",
+      provider: "ollama",
+      prompt: "[agentweave collaboration=round-1 stage=critique key=qa] Critique the proposal",
+    });
+
+    expect(adapter.inputs[0]?.model).toBe("llama3.1:8b");
+    expect(sink.mock.calls.map((call) => call[0])).toContainEqual(
+      expect.objectContaining({ type: "task.completed", provider: "ollama", model: "llama3.1:8b" }),
+    );
   });
 });
