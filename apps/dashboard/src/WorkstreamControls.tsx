@@ -5,6 +5,7 @@ import {
   Modal,
   Select,
   Stack,
+  Text,
   Textarea,
   TextInput,
 } from "@mantine/core";
@@ -49,14 +50,66 @@ const commands = [
   { key: "complete", label: "Complete", icon: IconCheck },
   { key: "emergency-stop", label: "Emergency stop", icon: IconPlayerStop },
 ];
+const SOFTWARE_ROLES = [
+  { value: "pm", label: "PM" },
+  { value: "pe", label: "PE" },
+  { value: "frontend", label: "Frontend" },
+  { value: "backend", label: "Backend" },
+  { value: "qa", label: "QA" },
+  { value: "devops", label: "DevOps" },
+] as const;
+const ROLE_PROVIDER_OPTIONS = [
+  { value: "", label: "Default" },
+  { value: "codex", label: "Codex" },
+  { value: "ollama", label: "Ollama (local)" },
+  { value: "mock", label: "Mock" },
+];
+type SoftwareRole = (typeof SOFTWARE_ROLES)[number]["value"];
+type RoleProviderSelections = Record<SoftwareRole, string>;
+type CreateWorkstreamValues = {
+  goal: string;
+  templateId: string;
+  workspace: string;
+  provider: string;
+  model: string;
+  roleProviders: RoleProviderSelections;
+};
+const emptyRoleProviders = (): RoleProviderSelections => ({
+  pm: "",
+  pe: "",
+  frontend: "",
+  backend: "",
+  qa: "",
+  devops: "",
+});
 const demoWorkstream = {
   goal: "Build a small, accessible markdown note editor with a clear README and passing tests.",
   workspace: "/workspaces",
   templateId: "software-development",
   provider: "mock",
   model: "deterministic",
+  roleProviders: emptyRoleProviders(),
 };
 type WorkstreamTemplate = { id: string; name: string; description: string };
+
+export function buildCreateWorkstreamBody(values: CreateWorkstreamValues) {
+  const roleProviders: Partial<Record<SoftwareRole, { tool: string }>> = {};
+  for (const { value: role } of SOFTWARE_ROLES) {
+    const tool = values.roleProviders[role];
+    if (tool) roleProviders[role] = { tool };
+  }
+
+  return {
+    goal: values.goal.trim(),
+    templateId: values.templateId,
+    workspaceRoot: values.workspace.trim(),
+    tool: values.provider,
+    // An empty model means "the provider's own default"; never store
+    // an empty string (or a placeholder) as if it were a model name.
+    ...(values.model.trim() ? { model: values.model.trim() } : {}),
+    ...(Object.keys(roleProviders).length ? { roleProviders } : {}),
+  };
+}
 
 export function WorkstreamControls({
   api,
@@ -74,13 +127,14 @@ export function WorkstreamControls({
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState(openCreate);
   const [templates, setTemplates] = useState<WorkstreamTemplate[]>([]);
-  const form = useForm({
+  const form = useForm<CreateWorkstreamValues>({
     initialValues: {
       goal: "",
       templateId: "software-development",
       workspace: "/workspaces/academic-paper-buddy",
       provider: "codex",
       model: "gpt-5.6-luna",
+      roleProviders: emptyRoleProviders(),
     },
     validate: {
       goal: (value) =>
@@ -90,7 +144,8 @@ export function WorkstreamControls({
       workspace: (value) =>
         value.trim() ? null : "Workspace path is required",
       model: (value, values) =>
-        values.provider !== "mock" && value.trim().toLowerCase() === "deterministic"
+        values.provider !== "mock" &&
+        value.trim().toLowerCase() === "deterministic"
           ? "“deterministic” is the Mock provider's placeholder, not a real model — choose the Mock provider, name a real model, or leave it empty for the provider default"
           : null,
     },
@@ -99,10 +154,18 @@ export function WorkstreamControls({
   useEffect(() => {
     let disposed = false;
     void fetch(`${api}/api/workstream-templates`)
-      .then(async (response) => response.ok ? response.json() as Promise<WorkstreamTemplate[]> : [])
-      .then((available) => { if (!disposed) setTemplates(available); })
-      .catch(() => { if (!disposed) setTemplates([]); });
-    return () => { disposed = true; };
+      .then(async (response) =>
+        response.ok ? (response.json() as Promise<WorkstreamTemplate[]>) : [],
+      )
+      .then((available) => {
+        if (!disposed) setTemplates(available);
+      })
+      .catch(() => {
+        if (!disposed) setTemplates([]);
+      });
+    return () => {
+      disposed = true;
+    };
   }, [api]);
   useEffect(() => {
     if (!workstreamId) return;
@@ -127,6 +190,7 @@ export function WorkstreamControls({
   const setCreateModal = (value: boolean) => {
     setOpened(value);
     onCreateOpenChange?.(value);
+    if (!value) form.setFieldValue("roleProviders", emptyRoleProviders());
   };
   async function create(values: typeof form.values) {
     setBusy("create");
@@ -134,15 +198,7 @@ export function WorkstreamControls({
       const response = await fetch(`${api}/api/workstreams`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          goal: values.goal.trim(),
-          templateId: values.templateId,
-          workspaceRoot: values.workspace.trim(),
-          tool: values.provider,
-          // An empty model means "the provider's own default"; never store
-          // an empty string (or a placeholder) as if it were a model name.
-          ...(values.model.trim() ? { model: values.model.trim() } : {}),
-        }),
+        body: JSON.stringify(buildCreateWorkstreamBody(values)),
       });
       const created = (await response.json()) as {
         id?: string;
@@ -177,7 +233,9 @@ export function WorkstreamControls({
       if (!response.ok) {
         if (result.status) onStatus(result.status);
         if (result.error === "workstream_not_draft" && result.status) {
-          setError(`Workstream is already ${result.status.replaceAll("_", " ")}. Status refreshed.`);
+          setError(
+            `Workstream is already ${result.status.replaceAll("_", " ")}. Status refreshed.`,
+          );
           return;
         }
         throw new Error(result.error ?? "Start failed");
@@ -364,7 +422,19 @@ export function WorkstreamControls({
             <Select
               label="Workstream template"
               description="Templates define the roles, task lanes, and workflow policy for this workstream."
-              data={(templates.length ? templates : [{ id: "software-development", name: "Software development", description: "" }]).map((template) => ({ value: template.id, label: template.name }))}
+              data={(templates.length
+                ? templates
+                : [
+                    {
+                      id: "software-development",
+                      name: "Software development",
+                      description: "",
+                    },
+                  ]
+              ).map((template) => ({
+                value: template.id,
+                label: template.name,
+              }))}
               {...form.getInputProps("templateId")}
             />
             <Select
@@ -381,7 +451,10 @@ export function WorkstreamControls({
                 form.setFieldValue("provider", value ?? "codex");
                 // Switching providers resets the model to that provider's
                 // default instead of carrying a foreign model name across.
-                form.setFieldValue("model", PROVIDER_MODEL_DEFAULTS[value ?? "codex"] ?? "");
+                form.setFieldValue(
+                  "model",
+                  PROVIDER_MODEL_DEFAULTS[value ?? "codex"] ?? "",
+                );
               }}
             />
             <TextInput
@@ -390,10 +463,32 @@ export function WorkstreamControls({
               placeholder="Provider default"
               {...form.getInputProps("model")}
             />
+            <Stack gap="xs">
+              <Text fw={500} size="sm">
+                Per-role models (optional)
+              </Text>
+              <Text c="dimmed" size="xs">
+                Override the model for individual roles. Roles left on Default
+                use the workstream provider above.
+              </Text>
+              {SOFTWARE_ROLES.map(({ value, label }) => (
+                <Select
+                  key={value}
+                  label={label}
+                  data={ROLE_PROVIDER_OPTIONS}
+                  {...form.getInputProps(`roleProviders.${value}`)}
+                />
+              ))}
+            </Stack>
             <Button type="submit" loading={busy === "create"}>
               Create Workstream
             </Button>
-            <Button type="button" variant="light" loading={busy === "create"} onClick={createDemo}>
+            <Button
+              type="button"
+              variant="light"
+              loading={busy === "create"}
+              onClick={createDemo}
+            >
               Create demo workstream
             </Button>
           </Stack>
