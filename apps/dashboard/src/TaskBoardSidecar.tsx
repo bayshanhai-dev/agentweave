@@ -125,13 +125,11 @@ export function TaskBoardSidecar({ tasks, lanes, agents }: { tasks: Task[]; lane
       >
         <div className="cc-board-sidecar-header">
           <Group gap="xs">
-            {laneCounts
-              .filter(({ count }) => count > 0)
-              .map(({ column, count }) => (
-                <Badge key={column.status} variant="light" color={column.color}>
-                  {column.label} · {count}
-                </Badge>
-              ))}
+            {laneCounts.map(({ column, count }) => (
+              <Badge key={column.status} variant="light" color={column.color}>
+                {column.label} · {count}
+              </Badge>
+            ))}
             {overflowCount > 0 && (
               <Badge variant="light" color="gray">
                 Other · {overflowCount}

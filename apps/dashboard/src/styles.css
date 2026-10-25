@@ -646,10 +646,16 @@ html[data-mantine-color-scheme="dark"] .mantine-AppShell-header {
 .cc-taskboard { margin-top: 4px; }
 .cc-kanban {
   display: grid;
-  /* Only populated lanes render, so fit however many there are. */
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   align-items: start;
+}
+.cc-taskboard-embedded .cc-kanban {
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+}
+.cc-taskboard-embedded {
+  min-width: 0;
+  overflow-x: auto;
 }
 .cc-kanban-lane {
   background: rgba(23, 23, 33, 0.6);
