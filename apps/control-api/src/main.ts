@@ -45,6 +45,7 @@ import { agentsWithEffectiveProviders, parseProviderConfig, routeForRecipient, s
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
+import { buildProviderAuthenticationMessage, buildProviderLimitMessage, providerFailureAction } from "./provider-failure.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -1190,8 +1191,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream));
     orchestrators.set(workstream.id, orchestrator);
   }
-  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
-  const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string };
+  const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
+  const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string; correlationId?: string };
   const resultCorrelationId = envelope.correlationId ?? (payload as { correlationId?: string }).correlationId;
   dispatchWatchdog.clearForCorrelation(workstream.id, resultCorrelationId);
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
@@ -1307,6 +1308,53 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (envelope.type === "task.failed") {
     const task = durableTask;
     const reason = payload.error?.trim() || "provider execution failed";
+    if (providerFailureAction(payload) === "park-for-human") {
+      if (task && !["done", "failed", "cancelled"].includes(task.status)) {
+        task.status = "assigned";
+        task.updatedAt = new Date().toISOString();
+        await persistTask(task);
+        for (const message of workstream.messages) {
+          if (message.taskId !== task.id || !["pending", "delivered"].includes(message.deliveryStatus) || !message.recipientIds.includes(sender.id)) continue;
+          const aggregateStatus = await messageRepository.updateDelivery(message.id, sender.id, "acknowledged");
+          if (aggregateStatus) message.deliveryStatus = aggregateStatus;
+        }
+      }
+      await setAgentStatus(sender, "idle");
+      const messageInput = {
+        provider: payload.provider ?? "unknown provider",
+        model: payload.model ?? "unspecified model",
+        role: sender.role,
+        task: task?.title ?? payload.taskId ?? "untracked task",
+      };
+      const remedy = payload.errorCategory === "rate_limit"
+        ? buildProviderLimitMessage(messageInput)
+        : payload.errorCategory === "authentication"
+          ? buildProviderAuthenticationMessage(messageInput)
+          : `Provider ${messageInput.provider} using model ${messageInput.model} requires user action while role ${messageInput.role} was working on task "${messageInput.task}". The run is parked, not failed. Resolve the provider issue, then approve/resume.`;
+      const providerEventType = payload.errorCategory === "rate_limit"
+        ? "provider.limit_reached"
+        : payload.errorCategory === "authentication"
+          ? "provider.authentication_required"
+          : undefined;
+      if (providerEventType) {
+        recordWorkflowEvent(workstream, {
+          id: randomUUID(),
+          type: providerEventType,
+          message: remedy,
+          occurredAt: new Date().toISOString(),
+          role: sender.role,
+          agentId: sender.id,
+          ...(payload.taskId ? { taskId: payload.taskId } : {}),
+          ...(resultCorrelationId ? { correlationId: resultCorrelationId } : {}),
+          ...(payload.provider ? { provider: payload.provider } : {}),
+          ...(payload.model ? { model: payload.model } : {}),
+        });
+      }
+      workstream.status = "waiting_for_human";
+      recordWorkflowEvent(workstream, { id: randomUUID(), type: "workstream.waiting_for_human", message: remedy, occurredAt: new Date().toISOString() });
+      await persistWorkstreamStatus(workstream);
+      return;
+    }
     if (triggerDecomposition) {
       recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
       await recoverDecomposition(workstream, sender, envelope, { reason });
@@ -1325,6 +1373,9 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "idle");
     recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    if (payload.errorCategory === "timeout") {
+      recordWorkflowEvent(workstream, { id: randomUUID(), type: "provider.timed_out", message: `${task?.title ?? sender.role} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(payload.taskId ? { taskId: payload.taskId } : {}), ...(resultCorrelationId ? { correlationId: resultCorrelationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}) });
+    }
     if (task) await reconcileTaskDispatches(workstream);
     if (await reconcileCompletion(workstream)) return;
     workstream.status = "waiting_for_human";

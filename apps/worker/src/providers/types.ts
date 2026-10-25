@@ -46,7 +46,7 @@ export type ProviderRunEvent =
 export type ProviderRunResult = { turnId: string; text: string; session: ProviderSession; usage?: ProviderUsage; structuredResult?: AgentTurnResult; metadata?: Record<string, unknown> };
 
 export type ProviderError = {
-  code: string; message: string; category: "timeout" | "cancelled" | "transport" | "authentication" | "configuration" | "provider" | "unknown";
+  code: string; message: string; category: "timeout" | "cancelled" | "transport" | "authentication" | "rate_limit" | "configuration" | "provider" | "unknown";
   retry: RetryClass; provider?: string; statusCode?: number; correlationId?: string;
 };
 

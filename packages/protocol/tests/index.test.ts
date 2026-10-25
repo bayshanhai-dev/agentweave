@@ -27,6 +27,9 @@ describe("scaling contracts", () => {
       "orchestration.decomposition_reprompted",
       "orchestration.implementation_trigger_exists",
       "orchestration.lead",
+      "provider.authentication_required",
+      "provider.limit_reached",
+      "provider.timed_out",
     ]) expect(allowedRuntimeEventTypes.has(type), type).toBe(true);
   });
 
