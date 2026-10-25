@@ -7,11 +7,13 @@ import { EvidenceCollectorRegistry } from "../workspace/evidence.js";
 import { agentTurnResultSchema, resolveProviderModel, type AgentTurnResult } from "@agentweave/protocol";
 import type { ProviderRunResult } from "../providers/types.js";
 import { parseAgentTurnResult } from "../providers/agent-turn-result.js";
+import { classifyProviderFailure, redactSecrets } from "../providers/errors.js";
+import type { ProviderError, RetryClass } from "../providers/types.js";
 
 export type AgentTask = { taskId: string; executionKey?: string; agentId: string; workstreamId?: string; sessionId?: string; role?: string; prompt: string; workspacePath?: string; provider?: string; model?: string; correlationId?: string; idempotencyKey?: string; collectEvidence?: boolean };
 type ExecutionContext = { taskId: string; agentId?: string; workstreamId?: string; provider?: string; model?: string; usage?: ProviderUsage; correlationId?: string };
 export type ExecutionTurnSummary = { turnId: string; text: string; structuredResult?: AgentTurnResult; usage?: ProviderUsage };
-export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed" | "task.gated"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; turns?: ExecutionTurnSummary[]; error?: string; evidenceIds?: string[]; turnBudgetExhausted?: boolean; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
+export type ExecutionSink = (event: (ProviderRunEvent & ExecutionContext) | ({ type: "run.started" | "run.heartbeat" | "task.completed" | "task.failed" | "task.gated"; turnId?: string; structuredResult?: AgentTurnResult; text?: string; turns?: ExecutionTurnSummary[]; error?: string; errorCategory?: ProviderError["category"]; errorCode?: string; errorRetry?: RetryClass; evidenceIds?: string[]; turnBudgetExhausted?: boolean; elapsedMs?: number } & ExecutionContext)) => Promise<void>;
 
 class SessionLeaseLostError extends Error {
   constructor() { super("Session lease lost"); }
@@ -19,6 +21,50 @@ class SessionLeaseLostError extends Error {
 
 const DEFAULT_MAX_TURNS = 5;
 const MAX_OBSERVATION_CHARS = 4000;
+
+function providerFailureFields(error: unknown): {
+  errorCategory: ProviderError["category"];
+  errorCode: string;
+  errorRetry: RetryClass;
+} | Record<string, never> {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    typeof (error as Partial<ProviderError>).category === "string" &&
+    typeof (error as Partial<ProviderError>).code === "string" &&
+    typeof (error as Partial<ProviderError>).retry === "string"
+  ) {
+    const providerFailure = error as ProviderError;
+    return {
+      errorCategory: providerFailure.category,
+      errorCode: redactSecrets(providerFailure.code),
+      errorRetry: providerFailure.retry,
+    };
+  }
+
+  const candidate = error !== null && typeof error === "object"
+    ? error as { message?: unknown; statusCode?: unknown; code?: unknown }
+    : undefined;
+  const message = typeof candidate?.message === "string"
+    ? candidate.message
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  const classification = classifyProviderFailure({
+    message,
+    ...(typeof candidate?.statusCode === "number" ? { statusCode: candidate.statusCode } : {}),
+    ...(typeof candidate?.code === "string" ? { code: candidate.code } : {}),
+  });
+  return classification ? {
+    errorCategory: classification.category,
+    errorCode: classification.code,
+    errorRetry: classification.retry,
+  } : {};
+}
+
+function providerFailureMessage(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error));
+}
 
 /**
  * Max agent-owned turns per task execution. Conservative default; 1 restores
@@ -108,7 +154,7 @@ export class AgentTaskExecutor {
     } catch (error) {
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;
-      await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), provider: provider.name, ...(model ? { model } : {}), error: error instanceof Error ? error.message : String(error) });
+      await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), provider: provider.name, ...(model ? { model } : {}), error: providerFailureMessage(error), ...providerFailureFields(error) });
       throw error;
     }
     const maxTurns = resolveMaxTurns();
@@ -197,7 +243,7 @@ export class AgentTaskExecutor {
         await this.sink({ type: "task.gated", ...(gatedTurnId ? { turnId: gatedTurnId } : {}), ...(structuredResult ? { structuredResult } : {}), ...(gatedText ? { text: gatedText } : {}), ...(turns.length ? { turns } : {}), ...(totalUsage ? { usage: totalUsage } : {}), taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error.message });
       } else {
         if (!(error instanceof SessionLeaseLostError)) { record.status = "failed"; record.updatedAt = new Date().toISOString(); await this.sessions.save(record); }
-        await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: error instanceof Error ? error.message : String(error) });
+        await this.sink({ type: "task.failed", taskId: task.taskId, agentId: task.agentId, ...(task.workstreamId ? { workstreamId: task.workstreamId } : {}), ...(task.correlationId ? { correlationId: task.correlationId } : {}), provider: session.provider, ...(session.model ? { model: session.model } : {}), error: providerFailureMessage(error), ...providerFailureFields(error) });
       }
       throw error;
     }
