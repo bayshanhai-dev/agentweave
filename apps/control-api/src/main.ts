@@ -46,6 +46,9 @@ import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
 import { buildProviderAuthenticationMessage, buildProviderLimitMessage, providerFailureAction } from "./provider-failure.js";
+import { TriggerRepository } from "./repositories/trigger-repository.js";
+import { nextFireAt, substituteTriggerText, TriggerScheduler } from "./trigger-scheduler.js";
+import { buildTrigger } from "./trigger-validation.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -93,6 +96,7 @@ const messageRepository = new MessageRepository(sql);
 const runtimeRepository = new RuntimeRepository(sql);
 const evidenceRepository = new EvidenceRepository(sql);
 const insightRepository = new InsightRepository(sql);
+const triggerRepository = new TriggerRepository(sql);
 const collaborationPolicy = new CollaborationPolicy();
 const structuredTurnRepository = new StructuredTurnRepository(sql);
 const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
@@ -119,6 +123,76 @@ const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => 
   if (!template) throw new Error(`Unknown workstream template: ${workstream.flavor}`);
   return { templateId: template.id, ...template.orchestration };
 };
+
+const triggerScheduler = new TriggerScheduler(
+  triggerRepository,
+  async (trigger, { fireId, payload, now }) => {
+    let workstream: Workstream;
+    if (trigger.targetMode === "workstream") {
+      workstream = workstreams.get(trigger.targetWorkstreamId ?? "")!;
+      if (!workstream) throw new Error("target-workstream-not-found");
+      if (["completed", "cancelled", "emergency_stopped", "archived"].includes(workstream.status)) {
+        throw new Error("target-workstream-terminal");
+      }
+    } else {
+      const template = resolveTemplate(trigger.templateId ?? "");
+      if (!template) throw new Error("template-not-found");
+      const providerConfig = parseProviderConfig({});
+      if (!providerConfig.ok) throw new Error(providerConfig.error);
+      workstream = await createPersistedWorkstream({
+        goal: substituteTriggerText(trigger.goalTemplate ?? "", trigger, now, payload),
+        flavor: template.id,
+        workspaceRoot: "/workspaces/agentweave",
+        template,
+        provider: providerConfig.provider,
+        roleProviders: providerConfig.roleProviders,
+      });
+      await startDraftWorkstream(workstream, "Trigger started the Workstream");
+    }
+    const policy = orchestrationPolicyFor(workstream);
+    const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
+    if (!lead) throw new Error("target-lead-not-found");
+    const task = (await createTasks(workstream, [{
+      title: trigger.dutyTitle,
+      ownerRole: policy.leadRole,
+      acceptanceCriteria: ["The triggered duty is completed and evidence is attached"],
+    }]))[0];
+    if (!task) throw new Error("duty-task-create-failed");
+    const message = await createMessage(
+      workstream,
+      "human",
+      [lead.id],
+      substituteTriggerText(trigger.dutyPrompt, trigger, now, payload, 8_000),
+      "request",
+      { taskId: task.id, correlationId: `trigger:${trigger.id}:${fireId}` },
+    );
+    emit(workstream, "trigger.fired", `Trigger fired: ${trigger.name}`, lead.role, { taskId: task.id, correlationId: message.correlationId });
+    return { workstreamId: workstream.id, messageId: message.id };
+  },
+  async (trigger, priorFire, { fireId, payload }) => {
+    const workstream = priorFire.workstreamId ? workstreams.get(priorFire.workstreamId) : undefined;
+    const priorMessage = workstream?.messages.find((message) => message.id === priorFire.messageId);
+    if (!workstream || !priorMessage?.taskId) throw new Error("batch-target-not-found");
+    // The brief explicitly permits preserving burst payloads as additional messages
+    // on the original duty when mutating the already-fired prompt is impractical.
+    await createMessage(workstream, "human", priorMessage.recipientIds, `Additional batched trigger payload:\n${payload}`, "request", {
+      taskId: priorMessage.taskId,
+      correlationId: `trigger:${trigger.id}:${fireId}`,
+      causationId: priorMessage.id,
+    });
+  },
+  {
+    globalDailyMax: Number(process.env.AGENTWEAVE_TRIGGER_GLOBAL_DAILY_MAX ?? 200),
+    stormMax10Min: Number(process.env.AGENTWEAVE_TRIGGER_STORM_MAX_10MIN ?? 20),
+    onSkipped: (trigger, reason) => {
+      if (reason === "global-daily-cap" || reason === "storm-breaker") return;
+      if (trigger.targetMode !== "workstream") return;
+      const workstream = workstreams.get(trigger.targetWorkstreamId ?? "");
+      if (workstream) emit(workstream, "trigger.skipped", `Trigger skipped (${reason}): ${trigger.name}`);
+    },
+    warn: (message, details) => app.log.warn(details, message),
+  },
+);
 
 app.addHook("onRequest", async (request, reply) => {
   metrics.requests += 1;
@@ -177,6 +251,53 @@ app.delete("/api/workstream-templates/:id", async (request, reply) => {
   if (index >= 0) customTemplates.splice(index, 1);
   app.log.info({ templateId: id }, "custom_workstream_template.deleted");
   return reply.code(204).send();
+});
+app.get("/api/triggers", async () => {
+  const now = new Date();
+  return (await triggerRepository.list()).map((trigger) => ({
+    ...trigger,
+    nextFireAt: nextFireAt(trigger, now) ?? null,
+  }));
+});
+app.post("/api/triggers", async (request, reply) => {
+  const validation = buildTrigger(request.body);
+  if (!validation.ok) return reply.code(400).send({ error: validation.error });
+  try {
+    return reply.code(201).send(await triggerRepository.create(validation.trigger));
+  } catch (error) {
+    app.log.error({ error }, "trigger.create_failed");
+    return reply.code(500).send({ error: "trigger_create_failed" });
+  }
+});
+app.patch("/api/triggers/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const existing = await triggerRepository.find(id);
+  if (!existing) return reply.code(404).send({ error: "trigger_not_found" });
+  const validation = buildTrigger(request.body, existing);
+  if (!validation.ok) return reply.code(400).send({ error: validation.error });
+  return triggerRepository.update(id, validation.trigger);
+});
+app.delete("/api/triggers/:id", async (request, reply) => {
+  const deleted = await triggerRepository.delete((request.params as { id: string }).id);
+  return deleted ? reply.code(204).send() : reply.code(404).send({ error: "trigger_not_found" });
+});
+app.post("/api/triggers/:id/fire", async (request, reply) => {
+  const trigger = await triggerRepository.find((request.params as { id: string }).id);
+  if (!trigger) return reply.code(404).send({ error: "trigger_not_found" });
+  const body = request.body as { idempotencyKey?: unknown; payload?: unknown } | undefined;
+  if (body?.idempotencyKey !== undefined && (typeof body.idempotencyKey !== "string" || !body.idempotencyKey.trim())) {
+    return reply.code(400).send({ error: "invalid_idempotency_key" });
+  }
+  let payload = "";
+  if (typeof body?.payload === "string") payload = body.payload;
+  else if (body && "payload" in body) {
+    try { payload = JSON.stringify(body.payload); } catch { return reply.code(400).send({ error: "invalid_payload" }); }
+  }
+  const fire = await triggerScheduler.fireNow(trigger, {
+    ...(typeof body?.idempotencyKey === "string" ? { idempotencyKey: body.idempotencyKey } : {}),
+    payload,
+  });
+  return reply.code(201).send(fire);
 });
 app.get("/api/workstreams", async () => [...workstreams.values()].map(workstreamResponse));
 app.get("/api/workstreams/:id", async (request, reply) => {
@@ -393,8 +514,7 @@ app.post("/api/workstreams/:id/start", async (request, reply) => {
   const id = (request.params as { id: string }).id; const workstream = workstreams.get(id);
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
   if (workstream.status !== "draft") return reply.code(409).send({ error: "workstream_not_draft", status: workstream.status });
-  workstream.status = "starting"; await persistWorkstreamStatus(workstream); emit(workstream, "workstream.starting", "Human started the Workstream");
-  await startOrchestration(workstream); return workstream;
+  await startDraftWorkstream(workstream, "Human started the Workstream"); return workstream;
 });
 app.post("/api/workstreams", async (request, reply) => {
   const body = request.body as { goal?: string; templateId?: string; flavor?: string; tool?: unknown; model?: unknown; roleProviders?: unknown; workspaceRoot?: string } | undefined;
@@ -407,19 +527,11 @@ app.post("/api/workstreams", async (request, reply) => {
   const templateRoles = new Set(template.roles.map((role) => role.id));
   const unknownRole = Object.keys(providerConfig.roleProviders).find((role) => !templateRoles.has(role));
   if (unknownRole) return reply.code(400).send({ error: "unknown_role_provider", role: unknownRole });
-  const id = randomUUID();
-  const workstream: Workstream = {
-    id, goal: body.goal.trim(), flavor, status: "draft",
-    provider: providerConfig.provider,
+  const workstream = await createPersistedWorkstream({
+    goal: body.goal.trim(), flavor, template, provider: providerConfig.provider,
     roleProviders: providerConfig.roleProviders,
-    workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave", tasks: [], events: [], messages: [],
-    agents: template.roles.map((role, index) => ({ id: `${id}:${role.id}-${index + 1}`, role: role.id, authority: role.authority, status: "idle", ...(role.id === template.orchestration.leadRole ? { orchestrator: true } : {}) })),
-  };
-  workstreams.set(id, workstream);
-  await persistWorkstream(workstream);
-  metrics.workstreamsCreated += 1;
-  app.log.info({ workstreamId: id, templateId: template.id, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
-  emit(workstream, "workstream.created", `${template.name} workstream created`);
+    workspaceRoot: body.workspaceRoot?.trim() || "/workspaces/agentweave",
+  });
   return reply.code(201).send(workstreamResponse(workstream));
 });
 app.get("/events", { websocket: true }, async (socket, request) => {
@@ -672,6 +784,32 @@ async function updateDelivery(request: { params: unknown; body?: unknown }, repl
 
 async function persistWorkstream(workstream: Workstream): Promise<void> {
   await workstreamRepository.create(workstream);
+}
+
+async function createPersistedWorkstream(input: {
+  goal: string;
+  flavor: string;
+  template: WorkstreamTemplate;
+  provider: ProviderSelection;
+  roleProviders: RoleProviders;
+  workspaceRoot: string;
+}): Promise<Workstream> {
+  const id = randomUUID();
+  const workstream: Workstream = {
+    id, goal: input.goal.trim(), flavor: input.flavor, status: "draft",
+    provider: input.provider, roleProviders: input.roleProviders, workspaceRoot: input.workspaceRoot,
+    tasks: [], events: [], messages: [],
+    agents: input.template.roles.map((role, index) => ({
+      id: `${id}:${role.id}-${index + 1}`, role: role.id, authority: role.authority, status: "idle",
+      ...(role.id === input.template.orchestration.leadRole ? { orchestrator: true } : {}),
+    })),
+  };
+  workstreams.set(id, workstream);
+  await persistWorkstream(workstream);
+  metrics.workstreamsCreated += 1;
+  app.log.info({ workstreamId: id, templateId: input.template.id, provider: workstream.provider, workspaceRoot: workstream.workspaceRoot }, "workstream.created");
+  emit(workstream, "workstream.created", `${input.template.name} workstream created`);
+  return workstream;
 }
 
 async function persistTask(task: Task): Promise<void> {
@@ -978,6 +1116,20 @@ await eventBus.consumer(subjects.events, async (message) => {
   return "ack";
 });
 setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000);
+let triggerTickRunning = false;
+const runTriggerTick = async (): Promise<void> => {
+  if (triggerTickRunning) return;
+  triggerTickRunning = true;
+  try {
+    await triggerScheduler.tick();
+  } catch (error) {
+    app.log.error({ error }, "trigger.scheduler_tick_failed");
+  } finally {
+    triggerTickRunning = false;
+  }
+};
+setTimeout(() => { void runTriggerTick(); }, 1_000).unref();
+setInterval(() => { void runTriggerTick(); }, 30_000).unref();
 // Periodic dispatch reconciliation: event-driven reconciliation only runs
 // when something else happens, so a lost handoff in an otherwise quiet
 // Workstream would never be retried. The sweep re-drives stale, unclaimed
@@ -990,6 +1142,13 @@ setInterval(() => {
     });
   }
 }, 60_000).unref();
+
+async function startDraftWorkstream(workstream: Workstream, message: string): Promise<void> {
+  workstream.status = "starting";
+  await persistWorkstreamStatus(workstream);
+  emit(workstream, "workstream.starting", message);
+  await startOrchestration(workstream);
+}
 
 async function startOrchestration(workstream: Workstream): Promise<void> {
   const policy = orchestrationPolicyFor(workstream);

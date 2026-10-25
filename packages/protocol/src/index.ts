@@ -306,6 +306,8 @@ const workflowEventTypes = [
   "task.decomposition.persisted",
   "task.updated",
   "task.quality_rejected",
+  "trigger.fired",
+  "trigger.skipped",
   "workstream.active",
   "workstream.complete",
   "workstream.completed",
