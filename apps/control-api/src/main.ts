@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, resolveTaskDependencyPlan, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -32,7 +32,7 @@ import {
   shouldDispatchMessage,
 } from "./approval-implementation-trigger.js";
 import { armTriggerWatchdogForDispatch, durableDispatchTimeoutAction, implementationTriggerWatchdogMs, publishWithRetry, shouldArmDurableTaskWatchdog, shouldDeferDispatchTimeout, TriggerDispatchWatchdog } from "./dispatch-reliability.js";
-import { reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
+import { healOwnerlessTasks, reconcileDispatchableTasks, reconcileWaveGateAfterActivation } from "./wave-gate-reconciliation.js";
 import { reconcileCompletionGate } from "./completion-gate.js";
 import { isFinalValidationTask } from "./final-validation.js";
 import { applyArtifactQualityGate } from "./artifact-quality.js";
@@ -43,6 +43,8 @@ import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterAct
 import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
 import { agentsWithEffectiveProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
+import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
+import { detectWorkstreamStall } from "./stall-detection.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -78,6 +80,7 @@ const completionGateTransitions = new Map<string, Promise<boolean>>();
 const gatedDecisionTransitions = new Map<string, Promise<boolean>>();
 const collaborationRoundTransitions = new Map<string, Promise<string[]>>();
 const decompositionFailureTransitions = new Map<string, Promise<boolean>>();
+const stalledEpisodes = new Map<string, string>();
 const maxDecompositionReprompts = 2;
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
@@ -352,6 +355,9 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   // Worker correctly sees waiting_for_human and acks the delivery without a turn.
   if (humanToLead && workstream.status === "waiting_for_human") {
     workstream.status = "active";
+    for (const agent of workstream.agents) {
+      if (agent.status === "paused") await setAgentStatus(agent, "idle");
+    }
     orchestrators.set(workstream.id, new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream)));
     await persistWorkstreamStatus(workstream);
     emit(workstream, "workstream.resumed_by_human_message", "Human resumed the Workstream through PM");
@@ -688,30 +694,20 @@ async function taskDispatchContent(
 }
 
 async function createTasks(workstream: Workstream, specs: TaskSpec[], creatorAgentId?: string): Promise<Task[]> {
-  const now = new Date().toISOString();
-  const taskIds = specs.map(() => `${workstream.id}:task-${randomUUID()}`);
-  const dependencyPlan = resolveTaskDependencyPlan(specs, taskIds);
-  const created: Task[] = specs.map((spec, index) => {
-    const owner = spec.ownerRole ? workstream.agents.find((agent) => agent.role === spec.ownerRole) : undefined;
-    return {
-      id: taskIds[index]!, workstreamId: workstream.id, title: spec.title.trim(), status: owner ? "assigned" : "ready",
-      ...(owner ? { ownerAgentId: owner.id } : {}), ...(creatorAgentId ? { createdByAgentId: creatorAgentId } : {}),
-      ...(spec.parentTaskId ? { parentTaskId: spec.parentTaskId } : {}), relatedTaskIds: spec.relatedTaskIds ?? [],
-      acceptanceCriteria: spec.acceptanceCriteria?.length ? spec.acceptanceCriteria : ["Task is completed with evidence"],
-      dependencies: dependencyPlan.dependencies[index]!, evidence: [], qualityAttempts: 0, createdAt: now, updatedAt: now,
-    };
-  });
-  workstream.tasks.push(...created);
-  if (dependencyPlan.repairs.length) {
-    emit(
-      workstream,
-      "orchestration.decomposition_dependencies_repaired",
-      `Decomposition dependency references repaired: ${dependencyPlan.repairs.join("; ").slice(0, 600)}`,
-      creatorAgentId ? workstream.agents.find((agent) => agent.id === creatorAgentId)?.role : undefined,
-    );
-  }
-  for (const task of created) { await persistTask(task); emit(workstream, "task.created", `${task.ownerAgentId ? "Task assigned" : "Task queued"}: ${task.title}`, creatorAgentId ? workstream.agents.find((agent) => agent.id === creatorAgentId)?.role : undefined); }
-  return created;
+  return createTasksWithOwnerFallback(
+    {
+      id: workstream.id,
+      agents: workstream.agents,
+      tasks: workstream.tasks as OwnedTask[],
+    },
+    specs,
+    orchestrationPolicyFor(workstream),
+    {
+      persistTask,
+      emit: (type, message, role) => emit(workstream, type, message, role),
+    },
+    creatorAgentId,
+  ) as Promise<Task[]>;
 }
 
 async function persistWorkstreamStatus(workstream: Workstream): Promise<void> {
@@ -754,6 +750,30 @@ async function reconcileTaskDispatches(workstream: Workstream): Promise<void> {
     orchestrationPolicyFor(workstream),
     dispatchReconciliationDependencies(workstream),
   );
+}
+
+async function reconcilePeriodicTaskDispatches(workstream: Workstream): Promise<void> {
+  const policy = orchestrationPolicyFor(workstream);
+  await healOwnerlessTasks(workstream, policy, {
+    persistTask: async (task) => {
+      const durableTask = workstream.tasks.find((candidate) => candidate.id === task.id);
+      if (durableTask) await persistTask(durableTask);
+    },
+    emit: (type, message, role) => emit(workstream, type, message, role),
+  });
+  await reconcileDispatchableTasks(
+    workstream,
+    policy,
+    dispatchReconciliationDependencies(workstream),
+  );
+  const stall = detectWorkstreamStall(
+    workstream,
+    stalledEpisodes.get(workstream.id),
+  );
+  if (stall) {
+    stalledEpisodes.set(workstream.id, stall.episodeKey);
+    emit(workstream, "workstream.stalled", stall.message);
+  }
 }
 
 async function reconcileAfterActivation(workstream: Workstream): Promise<void> {
@@ -964,7 +984,7 @@ setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000)
 setInterval(() => {
   for (const workstream of workstreams.values()) {
     if (workstream.status !== "active") continue;
-    void reconcileTaskDispatches(workstream).catch((error) => {
+    void reconcilePeriodicTaskDispatches(workstream).catch((error) => {
       app.log.error({ error, workstreamId: workstream.id }, "dispatch reconciliation sweep failed");
     });
   }

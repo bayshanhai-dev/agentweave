@@ -70,4 +70,38 @@ describe("WorkstreamLifecycleCommandHandler", () => {
       handler.approve(workstream("draft"), { decision: "complete" }, vi.fn()),
     ).rejects.toBeInstanceOf(WorkstreamCommandError);
   });
+
+  it("resets paused agents when approval resumes a waiting workstream", async () => {
+    const store = repository();
+    const handler = new WorkstreamLifecycleCommandHandler(store);
+    const state = workstream();
+    await handler.execute(
+      state,
+      "waiting-for-human",
+      { commandId: "wait-1" },
+      vi.fn(),
+    );
+    expect(state.agents.map((agent) => agent.status)).toEqual([
+      "paused",
+      "paused",
+    ]);
+
+    await handler.approve(
+      state,
+      { commandId: "approval-1", decision: "resume" },
+      vi.fn(),
+    );
+
+    expect(state.status).toBe("active");
+    expect(state.agents.map((agent) => agent.status)).toEqual(["idle", "idle"]);
+    expect(store.commit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        command: "approval:resume",
+        status: "active",
+        agents: expect.arrayContaining([
+          expect.objectContaining({ status: "idle" }),
+        ]),
+      }),
+    );
+  });
 });

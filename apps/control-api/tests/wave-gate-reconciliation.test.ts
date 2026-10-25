@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { withFinalValidationTask } from "../src/final-validation.js";
 import {
+  healOwnerlessTasks,
   reconcileDispatchableTasks,
   reconcileWaveGateAfterActivation,
 } from "../src/wave-gate-reconciliation.js";
@@ -304,6 +305,43 @@ describe("wave gate activation reconciliation", () => {
     );
     expect(result.dispatchedTaskIds).toEqual([task.id]);
     expect(fixture.dependencies.dispatchTask).toHaveBeenCalledOnce();
+  });
+});
+
+describe("ownerless task healing", () => {
+  it("assigns a persisted stale ready task to the lead and announces the repair", async () => {
+    const task = {
+      id: "task-ownerless",
+      title: "29 tests",
+      status: "ready",
+      acceptanceCriteria: ["Tests pass"],
+      dependencies: [] as string[],
+      updatedAt: "2026-10-25T11:58:00.000Z",
+    };
+    const workstream = {
+      id: "ws-ownerless",
+      status: "active",
+      agents: [{ id: "pm-1", role: "pm" }],
+      tasks: [task],
+      messages: [],
+    };
+    const persistTask = vi.fn(async () => undefined);
+    const emit = vi.fn();
+
+    expect(
+      await healOwnerlessTasks(workstream, policy, {
+        persistTask,
+        emit,
+        now: () => Date.parse("2026-10-25T12:00:00.000Z"),
+      }),
+    ).toEqual([task.id]);
+    expect(task).toMatchObject({ status: "assigned", ownerAgentId: "pm-1" });
+    expect(persistTask).toHaveBeenCalledWith(task);
+    expect(emit).toHaveBeenCalledWith(
+      "orchestration.task_owner_defaulted",
+      expect.stringContaining('Task "29 tests"'),
+      "pm",
+    );
   });
 });
 

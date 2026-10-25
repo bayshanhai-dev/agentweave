@@ -292,4 +292,81 @@ describe("collaboration round activation reconciliation", () => {
       expect.any(Object),
     );
   });
+
+  it("re-dispatches an ACK-skipped stale assigned turn with no claim or open delivery", async () => {
+    const fixture = failedProposalFixture();
+    fixture.workstream.status = "active";
+    fixture.workstream.tasks[0]!.status = "assigned";
+    fixture.workstream.messages[0]!.deliveryStatus = "acknowledged";
+    fixture.workstream.events = [
+      {
+        type: "workstream.waiting_for_human",
+        message: "Human decision required",
+        occurredAt: "2026-10-24T05:06:00.000Z",
+      },
+    ];
+
+    expect(
+      await reconcileCollaborationRoundAfterActivation(
+        fixture.workstream,
+        fixture.dependencies,
+      ),
+    ).toEqual([`${fixture.round.id}:task:proposal-1`]);
+    expect(fixture.dependencies.hasExecutionClaim).toHaveBeenCalledWith(
+      `${fixture.round.id}:task:proposal-1`,
+      "2026-10-24T05:06:00.000Z",
+    );
+    expect(fixture.emit).toHaveBeenCalledWith(
+      "collaboration.turn.redriven",
+      expect.stringContaining("stale unclaimed assignment"),
+      expect.any(Object),
+    );
+  });
+
+  it("does not re-dispatch a recent assigned turn", async () => {
+    const fixture = failedProposalFixture();
+    fixture.workstream.status = "active";
+    fixture.workstream.tasks[0]!.status = "assigned";
+    fixture.workstream.tasks[0]!.updatedAt = "2026-10-24T05:09:00.000Z";
+    fixture.workstream.messages[0]!.deliveryStatus = "acknowledged";
+    fixture.workstream.events = [
+      {
+        type: "workstream.waiting_for_human",
+        message: "Human decision required",
+        occurredAt: "2026-10-24T05:09:00.000Z",
+      },
+    ];
+
+    expect(
+      await reconcileCollaborationRoundAfterActivation(
+        fixture.workstream,
+        fixture.dependencies,
+      ),
+    ).toEqual([]);
+    expect(fixture.dispatchTurn).not.toHaveBeenCalled();
+    expect(fixture.dependencies.hasExecutionClaim).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate a stale assignment with an open post-interruption delivery", async () => {
+    const fixture = failedProposalFixture();
+    fixture.workstream.status = "active";
+    fixture.workstream.tasks[0]!.status = "assigned";
+    fixture.workstream.events = [
+      {
+        type: "workstream.waiting_for_human",
+        message: "Human decision required",
+        occurredAt: "2026-10-24T05:04:00.000Z",
+      },
+    ];
+    fixture.workstream.messages[0]!.createdAt = "2026-10-24T05:07:00.000Z";
+
+    expect(
+      await reconcileCollaborationRoundAfterActivation(
+        fixture.workstream,
+        fixture.dependencies,
+      ),
+    ).toEqual([]);
+    expect(fixture.dispatchTurn).not.toHaveBeenCalled();
+    expect(fixture.dependencies.hasExecutionClaim).not.toHaveBeenCalled();
+  });
 });
