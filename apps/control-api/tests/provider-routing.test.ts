@@ -33,6 +33,16 @@ describe("heterogeneous provider routing", () => {
 
     expect(collaboration).toMatchObject({ provider: "codex", model: "gpt-5.6-sol" });
     expect(task).toMatchObject({ provider: "ollama", model: "llama3.1:8b" });
+
+    const toolOnlyCollaboration = stampProviderRoute(
+      { messageType: "collaboration.critique", recipientId: "agent-qa" },
+      routeForRecipient({
+        provider: {},
+        roleProviders: { qa: { tool: "ollama" } },
+        agents: [{ id: "agent-qa", role: "qa" }],
+      }, "agent-qa"),
+    );
+    expect(toolOnlyCollaboration).toMatchObject({ provider: "ollama", model: "llama3.1:8b" });
   });
 
   it("applies the role, workstream, then unstamped worker fallback chain", () => {
