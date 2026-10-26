@@ -10,6 +10,7 @@ export type StreamMessage = {
   correlationId?: string;
   causationId?: string;
   evidenceIds?: string[];
+  deliveryStatus?: string;
   content?: string;
   message?: string;
   createdAt?: string;
@@ -45,6 +46,7 @@ export type UnifiedStreamItem = {
   evidenceIds: string[];
   confidence?: number;
   lifecycle?: string;
+  deliveryStatus?: string;
 };
 
 const timestamp = (value?: string) => {
@@ -72,6 +74,7 @@ export function unifiedStream(
       references: message.causationId ? [message.causationId] : [],
       contradictionOf: [],
       evidenceIds: message.evidenceIds ?? [],
+      deliveryStatus: message.deliveryStatus,
     })),
     ...insights.map((insight): UnifiedStreamItem => ({
       kind: "insight",

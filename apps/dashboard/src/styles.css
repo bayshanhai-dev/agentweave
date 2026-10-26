@@ -550,6 +550,11 @@ html[data-mantine-color-scheme="dark"] .mantine-AppShell-header {
 .cc-tag-human { background: rgba(34, 211, 238, 0.15); color: #67e8f9; }
 .cc-tag-token { background: rgba(148, 163, 184, 0.13); color: #94a3b8; }
 .cc-tag-message, .cc-tag-insight { background: rgba(148, 163, 184, 0.13); color: #94a3b8; }
+.cc-tag-delivery-delivered { background: rgba(148, 163, 184, 0.13); color: #94a3b8; }
+.cc-tag-delivery-gated { background: rgba(251, 146, 60, 0.18); color: #fdba74; }
+.cc-tag-delivery-claimed { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
+.cc-tag-delivery-acknowledged { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; }
+.cc-tag-delivery-failed { background: rgba(248, 113, 113, 0.15); color: #fca5a5; }
 
 /* --- approval gate banner --- */
 .cc-approval-banner {

@@ -34,6 +34,7 @@ export type BusMessage = {
   messageType?: string;
   taskId?: string;
   correlationId?: string;
+  deliveryStatus?: string;
   content?: string;
   message?: string;
   createdAt?: string;
@@ -56,6 +57,23 @@ type Props = {
 
 function stripPromptPrefix(content: string): string {
   return content.replace(/\[agentweave[^\]]*\]\s*/g, "");
+}
+
+function deliveryLabel(status: string): string {
+  switch (status) {
+    case "delivered":
+      return "Delivered";
+    case "gated":
+      return "Gated · signed while parked";
+    case "claimed":
+      return "Claimed";
+    case "acknowledged":
+      return "Acknowledged";
+    case "failed":
+      return "Failed";
+    default:
+      return status;
+  }
 }
 
 function roleIdFor(authorId: string | undefined, agents: Agent[]): string | undefined {
@@ -160,6 +178,9 @@ function EventCard({
         <Group gap="xs" mb={4} wrap="wrap">
           <Text size="sm" fw={800}>{label}</Text>
           <span className={`cc-tag cc-tag-${tag.tone}`}>{tag.label}</span>
+          {item.kind === "message" && item.deliveryStatus && item.deliveryStatus !== "pending" && (
+            <span className={`cc-tag cc-tag-delivery-${item.deliveryStatus}`}>{deliveryLabel(item.deliveryStatus)}</span>
+          )}
           <Text size="xs" c="dimmed">
             {formatTime(item.createdAt)}
           </Text>
