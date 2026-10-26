@@ -172,6 +172,32 @@ describe("provider adapters", () => {
     expect(run.events.at(-2)).toMatchObject({ type: "usage.updated", usage: { totalTokens: 150 } });
   });
 
+  it("surfaces a provider turn failure with its real message instead of empty output", async () => {
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-limited" } } } : { result: { turnId: "turn-limited" } }; },
+      async *events() { yield { type: "turn.failed", error: { message: "You've hit your usage limit. Try again at 1:35 AM." } }; },
+    };
+    const stream = new CodexAppServerAdapter(transport).run({ input: "inspect", correlationId: "corr-limited" });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.started" }, done: false });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.failed", error: { code: "PROVIDER_USAGE_LIMIT", category: "rate_limit", retry: "user-action-required", message: expect.stringContaining("usage limit") } }, done: false });
+    await expect(stream.next()).rejects.toMatchObject({ code: "PROVIDER_USAGE_LIMIT", category: "rate_limit", retry: "user-action-required", message: expect.stringContaining("usage limit") });
+  });
+
+  it("fails a Codex turn that streamed partial text before the provider failed it", async () => {
+    const transport: CodexTransport = {
+      async request(method) { return method === "thread/start" ? { result: { thread: { id: "thread-partial" } } } : { result: { turnId: "turn-partial" } }; },
+      async *events() {
+        yield { type: "turn.delta", text: "partial draft" };
+        yield { type: "turn.failed", error: "socket exploded mid-turn" };
+      },
+    };
+    const stream = new CodexAppServerAdapter(transport).run({ input: "inspect", correlationId: "corr-partial" });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.started" }, done: false });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.delta", text: "partial draft" }, done: false });
+    expect(await stream.next()).toMatchObject({ value: { type: "turn.failed", error: { code: "CODEX_TURN_FAILED", message: "socket exploded mid-turn" } }, done: false });
+    await expect(stream.next()).rejects.toMatchObject({ code: "CODEX_TURN_FAILED", message: "socket exploded mid-turn" });
+  });
+
   it("fails and cancels a Codex turn when its event stream stalls", async () => {
     let cancelled: { sessionId: string; turnId: string; correlationId: string } | undefined;
     const transport: CodexTransport = {
