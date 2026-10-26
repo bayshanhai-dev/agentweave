@@ -52,6 +52,7 @@ function fire(overrides: Partial<TriggerFire> = {}): TriggerFire {
 class FakeStore implements TriggerStore {
   fires: TriggerFire[] = [];
   overlapIds = new Set<string>();
+  openTaskCounts = new Map<string, number>();
   constructor(public triggers: Trigger[] = []) {}
   async listEnabled() {
     return this.triggers.filter((item) => item.enabled);
@@ -100,6 +101,9 @@ class FakeStore implements TriggerStore {
   }
   async hasOpenOverlap(candidate: Trigger) {
     return this.overlapIds.has(candidate.id);
+  }
+  async countOpenTasks(candidate: Trigger) {
+    return this.openTaskCounts.get(candidate.id) ?? 0;
   }
 }
 
@@ -168,6 +172,23 @@ describe("trigger decision core", () => {
     expect(
       decideFire(capped, now, fires, { slotKey: "new-slot", overlap: false }),
     ).toEqual({ action: "skip", reason: "daily-cap" });
+  });
+
+  it("skips as busy when the target already holds maxOpenTasks open tasks", () => {
+    const gated = trigger({ maxOpenTasks: 3 });
+    expect(
+      decideFire(gated, now, [], { slotKey: "new", overlap: false, openTasks: 2 }),
+    ).toEqual({ action: "fire" });
+    expect(
+      decideFire(gated, now, [], { slotKey: "new", overlap: false, openTasks: 3 }),
+    ).toEqual({ action: "skip", reason: "busy" });
+    expect(
+      decideFire(gated, now, [], { slotKey: "new", overlap: false, openTasks: 9 }),
+    ).toEqual({ action: "skip", reason: "busy" });
+    // Gate unset: open-task pressure alone never blocks a fire.
+    expect(
+      decideFire(trigger(), now, [], { slotKey: "new", overlap: false, openTasks: 99 }),
+    ).toEqual({ action: "fire" });
   });
 
   it("prioritizes duplicate, quiet-hours, cap, and overlap decisions deterministically", () => {
@@ -318,6 +339,23 @@ describe("TriggerScheduler", () => {
     expect(
       await service.fireNow(create, { idempotencyKey: "two" }),
     ).toMatchObject({ status: "skipped", reason: "overlap" });
+  });
+
+  it("records a busy skip instead of firing when the load gate trips", async () => {
+    const gated = trigger({ maxOpenTasks: 2 });
+    const store = new FakeStore([gated]);
+    store.openTaskCounts.set(gated.id, 2);
+    const calls: string[] = [];
+    const service = scheduler(store, calls);
+    await expect(service.tick()).resolves.toMatchObject([
+      { status: "skipped", reason: "busy" },
+    ]);
+    expect(calls).toEqual([]);
+    // Below the cap the same trigger fires normally.
+    store.openTaskCounts.set(gated.id, 1);
+    store.fires = [];
+    await expect(service.tick()).resolves.toMatchObject([{ status: "fired" }]);
+    expect(calls).toEqual(["trigger-1"]);
   });
 
   it("returns the original audit record for a repeated idempotency key", async () => {

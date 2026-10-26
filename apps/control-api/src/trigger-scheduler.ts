@@ -21,6 +21,7 @@ export type Trigger = {
   stateKey?: string;
   priority: number;
   maxRunsPerDay?: number;
+  maxOpenTasks?: number;
   quietStart?: string;
   quietEnd?: string;
   batchWindowSec: number;
@@ -70,6 +71,7 @@ export interface TriggerStore {
     since: Date,
   ): Promise<TriggerFire | undefined>;
   hasOpenOverlap(trigger: Trigger): Promise<boolean>;
+  countOpenTasks(trigger: Trigger): Promise<number>;
 }
 
 export type TriggerFireAction = (
@@ -193,7 +195,7 @@ export function decideFire(
   trigger: Trigger,
   now: Date,
   fires: TriggerFire[],
-  input: { slotKey: string; overlap: boolean },
+  input: { slotKey: string; overlap: boolean; openTasks?: number },
 ): FireDecision {
   if (
     fires.some(
@@ -209,6 +211,15 @@ export function decideFire(
     runsToday(fires, trigger, now) >= trigger.maxRunsPerDay
   ) {
     return { action: "skip", reason: "daily-cap" };
+  }
+  // Load gate (#131): a target that already holds maxOpenTasks open tasks
+  // gets no new duty this slot; the skip is recorded with reason "busy".
+  if (
+    trigger.maxOpenTasks !== undefined &&
+    input.openTasks !== undefined &&
+    input.openTasks >= trigger.maxOpenTasks
+  ) {
+    return { action: "skip", reason: "busy" };
   }
   if (trigger.overlapPolicy === "skip" && input.overlap)
     return { action: "skip", reason: "overlap" };
@@ -433,9 +444,14 @@ export class TriggerScheduler {
       trigger.overlapPolicy === "skip"
         ? await this.store.hasOpenOverlap(trigger)
         : false;
+    const openTasks =
+      trigger.maxOpenTasks !== undefined
+        ? await this.store.countOpenTasks(trigger)
+        : undefined;
     const decision = decideFire(trigger, input.now, input.fires, {
       slotKey: input.slotKey,
       overlap,
+      ...(openTasks !== undefined ? { openTasks } : {}),
     });
     if (decision.action === "skip") {
       if (decision.reason === "duplicate") return undefined;

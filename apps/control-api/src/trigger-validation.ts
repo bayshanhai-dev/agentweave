@@ -39,7 +39,7 @@ export function buildTrigger(
     if (has(key) && typeof value[key] === "string" && !value[key].trim())
       return { ok: false, error: `invalid_${key}` };
   }
-  for (const key of ["priority", "maxRunsPerDay", "batchWindowSec"]) {
+  for (const key of ["priority", "maxRunsPerDay", "maxOpenTasks", "batchWindowSec"]) {
     if (has(key) && value[key] !== null && integer(value[key]) === undefined)
       return { ok: false, error: `invalid_${key}` };
   }
@@ -93,6 +93,10 @@ export function buildTrigger(
     value.maxRunsPerDay === null
       ? undefined
       : (integer(value.maxRunsPerDay) ?? existing?.maxRunsPerDay);
+  const maxOpenTasks =
+    value.maxOpenTasks === null
+      ? undefined
+      : (integer(value.maxOpenTasks) ?? existing?.maxOpenTasks);
   const priority = integer(value.priority) ?? existing?.priority ?? 0;
   const batchWindowSec =
     integer(value.batchWindowSec) ?? existing?.batchWindowSec ?? 0;
@@ -129,6 +133,8 @@ export function buildTrigger(
     return { ok: false, error: "invalid_quiet_hours" };
   if (maxRunsPerDay !== undefined && maxRunsPerDay <= 0)
     return { ok: false, error: "invalid_max_runs_per_day" };
+  if (maxOpenTasks !== undefined && maxOpenTasks < 0)
+    return { ok: false, error: "invalid_max_open_tasks" };
   if (batchWindowSec < 0) return { ok: false, error: "invalid_batch_window" };
   if (overlapPolicy !== "skip" && overlapPolicy !== "allow")
     return { ok: false, error: "invalid_overlap_policy" };
@@ -154,6 +160,7 @@ export function buildTrigger(
       ...(stateKey ? { stateKey } : {}),
       priority,
       ...(maxRunsPerDay !== undefined ? { maxRunsPerDay } : {}),
+      ...(maxOpenTasks !== undefined ? { maxOpenTasks } : {}),
       ...(quietStart ? { quietStart } : {}),
       ...(quietEnd ? { quietEnd } : {}),
       batchWindowSec,

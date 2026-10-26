@@ -61,6 +61,27 @@ describe("trigger validation", () => {
     ).toEqual({ ok: false, error: "create_target_fields_not_allowed" });
   });
 
+  it("accepts, clears, and rejects out-of-range load-gate settings", () => {
+    const created = buildTrigger({ ...valid, maxOpenTasks: 4 });
+    expect(created).toMatchObject({ ok: true, trigger: { maxOpenTasks: 4 } });
+    expect(buildTrigger({ ...valid, maxOpenTasks: 0 })).toMatchObject({
+      ok: true,
+      trigger: { maxOpenTasks: 0 },
+    });
+    expect(buildTrigger({ ...valid, maxOpenTasks: -1 })).toEqual({
+      ok: false,
+      error: "invalid_max_open_tasks",
+    });
+    expect(buildTrigger({ ...valid, maxOpenTasks: 1.5 })).toEqual({
+      ok: false,
+      error: "invalid_maxOpenTasks",
+    });
+    if (!created.ok) return;
+    const cleared = buildTrigger({ maxOpenTasks: null }, created.trigger);
+    expect(cleared).toMatchObject({ ok: true });
+    if (cleared.ok) expect(cleared.trigger.maxOpenTasks).toBeUndefined();
+  });
+
   it("clears schedule-only and workstream-only fields when modes change", () => {
     const created = buildTrigger(valid);
     expect(created.ok).toBe(true);
