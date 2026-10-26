@@ -45,6 +45,7 @@ import { agentsWithEffectiveProviders, normalizeRoleProviders, parseProviderConf
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
+import { CircuitBreakerTracker, defaultCircuitBreakerConfig } from "./circuit-breaker.js";
 import { buildProviderAuthenticationMessage, buildProviderLimitMessage, providerFailureAction } from "./provider-failure.js";
 import { TriggerRepository } from "./repositories/trigger-repository.js";
 import { nextFireAt, substituteTriggerText, TriggerScheduler } from "./trigger-scheduler.js";
@@ -103,6 +104,12 @@ const dutyStateRepository = new DutyStateRepository(sql);
 const collaborationPolicy = new CollaborationPolicy();
 const structuredTurnRepository = new StructuredTurnRepository(sql);
 const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
+const circuitBreakerConfig = {
+  windowMs: Number(process.env.AGENTWEAVE_CB_WINDOW_MS ?? defaultCircuitBreakerConfig.windowMs),
+  maxRuns: Number(process.env.AGENTWEAVE_CB_MAX_RUNS ?? defaultCircuitBreakerConfig.maxRuns),
+  maxInputTokens: Number(process.env.AGENTWEAVE_CB_MAX_INPUT_TOKENS ?? defaultCircuitBreakerConfig.maxInputTokens),
+};
+const circuitBreaker = new CircuitBreakerTracker(circuitBreakerConfig);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
@@ -592,6 +599,7 @@ function emit(
   // timeout protection from every handoff created before the gate.
   if (["workstream.completed", "workstream.emergency_stopped", "workstream.archived", "orchestration.decomposition_failed"].includes(type)) {
     dispatchWatchdog.clear(workstream.id);
+    circuitBreaker.clear(workstream.id);
   }
   const event: WorkflowEvent = {
     id: details.id ?? randomUUID(),
@@ -624,6 +632,7 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
     app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.status.persist_failed");
   });
   metrics.eventsEmitted += 1;
+  circuitBreaker.observe(workstream.id, event);
   if (event.type === "run.started") metrics.runsStarted += 1;
   if (event.type === "usage.updated" && event.usage) {
     metrics.providerInputTokens += event.usage.inputTokens ?? 0;
@@ -966,6 +975,25 @@ async function reconcilePeriodicTaskDispatches(workstream: Workstream): Promise<
   if (stall) {
     stalledEpisodes.set(workstream.id, stall.episodeKey);
     emit(workstream, "workstream.stalled", stall.message);
+  }
+  if (workstream.status === "active") {
+    const trip = circuitBreaker.evaluate(workstream.id);
+    if (trip) {
+      try {
+        await lifecycleCommandHandler.execute(
+          workstream,
+          "pause",
+          { reason: "circuit_breaker_tripped" },
+          (type, message) => emit(workstream, type, message),
+        );
+        emit(workstream, "workstream.circuit_breaker_tripped", trip.message);
+      } catch (error) {
+        app.log.error(
+          { error, workstreamId: workstream.id },
+          "circuit_breaker.pause_failed",
+        );
+      }
+    }
   }
 }
 

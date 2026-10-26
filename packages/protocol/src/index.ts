@@ -327,6 +327,7 @@ const workflowEventTypes = [
   "workstream.resuming",
   "workstream.starting",
   "workstream.stalled",
+  "workstream.circuit_breaker_tripped",
   "workstream.waiting_for_human",
 ] as const;
 
