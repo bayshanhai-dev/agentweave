@@ -1,11 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
   agentsWithEffectiveProviders,
+  normalizeRoleProviders,
   parseProviderConfig,
   resolveEffectiveProvider,
   routeForRecipient,
   stampProviderRoute,
 } from "../src/provider-routing.js";
+
+describe("role provider normalization", () => {
+  const roleProviders = {
+    showrunner: { tool: "codex" as const, model: "gpt-5.6-sol" },
+    editor: { model: "gpt-5.6-terra" },
+  };
+
+  it("accepts a valid object", () => {
+    expect(normalizeRoleProviders(roleProviders)).toEqual(roleProviders);
+  });
+
+  it("accepts a valid JSON string", () => {
+    expect(normalizeRoleProviders(JSON.stringify(roleProviders))).toEqual(roleProviders);
+  });
+
+  it.each([
+    ["invalid JSON", "{not-json"],
+    ["a JSON non-object", JSON.stringify(42)],
+    ["a schema-invalid object", { editor: {} }],
+    ["null", null],
+  ])("returns an empty object for %s", (_description, value) => {
+    expect(normalizeRoleProviders(value)).toEqual({});
+  });
+});
 
 describe("heterogeneous provider routing", () => {
   const workstream = {

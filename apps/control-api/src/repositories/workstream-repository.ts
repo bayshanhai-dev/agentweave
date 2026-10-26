@@ -7,7 +7,7 @@ export class WorkstreamRepository {
   async create(workstream: PersistedWorkstream): Promise<void> {
     await this.sql.begin(async (transaction) => {
       await transaction`insert into workstreams (id, goal, flavor, status, tool, model, role_providers, workspace_root)
-        values (${workstream.id}, ${workstream.goal}, ${workstream.flavor}, ${workstream.status}, ${workstream.provider.tool ?? null}, ${workstream.provider.model ?? null}, ${JSON.stringify(workstream.roleProviders)}, ${workstream.workspaceRoot})`;
+        values (${workstream.id}, ${workstream.goal}, ${workstream.flavor}, ${workstream.status}, ${workstream.provider.tool ?? null}, ${workstream.provider.model ?? null}, ${this.sql.json(workstream.roleProviders)}, ${workstream.workspaceRoot})`;
       for (const agent of workstream.agents) {
         await transaction`insert into agents (id, workstream_id, role, authority, status)
           values (${agent.id}, ${workstream.id}, ${agent.role}, ${agent.authority}, ${agent.status})`;
