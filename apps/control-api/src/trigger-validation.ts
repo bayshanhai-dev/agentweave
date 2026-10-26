@@ -47,6 +47,12 @@ export function buildTrigger(
     if (has(key) && value[key] !== null && typeof value[key] !== "string")
       return { ok: false, error: `invalid_${key}` };
   }
+  if (
+    has("stateKey") &&
+    value.stateKey !== null &&
+    (typeof value.stateKey !== "string" || !value.stateKey.trim())
+  )
+    return { ok: false, error: "invalid_stateKey" };
   const now = new Date().toISOString();
   const kind = (value.kind ?? existing?.kind) as Trigger["kind"] | undefined;
   const targetMode = (value.targetMode ?? existing?.targetMode) as
@@ -56,6 +62,9 @@ export function buildTrigger(
   const name = text(value.name) ?? existing?.name;
   const dutyTitle = text(value.dutyTitle) ?? existing?.dutyTitle;
   const dutyPrompt = text(value.dutyPrompt) ?? existing?.dutyPrompt;
+  const stateKey = value.stateKey === null
+    ? undefined
+    : (text(value.stateKey) ?? existing?.stateKey);
   const cronExpr =
     kind === "schedule"
       ? (text(value.cronExpr) ?? existing?.cronExpr)
@@ -142,6 +151,7 @@ export function buildTrigger(
       ...(goalTemplate ? { goalTemplate } : {}),
       dutyTitle,
       dutyPrompt,
+      ...(stateKey ? { stateKey } : {}),
       priority,
       ...(maxRunsPerDay !== undefined ? { maxRunsPerDay } : {}),
       ...(quietStart ? { quietStart } : {}),

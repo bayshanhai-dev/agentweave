@@ -49,6 +49,8 @@ import { buildProviderAuthenticationMessage, buildProviderLimitMessage, provider
 import { TriggerRepository } from "./repositories/trigger-repository.js";
 import { nextFireAt, substituteTriggerText, TriggerScheduler } from "./trigger-scheduler.js";
 import { buildTrigger } from "./trigger-validation.js";
+import { DutyStateRepository } from "./repositories/duty-state-repository.js";
+import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -97,6 +99,7 @@ const runtimeRepository = new RuntimeRepository(sql);
 const evidenceRepository = new EvidenceRepository(sql);
 const insightRepository = new InsightRepository(sql);
 const triggerRepository = new TriggerRepository(sql);
+const dutyStateRepository = new DutyStateRepository(sql);
 const collaborationPolicy = new CollaborationPolicy();
 const structuredTurnRepository = new StructuredTurnRepository(sql);
 const lifecycleCommandHandler = new WorkstreamLifecycleCommandHandler(commandRepository);
@@ -158,16 +161,23 @@ const triggerScheduler = new TriggerScheduler(
       acceptanceCriteria: ["The triggered duty is completed and evidence is attached"],
     }]))[0];
     if (!task) throw new Error("duty-task-create-failed");
+    const basePrompt = substituteTriggerText(trigger.dutyPrompt, trigger, now, payload, 8_000);
+    const dutyPrompt = await dutyPromptForFire(
+      trigger,
+      workstream.id,
+      basePrompt,
+      (workstreamId, key) => dutyStateRepository.get(workstreamId, key),
+    );
     const message = await createMessage(
       workstream,
       "human",
       [lead.id],
-      substituteTriggerText(trigger.dutyPrompt, trigger, now, payload, 8_000),
+      dutyPrompt,
       "request",
       { taskId: task.id, correlationId: `trigger:${trigger.id}:${fireId}` },
     );
     emit(workstream, "trigger.fired", `Trigger fired: ${trigger.name}`, lead.role, { taskId: task.id, correlationId: message.correlationId });
-    return { workstreamId: workstream.id, messageId: message.id };
+    return { workstreamId: workstream.id, messageId: message.id, dutyTaskId: task.id };
   },
   async (trigger, priorFire, { fireId, payload }) => {
     const workstream = priorFire.workstreamId ? workstreams.get(priorFire.workstreamId) : undefined;
@@ -304,6 +314,17 @@ app.get("/api/workstreams/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
   return workstream ? workstreamResponse(workstream) : reply.code(404).send({ error: "workstream_not_found" });
+});
+app.get("/api/workstreams/:id/duty-state", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  return dutyStateRepository.listByWorkstream(id);
+});
+app.get("/api/workstreams/:id/duty-state/:key", async (request, reply) => {
+  const { id, key } = request.params as { id: string; key: string };
+  if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
+  const entry = await dutyStateRepository.get(id, key);
+  return entry ?? reply.code(404).send({ error: "duty_state_not_found" });
 });
 app.get("/api/workstreams/:id/snapshot", async (request, reply) => {
   const { id } = request.params as { id: string };
@@ -613,6 +634,39 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, role: event.role }, "workflow.event");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
+}
+
+async function writeDutyStateAfterCompletion(
+  workstream: Workstream,
+  taskId: string,
+  dutyState: unknown,
+): Promise<void> {
+  try {
+    await applyDutyStateWriteback(taskId, dutyState, {
+      findDutyContextByTaskId: (completedTaskId) =>
+        triggerRepository.findDutyContextByTaskId(completedTaskId),
+      upsert: (workstreamId, key, state) =>
+        dutyStateRepository.upsert(workstreamId, key, state),
+      recordEvent: (type, message) =>
+        recordWorkflowEvent(workstream, {
+          id: randomUUID(),
+          type,
+          message,
+          taskId,
+          occurredAt: new Date().toISOString(),
+        }),
+      logError: (error, context) =>
+        app.log.error(
+          { error, taskId, ...context },
+          "duty.state_upsert_failed",
+        ),
+    });
+  } catch (error) {
+    app.log.error(
+      { error, taskId, workstreamId: workstream.id },
+      "duty.state_writeback_failed",
+    );
+  }
 }
 
 async function createMessageEvent(workstream: Workstream, from: string, to: string, content: string, intent: string): Promise<WorkflowEvent> {
@@ -1352,6 +1406,9 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   }
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
   const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string; correlationId?: string };
+  const submittedDutyState = payload.structuredResult && typeof payload.structuredResult === "object"
+    ? (payload.structuredResult as { dutyState?: unknown }).dutyState
+    : undefined;
   const resultCorrelationId = envelope.correlationId ?? (payload as { correlationId?: string }).correlationId;
   dispatchWatchdog.clearForCorrelation(workstream.id, resultCorrelationId);
   const sender = workstream.agents.find((candidate) => candidate.id === payload.agentId);
@@ -1682,7 +1739,10 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
         event.sequence = await workflowEventRepository.append(workstream.id, event);
         if (!workstream.events.some((item) => item.id === event.id)) workstream.events.push(event);
         for (const socket of sockets) socket.send(JSON.stringify({ workstreamId: workstream.id, ...event }));
-        if (sourceTask?.status === "done") await reconcileTaskDispatches(workstream);
+        if (sourceTask?.status === "done") {
+          await writeDutyStateAfterCompletion(workstream, sourceTask.id, result.dutyState);
+          await reconcileTaskDispatches(workstream);
+        }
         await reconcileCompletion(workstream);
         return;
       }
@@ -1769,6 +1829,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
       )) return;
     }
     task.status = "done"; task.evidence = [...new Set([...task.evidence, ...evidenceIds])]; task.updatedAt = new Date().toISOString(); await setAgentStatus(sender, "idle"); await persistTask(task); recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.completed", message: isFinalValidationTask(task) ? resultText : `${task.title} → done`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.usage ? { usage: payload.usage } : {}) });
+    await writeDutyStateAfterCompletion(workstream, task.id, submittedDutyState);
   }
   for (const completedTaskId of completedTaskIds) {
     if (completedTaskId !== task?.id) {
