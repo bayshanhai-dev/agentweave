@@ -51,6 +51,7 @@ describe("trigger persistence shape", () => {
           state_key: "release-watch",
           priority: 4,
           max_runs_per_day: 2,
+          max_open_tasks: 5,
           quiet_start: "22:00",
           quiet_end: "07:00",
           batch_window_sec: 0,
@@ -77,6 +78,7 @@ describe("trigger persistence shape", () => {
         stateKey: "release-watch",
         priority: 4,
         maxRunsPerDay: 2,
+        maxOpenTasks: 5,
         quietStart: "22:00",
         quietEnd: "07:00",
         batchWindowSec: 0,
@@ -87,6 +89,28 @@ describe("trigger persistence shape", () => {
       },
     ]);
     expect(fake.calls[0]?.text).toContain("order by priority desc, name asc");
+  });
+
+  it("counts only non-terminal tasks on the target workstream for the load gate", async () => {
+    const fake = fakeSql([[{ open_tasks: 7 }]]);
+    const repository = new TriggerRepository(fake.sql);
+    const trigger = {
+      id: "trigger-1",
+      targetMode: "workstream",
+      targetWorkstreamId: "ws-1",
+    } as Parameters<TriggerRepository["countOpenTasks"]>[0];
+    await expect(repository.countOpenTasks(trigger)).resolves.toBe(7);
+    expect(fake.calls[0]?.text).toContain("from tasks");
+    expect(fake.calls[0]?.text).toContain(
+      "status not in ('done', 'cancelled', 'failed')",
+    );
+    expect(fake.calls[0]?.values).toContain("ws-1");
+    // Create-mode triggers have no standing backlog to count.
+    const createTrigger = {
+      id: "trigger-2",
+      targetMode: "create",
+    } as Parameters<TriggerRepository["countOpenTasks"]>[0];
+    await expect(repository.countOpenTasks(createTrigger)).resolves.toBe(0);
   });
 
   it("implements overlap lookups through linked tasks and created workstreams", () => {
