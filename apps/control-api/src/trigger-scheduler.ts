@@ -18,6 +18,7 @@ export type Trigger = {
   goalTemplate?: string;
   dutyTitle: string;
   dutyPrompt: string;
+  stateKey?: string;
   priority: number;
   maxRunsPerDay?: number;
   quietStart?: string;
@@ -37,6 +38,7 @@ export type TriggerFire = {
   reason?: string;
   workstreamId?: string;
   messageId?: string;
+  dutyTaskId?: string;
   firedAt: string;
 };
 
@@ -59,6 +61,7 @@ export interface TriggerStore {
       reason?: string;
       workstreamId?: string;
       messageId?: string;
+      dutyTaskId?: string;
     },
   ): Promise<void>;
   updateLastFiredAt(id: string, firedAt: string): Promise<void>;
@@ -72,7 +75,11 @@ export interface TriggerStore {
 export type TriggerFireAction = (
   trigger: Trigger,
   input: { fireId: string; payload: string; now: Date },
-) => Promise<{ workstreamId?: string; messageId?: string }>;
+) => Promise<{
+  workstreamId?: string;
+  messageId?: string;
+  dutyTaskId?: string;
+}>;
 
 export type TriggerCoalesceAction = (
   trigger: Trigger,
@@ -500,6 +507,7 @@ export class TriggerScheduler {
       reason: `batched-with:${prior.id}`,
       ...(prior.workstreamId ? { workstreamId: prior.workstreamId } : {}),
       ...(prior.messageId ? { messageId: prior.messageId } : {}),
+      ...(prior.dutyTaskId ? { dutyTaskId: prior.dutyTaskId } : {}),
       firedAt: now.toISOString(),
     };
     if (!(await this.store.insertFire(fire)))
@@ -520,6 +528,7 @@ export class TriggerScheduler {
         reason,
         ...(prior.workstreamId ? { workstreamId: prior.workstreamId } : {}),
         ...(prior.messageId ? { messageId: prior.messageId } : {}),
+        ...(prior.dutyTaskId ? { dutyTaskId: prior.dutyTaskId } : {}),
       });
       return { ...fire, status: "failed", reason };
     }

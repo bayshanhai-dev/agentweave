@@ -161,6 +161,7 @@ export type AgentMessage = z.infer<typeof agentMessageSchema>;
 export const agentTurnResultSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   summary: z.string().min(1),
+  dutyState: z.object({}).catchall(z.unknown()).optional(),
   insights: z.array(z.object({ id: z.string().min(1), content: z.string().min(1), kind: z.enum(["proposal", "critique", "contradiction", "synthesis"]).default("proposal"), confidence: z.number().min(0).max(1).default(0.5), references: z.array(z.string().min(1)).default([]), contradictionOf: z.array(z.string().min(1)).default([]), evidenceIds: z.array(z.string().min(1)).default([]) })).default([]),
   tasks: z.array(z.object({
     id: z.string().min(1),
@@ -278,6 +279,8 @@ const workflowEventTypes = [
   "collaboration.round.stopped",
   "collaboration.turn.accepted",
   "collaboration.turn.redriven",
+  "duty.state_rejected",
+  "duty.state_updated",
   "message.dispatch_failed",
   "message.dispatch_reconciled",
   "message.gate_released",
