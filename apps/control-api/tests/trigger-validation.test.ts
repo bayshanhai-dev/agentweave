@@ -14,9 +14,28 @@ const valid = {
 
 describe("trigger validation", () => {
   it("accepts a consistent five-field schedule", () => {
-    expect(buildTrigger(valid)).toMatchObject({
+    expect(
+      buildTrigger({ ...valid, stateKey: "release-watch" }),
+    ).toMatchObject({
       ok: true,
-      trigger: { kind: "schedule", timezone: "Europe/Paris" },
+      trigger: {
+        kind: "schedule",
+        timezone: "Europe/Paris",
+        stateKey: "release-watch",
+      },
+    });
+  });
+
+  it("supports clearing the optional state key to restore the name fallback", () => {
+    const created = buildTrigger({ ...valid, stateKey: "release-watch" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const updated = buildTrigger({ stateKey: null }, created.trigger);
+    expect(updated).toMatchObject({ ok: true });
+    if (updated.ok) expect(updated.trigger.stateKey).toBeUndefined();
+    expect(buildTrigger({ ...valid, stateKey: "" })).toEqual({
+      ok: false,
+      error: "invalid_stateKey",
     });
   });
 

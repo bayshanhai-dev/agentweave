@@ -48,6 +48,7 @@ describe("trigger persistence shape", () => {
           goal_template: null,
           duty_title: "Review",
           duty_prompt: "Review {{date}}",
+          state_key: "release-watch",
           priority: 4,
           max_runs_per_day: 2,
           quiet_start: "22:00",
@@ -73,6 +74,7 @@ describe("trigger persistence shape", () => {
         targetWorkstreamId: "ws-1",
         dutyTitle: "Review",
         dutyPrompt: "Review {{date}}",
+        stateKey: "release-watch",
         priority: 4,
         maxRunsPerDay: 2,
         quietStart: "22:00",
@@ -92,5 +94,27 @@ describe("trigger persistence shape", () => {
     expect(repository).toContain("join tasks t");
     expect(repository).toContain("join workstreams w");
     expect(repository).toContain("m.correlation_id like");
+  });
+
+  it("resolves a fired duty directly from its completed task", async () => {
+    const fake = fakeSql([
+      [
+        {
+          trigger_id: "trigger-1",
+          workstream_id: "ws-1",
+          state_key: "release-watch",
+        },
+      ],
+    ]);
+    await expect(
+      new TriggerRepository(fake.sql).findDutyContextByTaskId("task-1"),
+    ).resolves.toEqual({
+      triggerId: "trigger-1",
+      workstreamId: "ws-1",
+      stateKey: "release-watch",
+    });
+    expect(fake.calls[0]?.text).toContain("f.duty_task_id = ?");
+    expect(fake.calls[0]?.text).toContain("coalesce(t.state_key, t.name)");
+    expect(fake.calls[0]?.values).toEqual(["task-1"]);
   });
 });

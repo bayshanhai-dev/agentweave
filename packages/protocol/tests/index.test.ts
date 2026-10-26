@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentInstanceSchema,
   agentMessageSchema,
+  agentTurnResultSchema,
   allowedRuntimeEventTypes,
   eventEnvelopeSchema,
   governedOutputSchema,
@@ -12,6 +13,20 @@ import {
 } from "../src/index.js";
 
 describe("scaling contracts", () => {
+  it("accepts object duty state and rejects non-object duty state", () => {
+    expect(
+      agentTurnResultSchema.parse({
+        summary: "Duty completed",
+        dutyState: { cursor: 2, checkedAt: "2026-01-15T14:00:00Z" },
+      }).dutyState,
+    ).toEqual({ cursor: 2, checkedAt: "2026-01-15T14:00:00Z" });
+    for (const dutyState of [null, [], "invalid", 3]) {
+      expect(() =>
+        agentTurnResultSchema.parse({ summary: "Duty completed", dutyState }),
+      ).toThrow();
+    }
+  });
+
   it("registers control-api orchestration and dispatch events", () => {
     for (const type of [
       "message.dispatch_failed",
@@ -30,6 +45,8 @@ describe("scaling contracts", () => {
       "provider.authentication_required",
       "provider.limit_reached",
       "provider.timed_out",
+      "duty.state_rejected",
+      "duty.state_updated",
       "trigger.fired",
       "trigger.skipped",
     ]) expect(allowedRuntimeEventTypes.has(type), type).toBe(true);

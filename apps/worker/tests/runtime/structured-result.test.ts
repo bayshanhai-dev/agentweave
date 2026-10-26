@@ -49,6 +49,7 @@ describe("structured provider execution", () => {
       const base = provider.run.bind(provider);
       const text = JSON.stringify({
         summary: "Review",
+        dutyState: { cursor: 7 },
         messages: malformed
           ? "invalid"
           : [{ recipientRole: "qa", content: "Check" }],
@@ -94,6 +95,7 @@ describe("structured provider execution", () => {
           expect.objectContaining({
             type: "task.completed",
             structuredResult: expect.objectContaining({
+              dutyState: { cursor: 7 },
               messages: [expect.objectContaining({ recipientRole: "qa" })],
             }),
           }),
