@@ -56,7 +56,7 @@ import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
 type WorkflowEvent = { id: string; sequence?: number; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; occurredAt: string };
-type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "acknowledged" | "failed" };
+type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "gated" | "claimed" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: "idle" | "running" | "paused" | "stopped" | "failed" | "done"; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
@@ -538,6 +538,11 @@ app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply
 });
 app.post("/api/workstreams/:id/messages/:messageId/ack", async (request, reply) => updateDelivery(request, reply, "acknowledged"));
 app.post("/api/workstreams/:id/messages/:messageId/fail", async (request, reply) => updateDelivery(request, reply, "failed"));
+app.post("/api/workstreams/:id/messages/:messageId/delivery", async (request, reply) => {
+  const body = request.body as { status?: string } | undefined;
+  if (body?.status !== "claimed" && body?.status !== "gated") return reply.code(400).send({ error: "unsupported_delivery_status" });
+  return updateDelivery(request, reply, body.status);
+});
 app.post("/api/workstreams/:id/start", async (request, reply) => {
   const id = (request.params as { id: string }).id; const workstream = workstreams.get(id);
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
@@ -832,7 +837,7 @@ function emitMessage(workstream: Workstream, type: string, message: Message): vo
   metrics.eventsEmitted += 1;
 }
 
-async function updateDelivery(request: { params: unknown; body?: unknown }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }, status: "acknowledged" | "failed") {
+async function updateDelivery(request: { params: unknown; body?: unknown }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }, status: "acknowledged" | "failed" | "claimed" | "gated") {
   const { id, messageId } = request.params as { id: string; messageId: string };
   const workstream = workstreams.get(id); const body = request.body as { recipientId?: string } | undefined;
   if (!workstream || !workstream.messages.some((message) => message.id === messageId)) return reply.code(404).send({ error: "message_not_found" });
@@ -841,7 +846,7 @@ async function updateDelivery(request: { params: unknown; body?: unknown }, repl
   const aggregateStatus = await messageRepository.updateDelivery(messageId, body.recipientId, status);
   if (!aggregateStatus && status === "failed") return reply.code(404).send({ error: "message_delivery_not_found" });
   if (aggregateStatus) message.deliveryStatus = aggregateStatus;
-  emitMessage(workstream, status === "acknowledged" ? "message.acknowledged" : "message.failed", message);
+  emitMessage(workstream, status === "acknowledged" ? "message.acknowledged" : status === "failed" ? "message.failed" : "message.delivery_updated", message);
   return { ...message, recipientId: body.recipientId };
 }
 

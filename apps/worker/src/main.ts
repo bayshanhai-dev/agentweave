@@ -6,7 +6,8 @@ import { AgentRuntime } from "./runtime/agent-runtime.js";
 import { PostgresAgentSessionRepository } from "./providers/postgres-session-repository.js";
 import { createHash } from "node:crypto";
 import { executionKeyForDelivery } from "./runtime/execution-key.js";
-import { inboxStatusGateDecision } from "./inbox-status-gate.js";
+import { reportDelivery } from "./delivery-report.js";
+import { inboxStatusGateDecision, isGatedWorkstreamStatus } from "./inbox-status-gate.js";
 import { ExecutionGatedError } from "./runtime/execution-control.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
@@ -43,10 +44,18 @@ await bus.consumer(subjects.inbox, async (message) => {
       const workstream = await statusResponse.json() as { status?: string; workspaceRoot?: string };
       const status = workstream.status;
       const payload = envelope.payload as { senderId?: string; recipientId?: string; agentInstanceId?: string; content?: string; messageType?: string; taskId?: string; sessionId?: string; provider?: string; model?: string; workspacePath?: string };
-      const gateDecision = inboxStatusGateDecision(status, payload.content);
-      if (gateDecision) return gateDecision;
       const targetFromSubject = message.subject.split(".")[2];
       const targetAgentId = payload.agentInstanceId ?? payload.recipientId ?? targetFromSubject;
+      const gateDecision = inboxStatusGateDecision(status, payload.content);
+      if (gateDecision) {
+        // Signed for while the workstream is parked: no turn will run for
+        // this delivery. Say so on the message instead of letting a bare
+        // "delivered" imply the agent picked it up.
+        if (targetAgentId && targetAgentId !== "human" && isGatedWorkstreamStatus(status)) {
+          void reportDelivery(controlApiUrl, envelope.workstreamId, envelope.id, targetAgentId, "gated");
+        }
+        return gateDecision;
+      }
       if (!targetAgentId) return "dead-letter";
       // Human is a durable message endpoint, not an executable Agent runtime.
       // The wildcard inbox consumer must acknowledge replies addressed to Human
@@ -70,6 +79,7 @@ await bus.consumer(subjects.inbox, async (message) => {
         console.warn(JSON.stringify({ event: "worker.task.persistent_duplicate_suppressed", workerId, taskId: executionKey, messageId: envelope.id, occurredAt: new Date().toISOString() }));
         return "ack";
       }
+      void reportDelivery(controlApiUrl, envelope.workstreamId, envelope.id, targetAgentId, "claimed");
       inFlightTasks.add(executionKey);
       let runtime = runtimes.get(targetAgentId);
       if (!runtime) { runtime = new AgentRuntime(targetAgentId, executor); runtimes.set(targetAgentId, runtime); }

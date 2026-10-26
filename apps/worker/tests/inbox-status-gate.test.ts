@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   implementationTriggerMarker,
   inboxStatusGateDecision,
+  isGatedWorkstreamStatus,
 } from "../src/inbox-status-gate.js";
 
 describe("inboxStatusGateDecision", () => {
@@ -29,6 +30,22 @@ describe("inboxStatusGateDecision", () => {
     "acknowledges implementation-trigger flow messages in terminal state %s",
     (status) => {
       expect(inboxStatusGateDecision(status, implementationTriggerMarker)).toBe("ack");
+    },
+  );
+});
+
+describe("isGatedWorkstreamStatus", () => {
+  it.each(["paused", "waiting_for_human", "completing", "emergency_stopped"])(
+    "treats parked state %s as gated",
+    (status) => {
+      expect(isGatedWorkstreamStatus(status)).toBe(true);
+    },
+  );
+
+  it.each(["active", "draft", "starting", "completed", "archived", undefined])(
+    "does not treat %s as gated",
+    (status) => {
+      expect(isGatedWorkstreamStatus(status)).toBe(false);
     },
   );
 });

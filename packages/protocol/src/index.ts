@@ -138,6 +138,8 @@ export const messageTypeSchema = z.enum([
 export const deliveryStatusSchema = z.enum([
   "pending",
   "delivered",
+  "gated",
+  "claimed",
   "acknowledged",
   "failed",
 ]);

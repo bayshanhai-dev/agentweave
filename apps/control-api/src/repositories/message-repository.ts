@@ -1,6 +1,60 @@
 import type { Sql } from "postgres";
 import type { PersistedMessage } from "./types.js";
 
+export type DeliveryStatus =
+  | "pending"
+  | "delivered"
+  | "gated"
+  | "claimed"
+  | "acknowledged"
+  | "failed";
+
+/**
+ * Delivery lifecycle ranks. `gated` means the worker signed for the message
+ * while its workstream was parked (paused / waiting for a human), so no agent
+ * turn ran for it. `claimed` means the worker picked the message up and
+ * started the recipient's turn. Terminal states (acknowledged / failed) are
+ * sticky: a delivery never regresses out of them, and a live state never
+ * regresses to an earlier rank either.
+ */
+const deliveryRank: Record<DeliveryStatus, number> = {
+  pending: 0,
+  delivered: 1,
+  gated: 2,
+  claimed: 3,
+  acknowledged: 4,
+  failed: 4,
+};
+
+const terminalDeliveryStatuses: ReadonlySet<string> = new Set([
+  "acknowledged",
+  "failed",
+]);
+
+export function nextDeliveryStatus(
+  current: string,
+  next: DeliveryStatus,
+): DeliveryStatus {
+  if (terminalDeliveryStatuses.has(current)) return current as DeliveryStatus;
+  if (!(current in deliveryRank)) return next;
+  return deliveryRank[next] > deliveryRank[current as DeliveryStatus]
+    ? next
+    : (current as DeliveryStatus);
+}
+
+export function aggregateDeliveryStatus(
+  statuses: readonly string[],
+): DeliveryStatus {
+  if (!statuses.length) return "pending";
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.every((status) => status === "acknowledged"))
+    return "acknowledged";
+  if (statuses.includes("claimed")) return "claimed";
+  if (statuses.includes("gated")) return "gated";
+  if (statuses.includes("delivered")) return "delivered";
+  return "pending";
+}
+
 export class MessageRepository {
   constructor(private readonly sql: Sql) {}
 
@@ -43,25 +97,36 @@ export class MessageRepository {
   async updateDelivery(
     messageId: string,
     recipientId: string,
-    status: "acknowledged" | "failed",
-  ): Promise<"acknowledged" | "failed" | undefined> {
+    status: DeliveryStatus,
+  ): Promise<DeliveryStatus | undefined> {
     return this.sql.begin(async (transaction) => {
-      const updated =
-        await transaction`update message_deliveries set delivery_status = ${status}, delivered_at = coalesce(delivered_at, now()) where message_id = ${messageId} and recipient_id = ${recipientId} returning message_id`;
-      if (!updated.length) return undefined;
-      const pending =
-        status === "acknowledged"
-          ? await transaction`select 1 from message_deliveries where message_id = ${messageId} and delivery_status <> 'acknowledged' limit 1`
-          : [true];
-      const aggregateStatus =
-        status === "failed"
-          ? "failed"
-          : pending.length
-            ? undefined
-            : "acknowledged";
-      if (aggregateStatus)
-        await transaction`update messages set delivery_status = ${aggregateStatus} where id = ${messageId}`;
-      return aggregateStatus;
+      const current =
+        await transaction`select delivery_status from message_deliveries where message_id = ${messageId} and recipient_id = ${recipientId}`;
+      const currentRow = current[0];
+      if (!currentRow) return undefined;
+      const applied = nextDeliveryStatus(
+        String(currentRow.delivery_status),
+        status,
+      );
+      if (applied !== currentRow.delivery_status)
+        await transaction`update message_deliveries set delivery_status = ${applied}, delivered_at = coalesce(delivered_at, now()) where message_id = ${messageId} and recipient_id = ${recipientId}`;
+      const rows =
+        await transaction`select delivery_status from message_deliveries where message_id = ${messageId}`;
+      const aggregate = aggregateDeliveryStatus(
+        rows.map((row) => String(row.delivery_status)),
+      );
+      const message =
+        await transaction`select delivery_status from messages where id = ${messageId}`;
+      const messageRow = message[0];
+      if (!messageRow) return undefined;
+      if (messageRow.delivery_status === aggregate) {
+        // Preserve the historical contract for terminal reports: a failed
+        // report always surfaces "failed" even when the aggregate already
+        // said so (another recipient failed first).
+        return status === "failed" ? "failed" : undefined;
+      }
+      await transaction`update messages set delivery_status = ${aggregate} where id = ${messageId}`;
+      return aggregate;
     });
   }
 }
