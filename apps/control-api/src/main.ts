@@ -52,6 +52,7 @@ import { nextFireAt, substituteTriggerText, TriggerScheduler } from "./trigger-s
 import { buildTrigger } from "./trigger-validation.js";
 import { DutyStateRepository } from "./repositories/duty-state-repository.js";
 import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
+import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from "./observability-metrics.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -220,10 +221,18 @@ app.addHook("onRequest", async (request, reply) => {
 });
 app.get("/health", async () => ({ status: "ok", service: "control-api" }));
 app.get("/metrics", async (_request, reply) => {
-  reply.type("text/plain; version=0.0.4");
-  return Object.entries(metrics)
-    .map(([name, value]) => `agentweave_${name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)} ${value}`)
-    .join("\n") + "\n";
+  try {
+    const runtimeSamples: MetricSample[] = Object.entries(metrics).map(([name, value]) => ({
+      name: `agentweave_${name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}${name === "providerCostUsd" ? "" : "_total"}`,
+      value,
+    }));
+    const samples = [...await collectObservabilityMetrics(sql), ...runtimeSamples];
+    reply.type("text/plain; version=0.0.4");
+    return renderPrometheus(samples);
+  } catch (error) {
+    app.log.error(error, "failed to collect observability metrics");
+    return reply.code(503).send({ error: "metrics_unavailable" });
+  }
 });
 app.post("/api/runtime/workers/register", async (request, reply) => {
   const body = request.body as { workerId?: string; provider?: string; providerModel?: string; endpoint?: string | null; roles?: string[]; capabilities?: string[] } | undefined;
