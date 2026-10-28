@@ -41,7 +41,7 @@ import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayl
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
 import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
-import { agentsWithEffectiveProviders, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
+import { agentForRecipient, agentsWithEffectiveProviders, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
@@ -506,7 +506,7 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
   const recipients = [...new Set([...(body?.recipients ?? []), ...(body?.to ? [body.to] : [])].map((id) => id.trim()).filter(Boolean))];
   if (!body?.content?.trim() || !recipients.length) return reply.code(400).send({ error: "recipient_and_content_required" });
-  const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : workstream.agents.find((candidate) => candidate.id === recipient || candidate.role === recipient)?.id ?? recipient);
+  const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : agentForRecipient(workstream.agents, recipient)?.id ?? recipient);
   const { content, messageType } = classifyHumanMessage(body.content, body.intent);
   const humanToLead = body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === orchestrationPolicyFor(workstream).leadRole);
   // A Human message to PM is an explicit resume signal while the Workstream is
