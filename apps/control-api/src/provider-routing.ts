@@ -99,11 +99,30 @@ export function resolveEffectiveProvider(
   return { provider: tool, ...(effectiveModel ? { model: effectiveModel } : {}) };
 }
 
+/**
+ * Find the agent a recipient string refers to. Callers address recipients in
+ * several forms: the canonical full agent id ("<workstreamId>:qa-5"), the
+ * short instance name ("qa-5"), or the role name ("qa"). Agent ids stored on
+ * a workstream are the full form, so an exact-id-only lookup silently misses
+ * the short and role forms - which used to make routeForRecipient return {}
+ * and drop those turns onto the worker's global provider fallback (#153).
+ */
+export function agentForRecipient<T extends { id: string; role: string }>(
+  agents: readonly T[],
+  recipientId: string,
+): T | undefined {
+  return (
+    agents.find((agent) => agent.id === recipientId) ??
+    agents.find((agent) => agent.id.split(":").pop() === recipientId) ??
+    agents.find((agent) => agent.role === recipientId)
+  );
+}
+
 export function routeForRecipient(
   workstream: WorkstreamProviderRouting,
   recipientId: string,
 ): EffectiveProvider {
-  const recipient = workstream.agents.find((agent) => agent.id === recipientId);
+  const recipient = agentForRecipient(workstream.agents, recipientId);
   return recipient
     ? resolveEffectiveProvider(workstream.provider, workstream.roleProviders, recipient.role)
     : {};

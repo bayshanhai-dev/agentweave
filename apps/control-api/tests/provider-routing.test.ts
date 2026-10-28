@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentForRecipient,
   agentsWithEffectiveProviders,
   normalizeRoleProviders,
   parseProviderConfig,
@@ -90,5 +91,40 @@ describe("heterogeneous provider routing", () => {
         { id: "agent-host", role: "host", provider: "codex" },
         { id: "agent-editor", role: "editor", provider: "ollama", model: "llama3.1:8b" },
       ]);
+  });
+});
+
+describe("recipient resolution against full agent ids (#153)", () => {
+  // Production shape: agents carry "<workstreamId>:<instance>" ids, while the
+  // human message API is addressed with the short instance name or the role.
+  const productionShape = {
+    provider: {},
+    roleProviders: {
+      qa: { tool: "codex" as const, model: "gpt-5.6-luna" },
+      maintainer: { tool: "ollama" as const, model: "qwen3-coder:30b" },
+    },
+    agents: [
+      { id: "ws-1:maintainer-1", role: "maintainer" },
+      { id: "ws-1:qa-5", role: "qa" },
+    ],
+  };
+
+  it("resolves the full id, the short instance name, and the role name", () => {
+    expect(agentForRecipient(productionShape.agents, "ws-1:qa-5")?.role).toBe("qa");
+    expect(agentForRecipient(productionShape.agents, "qa-5")?.role).toBe("qa");
+    expect(agentForRecipient(productionShape.agents, "qa")?.role).toBe("qa");
+    expect(agentForRecipient(productionShape.agents, "nobody-9")).toBeUndefined();
+  });
+
+  it("stamps the role route for short-name and role addressing, not the fallback", () => {
+    expect(routeForRecipient(productionShape, "ws-1:qa-5"))
+      .toEqual({ provider: "codex", model: "gpt-5.6-luna" });
+    expect(routeForRecipient(productionShape, "qa-5"))
+      .toEqual({ provider: "codex", model: "gpt-5.6-luna" });
+    expect(routeForRecipient(productionShape, "qa"))
+      .toEqual({ provider: "codex", model: "gpt-5.6-luna" });
+    expect(routeForRecipient(productionShape, "maintainer-1"))
+      .toEqual({ provider: "ollama", model: "qwen3-coder:30b" });
+    expect(routeForRecipient(productionShape, "nobody-9")).toEqual({});
   });
 });
