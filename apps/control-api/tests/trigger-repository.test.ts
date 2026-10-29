@@ -44,6 +44,8 @@ describe("trigger persistence shape", () => {
           timezone: "Europe/Paris",
           target_mode: "workstream",
           target_workstream_id: "ws-1",
+          target_role: "qa",
+          completion_evidence: "deliverable",
           template_id: null,
           goal_template: null,
           duty_title: "Review",
@@ -73,6 +75,8 @@ describe("trigger persistence shape", () => {
         timezone: "Europe/Paris",
         targetMode: "workstream",
         targetWorkstreamId: "ws-1",
+        targetRole: "qa",
+        completionEvidence: "deliverable",
         dutyTitle: "Review",
         dutyPrompt: "Review {{date}}",
         stateKey: "release-watch",
@@ -113,6 +117,38 @@ describe("trigger persistence shape", () => {
     await expect(repository.countOpenTasks(createTrigger)).resolves.toBe(0);
   });
 
+  it("writes target role and completion evidence on create and update", async () => {
+    const fake = fakeSql([[{}], [{}]]);
+    const trigger = {
+      id: "trigger-1",
+      name: "QA watch",
+      enabled: true,
+      kind: "schedule",
+      cronExpr: "0 9 * * *",
+      timezone: "UTC",
+      targetMode: "workstream",
+      targetWorkstreamId: "ws-1",
+      targetRole: "qa",
+      completionEvidence: "deliverable",
+      dutyTitle: "Watch QA metrics",
+      dutyPrompt: "Review QA metrics",
+      priority: 0,
+      batchWindowSec: 0,
+      overlapPolicy: "skip",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    } as Parameters<TriggerRepository["create"]>[0];
+    const repository = new TriggerRepository(fake.sql);
+    await repository.create(trigger);
+    await repository.update(trigger.id, trigger);
+    for (const call of fake.calls) {
+      expect(call.text).toContain("target_role");
+      expect(call.text).toContain("completion_evidence");
+      expect(call.values).toContain("qa");
+      expect(call.values).toContain("deliverable");
+    }
+  });
+
   it("implements overlap lookups through linked tasks and created workstreams", () => {
     expect(repository).toContain("join messages m");
     expect(repository).toContain("join tasks t");
@@ -127,6 +163,7 @@ describe("trigger persistence shape", () => {
           trigger_id: "trigger-1",
           workstream_id: "ws-1",
           state_key: "release-watch",
+          completion_evidence: "deliverable",
         },
       ],
     ]);
@@ -136,9 +173,13 @@ describe("trigger persistence shape", () => {
       triggerId: "trigger-1",
       workstreamId: "ws-1",
       stateKey: "release-watch",
+      completionEvidence: "deliverable",
     });
     expect(fake.calls[0]?.text).toContain("f.duty_task_id = ?");
     expect(fake.calls[0]?.text).toContain("coalesce(t.state_key, t.name)");
+    expect(fake.calls[0]?.text).toContain(
+      "coalesce(t.completion_evidence, 'attestation')",
+    );
     expect(fake.calls[0]?.values).toEqual(["task-1"]);
   });
 });

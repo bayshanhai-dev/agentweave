@@ -23,6 +23,10 @@ function mapTrigger(row: TriggerRow): Trigger {
     ...(row.target_workstream_id
       ? { targetWorkstreamId: String(row.target_workstream_id) }
       : {}),
+    ...(row.target_role ? { targetRole: String(row.target_role) } : {}),
+    completionEvidence: String(
+      row.completion_evidence ?? "attestation",
+    ) as Exclude<Trigger["completionEvidence"], undefined>,
     ...(row.template_id ? { templateId: String(row.template_id) } : {}),
     ...(row.goal_template !== null && row.goal_template !== undefined
       ? { goalTemplate: String(row.goal_template) }
@@ -83,14 +87,14 @@ export class TriggerRepository {
 
   async create(trigger: Trigger): Promise<Trigger> {
     const rows = await this.sql`insert into triggers
-      (id, name, enabled, kind, cron_expr, timezone, target_mode, target_workstream_id, template_id, goal_template, duty_title, duty_prompt, state_key, priority, max_runs_per_day, max_open_tasks, quiet_start, quiet_end, batch_window_sec, overlap_policy)
-      values (${trigger.id}, ${trigger.name}, ${trigger.enabled}, ${trigger.kind}, ${trigger.cronExpr ?? null}, ${trigger.timezone}, ${trigger.targetMode}, ${trigger.targetWorkstreamId ?? null}, ${trigger.templateId ?? null}, ${trigger.goalTemplate ?? null}, ${trigger.dutyTitle}, ${trigger.dutyPrompt}, ${trigger.stateKey ?? null}, ${trigger.priority}, ${trigger.maxRunsPerDay ?? null}, ${trigger.maxOpenTasks ?? null}, ${trigger.quietStart ?? null}, ${trigger.quietEnd ?? null}, ${trigger.batchWindowSec}, ${trigger.overlapPolicy}) returning *`;
+      (id, name, enabled, kind, cron_expr, timezone, target_mode, target_workstream_id, target_role, completion_evidence, template_id, goal_template, duty_title, duty_prompt, state_key, priority, max_runs_per_day, max_open_tasks, quiet_start, quiet_end, batch_window_sec, overlap_policy)
+      values (${trigger.id}, ${trigger.name}, ${trigger.enabled}, ${trigger.kind}, ${trigger.cronExpr ?? null}, ${trigger.timezone}, ${trigger.targetMode}, ${trigger.targetWorkstreamId ?? null}, ${trigger.targetRole ?? null}, ${trigger.completionEvidence ?? "attestation"}, ${trigger.templateId ?? null}, ${trigger.goalTemplate ?? null}, ${trigger.dutyTitle}, ${trigger.dutyPrompt}, ${trigger.stateKey ?? null}, ${trigger.priority}, ${trigger.maxRunsPerDay ?? null}, ${trigger.maxOpenTasks ?? null}, ${trigger.quietStart ?? null}, ${trigger.quietEnd ?? null}, ${trigger.batchWindowSec}, ${trigger.overlapPolicy}) returning *`;
     return mapTrigger(rows[0]!);
   }
 
   async update(id: string, trigger: Trigger): Promise<Trigger | undefined> {
     const rows = await this.sql`update triggers set
-      name = ${trigger.name}, enabled = ${trigger.enabled}, kind = ${trigger.kind}, cron_expr = ${trigger.cronExpr ?? null}, timezone = ${trigger.timezone}, target_mode = ${trigger.targetMode}, target_workstream_id = ${trigger.targetWorkstreamId ?? null}, template_id = ${trigger.templateId ?? null}, goal_template = ${trigger.goalTemplate ?? null}, duty_title = ${trigger.dutyTitle}, duty_prompt = ${trigger.dutyPrompt}, state_key = ${trigger.stateKey ?? null}, priority = ${trigger.priority}, max_runs_per_day = ${trigger.maxRunsPerDay ?? null}, max_open_tasks = ${trigger.maxOpenTasks ?? null}, quiet_start = ${trigger.quietStart ?? null}, quiet_end = ${trigger.quietEnd ?? null}, batch_window_sec = ${trigger.batchWindowSec}, overlap_policy = ${trigger.overlapPolicy}, updated_at = now()
+      name = ${trigger.name}, enabled = ${trigger.enabled}, kind = ${trigger.kind}, cron_expr = ${trigger.cronExpr ?? null}, timezone = ${trigger.timezone}, target_mode = ${trigger.targetMode}, target_workstream_id = ${trigger.targetWorkstreamId ?? null}, target_role = ${trigger.targetRole ?? null}, completion_evidence = ${trigger.completionEvidence ?? "attestation"}, template_id = ${trigger.templateId ?? null}, goal_template = ${trigger.goalTemplate ?? null}, duty_title = ${trigger.dutyTitle}, duty_prompt = ${trigger.dutyPrompt}, state_key = ${trigger.stateKey ?? null}, priority = ${trigger.priority}, max_runs_per_day = ${trigger.maxRunsPerDay ?? null}, max_open_tasks = ${trigger.maxOpenTasks ?? null}, quiet_start = ${trigger.quietStart ?? null}, quiet_end = ${trigger.quietEnd ?? null}, batch_window_sec = ${trigger.batchWindowSec}, overlap_policy = ${trigger.overlapPolicy}, updated_at = now()
       where id = ${id} returning *`;
     return rows[0] ? mapTrigger(rows[0]) : undefined;
   }
@@ -183,11 +187,20 @@ export class TriggerRepository {
     return Number(rows[0]?.open_tasks ?? 0);
   }
 
-  async findDutyContextByTaskId(taskId: string): Promise<
-    { triggerId: string; workstreamId: string; stateKey: string } | undefined
+  async findDutyContextByTaskId(
+    taskId: string,
+  ): Promise<
+    | {
+        triggerId: string;
+        workstreamId: string;
+        stateKey: string;
+        completionEvidence?: string;
+      }
+    | undefined
   > {
     const rows = await this.sql`select f.trigger_id, f.workstream_id,
-        coalesce(t.state_key, t.name) as state_key
+        coalesce(t.state_key, t.name) as state_key,
+        coalesce(t.completion_evidence, 'attestation') as completion_evidence
       from trigger_fires f
       join triggers t on t.id = f.trigger_id
       where f.duty_task_id = ${taskId} and f.status = 'fired'
@@ -200,6 +213,7 @@ export class TriggerRepository {
           triggerId: String(row.trigger_id),
           workstreamId: String(row.workstream_id),
           stateKey: String(row.state_key),
+          completionEvidence: String(row.completion_evidence ?? "attestation"),
         }
       : undefined;
   }

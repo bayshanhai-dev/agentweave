@@ -14,16 +14,16 @@ const valid = {
 
 describe("trigger validation", () => {
   it("accepts a consistent five-field schedule", () => {
-    expect(
-      buildTrigger({ ...valid, stateKey: "release-watch" }),
-    ).toMatchObject({
-      ok: true,
-      trigger: {
-        kind: "schedule",
-        timezone: "Europe/Paris",
-        stateKey: "release-watch",
+    expect(buildTrigger({ ...valid, stateKey: "release-watch" })).toMatchObject(
+      {
+        ok: true,
+        trigger: {
+          kind: "schedule",
+          timezone: "Europe/Paris",
+          stateKey: "release-watch",
+        },
       },
-    });
+    );
   });
 
   it("supports clearing the optional state key to restore the name fallback", () => {
@@ -37,6 +37,47 @@ describe("trigger validation", () => {
       ok: false,
       error: "invalid_stateKey",
     });
+  });
+
+  it("accepts and trims a target role, and clears it with null", () => {
+    const created = buildTrigger({ ...valid, targetRole: "  qa  " });
+    expect(created).toMatchObject({ ok: true, trigger: { targetRole: "qa" } });
+    if (!created.ok) return;
+    const cleared = buildTrigger({ targetRole: null }, created.trigger);
+    expect(cleared).toMatchObject({ ok: true });
+    if (cleared.ok) expect(cleared.trigger.targetRole).toBeUndefined();
+    expect(buildTrigger({ ...valid, targetRole: "   " })).toEqual({
+      ok: false,
+      error: "invalid_targetRole",
+    });
+  });
+
+  it("validates completion evidence modes and resets null to attestation", () => {
+    expect(
+      buildTrigger({ ...valid, completionEvidence: "attestation" }),
+    ).toMatchObject({
+      ok: true,
+      trigger: { completionEvidence: "attestation" },
+    });
+    const deliverable = buildTrigger({
+      ...valid,
+      completionEvidence: "deliverable",
+    });
+    expect(deliverable).toMatchObject({
+      ok: true,
+      trigger: { completionEvidence: "deliverable" },
+    });
+    expect(buildTrigger({ ...valid, completionEvidence: "other" })).toEqual({
+      ok: false,
+      error: "invalid_completionEvidence",
+    });
+    if (deliverable.ok)
+      expect(
+        buildTrigger({ completionEvidence: null }, deliverable.trigger),
+      ).toMatchObject({
+        ok: true,
+        trigger: { completionEvidence: "attestation" },
+      });
   });
 
   it("rejects invalid cron, timezone, and target combinations", () => {
