@@ -14,6 +14,8 @@ export type Trigger = {
   timezone: string;
   targetMode: TriggerTargetMode;
   targetWorkstreamId?: string;
+  targetRole?: string;
+  completionEvidence?: "attestation" | "deliverable";
   templateId?: string;
   goalTemplate?: string;
   dutyTitle: string;

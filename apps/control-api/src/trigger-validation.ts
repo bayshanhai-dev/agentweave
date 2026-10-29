@@ -39,6 +39,19 @@ export function buildTrigger(
     if (has(key) && typeof value[key] === "string" && !value[key].trim())
       return { ok: false, error: `invalid_${key}` };
   }
+  if (
+    has("targetRole") &&
+    value.targetRole !== null &&
+    (typeof value.targetRole !== "string" || !value.targetRole.trim())
+  )
+    return { ok: false, error: "invalid_targetRole" };
+  if (
+    has("completionEvidence") &&
+    value.completionEvidence !== null &&
+    value.completionEvidence !== "attestation" &&
+    value.completionEvidence !== "deliverable"
+  )
+    return { ok: false, error: "invalid_completionEvidence" };
   for (const key of ["priority", "maxRunsPerDay", "maxOpenTasks", "batchWindowSec"]) {
     if (has(key) && value[key] !== null && integer(value[key]) === undefined)
       return { ok: false, error: `invalid_${key}` };
@@ -73,6 +86,16 @@ export function buildTrigger(
     targetMode === "workstream"
       ? (text(value.targetWorkstreamId) ?? existing?.targetWorkstreamId)
       : undefined;
+  const targetRole =
+    value.targetRole === null
+      ? undefined
+      : (text(value.targetRole) ?? existing?.targetRole);
+  const completionEvidence =
+    value.completionEvidence === null
+      ? "attestation"
+      : ((value.completionEvidence as Trigger["completionEvidence"]) ??
+        existing?.completionEvidence ??
+        "attestation");
   const templateId =
     targetMode === "create"
       ? (text(value.templateId) ?? existing?.templateId)
@@ -153,6 +176,8 @@ export function buildTrigger(
       timezone,
       targetMode,
       ...(targetWorkstreamId ? { targetWorkstreamId } : {}),
+      ...(targetRole ? { targetRole } : {}),
+      completionEvidence,
       ...(templateId ? { templateId } : {}),
       ...(goalTemplate ? { goalTemplate } : {}),
       dutyTitle,

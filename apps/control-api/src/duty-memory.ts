@@ -48,6 +48,7 @@ export type DutyContext = {
   triggerId: string;
   workstreamId: string;
   stateKey: string;
+  completionEvidence?: string;
 };
 
 export type DutyStateWritebackResult =

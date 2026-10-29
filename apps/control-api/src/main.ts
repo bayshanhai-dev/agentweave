@@ -52,6 +52,8 @@ import { nextFireAt, substituteTriggerText, TriggerScheduler } from "./trigger-s
 import { buildTrigger } from "./trigger-validation.js";
 import { DutyStateRepository } from "./repositories/duty-state-repository.js";
 import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
+import { resolveDutyAssignee } from "./duty-assignment.js";
+import { evaluateDutyCompletion } from "./duty-completion.js";
 import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from "./observability-metrics.js";
 
 type Role = string;
@@ -161,11 +163,10 @@ const triggerScheduler = new TriggerScheduler(
       await startDraftWorkstream(workstream, "Trigger started the Workstream");
     }
     const policy = orchestrationPolicyFor(workstream);
-    const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
-    if (!lead) throw new Error("target-lead-not-found");
+    const assignee = resolveDutyAssignee(workstream.agents, policy.leadRole, trigger.targetRole);
     const task = (await createTasks(workstream, [{
       title: trigger.dutyTitle,
-      ownerRole: policy.leadRole,
+      ownerRole: assignee.ownerRole,
       acceptanceCriteria: ["The triggered duty is completed and evidence is attached"],
     }]))[0];
     if (!task) throw new Error("duty-task-create-failed");
@@ -179,12 +180,12 @@ const triggerScheduler = new TriggerScheduler(
     const message = await createMessage(
       workstream,
       "human",
-      [lead.id],
+      [assignee.agent.id],
       dutyPrompt,
       "request",
       { taskId: task.id, correlationId: `trigger:${trigger.id}:${fireId}` },
     );
-    emit(workstream, "trigger.fired", `Trigger fired: ${trigger.name}`, lead.role, { taskId: task.id, correlationId: message.correlationId });
+    emit(workstream, "trigger.fired", `Trigger fired: ${trigger.name}`, assignee.agent.role, { taskId: task.id, correlationId: message.correlationId });
     return { workstreamId: workstream.id, messageId: message.id, dutyTaskId: task.id };
   },
   async (trigger, priorFire, { fireId, payload }) => {
@@ -729,6 +730,14 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
   const failedRecipients: Array<{ recipientId: string; error: unknown }> = [];
   for (const recipientId of message.recipientIds) {
+    if (recipientId !== "human" && !agentForRecipient(workstream.agents, recipientId)) {
+      const error = new Error("message-recipient-unresolved");
+      await messageRepository.updateDelivery(message.id, recipientId, "failed");
+      failedRecipients.push({ recipientId, error });
+      emit(workstream, "message.recipient_unresolved", `Message recipient unresolved: ${recipientId}`, undefined, { to: recipientId });
+      app.log.error({ error, workstreamId: workstream.id, recipientId, messageId: message.id }, "message.recipient_unresolved");
+      continue;
+    }
     try {
       await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipientId), {
         id: `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
@@ -1849,6 +1858,43 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     reviewPassed: sender.role === policy.reviewRole && qaMarker === "QA_PASSED",
   }) : [];
   if (task && completedTaskIds.includes(task.id)) {
+    const dutyContext = await triggerRepository.findDutyContextByTaskId(task.id);
+    if (dutyContext?.completionEvidence === "deliverable") {
+      let structuredResult: ReturnType<typeof parseStructuredTurn> | undefined;
+      if (payload.structuredResult !== undefined) {
+        try {
+          structuredResult = parseStructuredTurn(payload.structuredResult);
+        } catch {
+          structuredResult = undefined;
+        }
+      }
+      const completion = evaluateDutyCompletion({
+        completionEvidence: dutyContext.completionEvidence,
+        hasCompletionClaim: Boolean(structuredResult?.completionProposal || structuredResult?.decision?.action === "complete"),
+        hasDutyState: submittedDutyState !== undefined,
+        hasAgentMessage: workstream.messages.some((candidate) =>
+          candidate.senderId === sender.id &&
+          candidate.senderId !== "human" &&
+          new Date(candidate.createdAt).getTime() >= new Date(task.createdAt).getTime() &&
+          !(candidate.senderId === "human" && candidate.taskId === task.id),
+        ),
+        hasStructuredDeliverables: Boolean(
+          structuredResult && (structuredResult.insights.length || structuredResult.tasks.length || structuredResult.messages.length),
+        ),
+      });
+      if (!completion.accepted) {
+        const reason = completion.reason ?? "duty completion rejected";
+        task.status = "failed";
+        task.updatedAt = new Date().toISOString();
+        await persistTask(task);
+        await setAgentStatus(sender, "idle");
+        recordWorkflowEvent(workstream, { id: randomUUID(), type: "duty.completion_rejected", message: `${task.title} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
+        recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task.title} → ${reason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, taskId: task.id, ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}) });
+        await reconcileTaskDispatches(workstream);
+        await reconcileCompletion(workstream);
+        return;
+      }
+    }
     const evidenceIds = [...new Set(payload.evidenceIds ?? [])];
     const persistedEvidenceCount = await evidenceRepository.countMatching(task.id, evidenceIds);
     if (workstream.workspaceRoot && (!evidenceIds.length || persistedEvidenceCount !== evidenceIds.length)) {
