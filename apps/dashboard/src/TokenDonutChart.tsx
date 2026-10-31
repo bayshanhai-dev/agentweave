@@ -5,30 +5,11 @@ export type TokenDonutDatum = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  /** Optional explicit color; falls back to the hash-based palette. */
+  /** Kept for data compatibility; chart color is intentionally system-owned. */
   color?: string;
 };
 
-const PALETTE = [
-  "#4dabf7", // blue
-  "#63e6be", // teal
-  "#9775fa", // violet
-  "#ffa94d", // orange
-  "#f783ac", // pink
-  "#66d9e8", // cyan
-  "#a9e34b", // lime
-  "#ffd43b", // yellow
-  "#ff8787", // red
-  "#748ffc", // indigo
-];
-
-function colorForRole(role: string): string {
-  let hash = 0;
-  for (let i = 0; i < role.length; i += 1) {
-    hash = (hash * 31 + role.charCodeAt(i)) >>> 0;
-  }
-  return PALETTE[hash % PALETTE.length];
-}
+const SERIES_COLORS = ["#b8c99c", "#a9afb0", "#92999a", "#c0b9a7", "#7d8587", "#a1a7a0"];
 
 const SIZE = 220;
 const STROKE = 36;
@@ -48,11 +29,11 @@ export function TokenDonutChart({ data }: { data: TokenDonutDatum[] }) {
   }
 
   let consumed = 0;
-  const segments = entries.map((entry) => {
+  const segments = entries.map((entry, index) => {
     const length = (entry.totalTokens / total) * CIRCUMFERENCE;
     const dashOffset = -consumed;
     consumed += length;
-    return { ...entry, length, dashOffset, color: entry.color ?? colorForRole(entry.role) };
+    return { ...entry, length, dashOffset, color: SERIES_COLORS[index % SERIES_COLORS.length] };
   });
 
   return (
@@ -73,7 +54,7 @@ export function TokenDonutChart({ data }: { data: TokenDonutDatum[] }) {
               withArrow
               label={
                 <Stack gap={2}>
-                  <Text size="xs" fw={700}>{segment.role.toUpperCase()}</Text>
+                  <Text size="xs" fw={500}>{segment.role}</Text>
                   <Text size="xs">Input: {segment.inputTokens.toLocaleString()}</Text>
                   <Text size="xs">Output: {segment.outputTokens.toLocaleString()}</Text>
                   <Text size="xs">Total: {segment.totalTokens.toLocaleString()}</Text>
@@ -106,8 +87,8 @@ export function TokenDonutChart({ data }: { data: TokenDonutDatum[] }) {
             pointerEvents: "none",
           }}
         >
-          <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Total tokens</Text>
-          <Text size="xl" fw={800}>{total.toLocaleString()}</Text>
+          <Text size="xs" c="dimmed" fw={500}>Total tokens</Text>
+          <Text size="xl" fw={500} ff="monospace">{total.toLocaleString()}</Text>
         </div>
       </div>
       <Stack gap="xs">
@@ -122,8 +103,8 @@ export function TokenDonutChart({ data }: { data: TokenDonutDatum[] }) {
                 flexShrink: 0,
               }}
             />
-            <Text size="sm" fw={700}>{segment.role.toUpperCase()}</Text>
-            <Text size="sm" c="dimmed">{segment.totalTokens.toLocaleString()}</Text>
+            <Text size="sm" fw={500}>{segment.role}</Text>
+            <Text size="sm" c="dimmed" ff="monospace">{segment.totalTokens.toLocaleString()}</Text>
           </Group>
         ))}
       </Stack>

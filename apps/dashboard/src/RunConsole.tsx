@@ -71,7 +71,7 @@ export function RunConsole({ status, provider, events }: Props) {
             {run.failed ? <IconAlertTriangle size={19} /> : isRunning ? <IconPlayerPlay size={19} /> : run.terminal ? <IconCheck size={19} /> : <IconBrain size={19} />}
           </ThemeIcon>
           <div>
-            <Text size="xs" tt="uppercase" c="dimmed" fw={800}>Live execution</Text>
+            <Text size="xs" c="dimmed" fw={500}>Live execution</Text>
             <Title order={3} mt={3}>{run.failed ? "Run needs attention" : run.terminal ? "Run settled" : hasRun ? "Codex is working" : "Waiting for Codex"}</Title>
           </div>
         </Group>
@@ -81,14 +81,14 @@ export function RunConsole({ status, provider, events }: Props) {
       </Group>
 
       <SimpleGrid cols={{ base: 2, sm: 5 }} mt="lg">
-        <div><Text size="xs" c="dimmed">ACTIVE AGENT</Text><Text fw={800} mt={3}>{roleLabels[run.role ?? ""] ?? run.role ?? "—"}</Text></div>
-        <div><Text size="xs" c="dimmed">PHASE</Text><Text fw={800} mt={3}>{run.phase}</Text></div>
-        <div><Text size="xs" c="dimmed">PROVIDER</Text><Text fw={800} mt={3}>{run.latest?.provider ?? provider.tool ?? "Worker default"}{run.latest?.model ?? provider.model ? ` · ${providerModelLabel((run.latest?.model ?? provider.model)!)}` : ""}</Text></div>
-        <div><Text size="xs" c="dimmed">LAST SIGNAL</Text><Text fw={800} mt={3}>{lastOutput}</Text></div>
-        <div><Text size="xs" c="dimmed">USAGE</Text><Text fw={800} mt={3}>{run.usage?.totalTokens !== undefined ? `${run.usage.totalTokens.toLocaleString()} tokens` : "Unknown"}</Text><Text size="xs" c="dimmed">{run.usage?.costUsd !== undefined ? `$${run.usage.costUsd.toFixed(4)}` : "Provider did not report cost"}</Text></div>
+        <div><Text size="xs" c="dimmed">Active agent</Text><Text fw={500} mt={3}>{roleLabels[run.role ?? ""] ?? run.role ?? "—"}</Text></div>
+        <div><Text size="xs" c="dimmed">Phase</Text><Text fw={500} mt={3}>{run.phase}</Text></div>
+        <div><Text size="xs" c="dimmed">Provider</Text><Text fw={500} mt={3}>{run.latest?.provider ?? provider.tool ?? "Worker default"}{run.latest?.model ?? provider.model ? ` · ${providerModelLabel((run.latest?.model ?? provider.model)!)}` : ""}</Text></div>
+        <div><Text size="xs" c="dimmed">Last signal</Text><Text fw={500} mt={3}>{lastOutput}</Text></div>
+        <div><Text size="xs" c="dimmed">Usage</Text><Text fw={500} mt={3}>{run.usage?.totalTokens !== undefined ? `${run.usage.totalTokens.toLocaleString()} tokens` : "Unknown"}</Text><Text size="xs" c="dimmed">{run.usage?.costUsd !== undefined ? `$${run.usage.costUsd.toFixed(4)}` : "Provider did not report cost"}</Text></div>
       </SimpleGrid>
 
-      {isRunning && <Progress value={100} animated mt="lg" size="sm" color="teal" />}
+      {isRunning && <Progress value={100} mt="lg" size="sm" color="green" />}
 
       <Group gap="xs" mt="lg">
         <IconClock size={14} />
@@ -98,7 +98,7 @@ export function RunConsole({ status, provider, events }: Props) {
       </Group>
 
       <Stack gap="xs" mt="lg">
-        <Text size="xs" tt="uppercase" c="dimmed" fw={800}>Codex output</Text>
+        <Text size="xs" c="dimmed" fw={500}>Codex output</Text>
         <ScrollArea h={150} type="auto" offsetScrollbars>
           <Text className="run-console-output" size="sm" c={run.failed ? "red" : undefined} style={{ whiteSpace: "pre-wrap" }}>
             {run.output || run.latest?.message || (hasRun ? "Codex connected. Waiting for the next streamed event…" : "Start the Workstream to connect the PM to Codex.")}

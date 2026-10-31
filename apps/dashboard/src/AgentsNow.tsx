@@ -23,8 +23,8 @@ function avatarState(status: AgentCard["status"]): AvatarState {
 }
 
 function statusBadge(status: AgentCard["status"]) {
-  if (status === "running") return <Badge size="xs" color="yellow" variant="filled">Working</Badge>;
-  if (status === "failed") return <Badge size="xs" color="red" variant="filled">Failed</Badge>;
+  if (status === "running") return <Badge size="xs" color="yellow" variant="light">Working</Badge>;
+  if (status === "failed") return <Badge size="xs" color="red" variant="light">Failed</Badge>;
   return <Badge size="xs" color="gray" variant="light">Idle</Badge>;
 }
 
@@ -67,9 +67,10 @@ export function AgentsNow({ cards, templateRoles, steers }: Props) {
               <AgentAvatar color={color} icon={icon} state={avatarState(card.status)} size={40} />
               <div className="cc-agent-meta">
                 <div className="cc-agent-head">
-                  <Text size="sm" fw={800} className="cc-agent-role">
+                  <Text size="sm" fw={500} className="cc-agent-role">
                     {roleLabel(card.role, templateRoles)}
                   </Text>
+                  <span className={`cc-agent-signal cc-agent-signal-${card.status}`} aria-label={`Agent ${card.status}`} />
                   {statusBadge(card.status)}
                 </div>
                 <Badge size="xs" color="gray" variant="outline" mt={3}>
@@ -83,7 +84,6 @@ export function AgentsNow({ cards, templateRoles, steers }: Props) {
                     : worked && !working && card.status !== "failed"
                       ? `Idle · last active ${relativeTime(card.lastActiveAt) || "earlier"}`
                       : card.activity}
-                  {working ? <span className="av-typing" aria-hidden><i /><i /><i /></span> : null}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {card.usage.totalTokens > 0
@@ -100,7 +100,7 @@ export function AgentsNow({ cards, templateRoles, steers }: Props) {
         })}
       </div>
       <div className="cc-steer-history">
-        <Text className="cc-kicker cc-steer-kicker">◉ Human steer</Text>
+        <Text className="cc-kicker cc-steer-kicker">Human steer</Text>
         {recent.length ? (
           recent.map((steer, index) => (
             <Text key={steer.id ?? index} size="xs" c="dimmed" className="cc-steer-item">

@@ -77,7 +77,7 @@ export function ApprovalBanner({ api, workstreamId, tasks, events, insights = []
           <ThemeIcon size="sm" radius="xl" color="yellow" variant="light">
             <IconHandStop size={13} />
           </ThemeIcon>
-          <Text fw={800} size="sm">
+          <Text fw={500} size="sm">
             Waiting for your approval
           </Text>
         </Group>

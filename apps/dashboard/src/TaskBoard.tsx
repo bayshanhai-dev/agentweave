@@ -26,29 +26,29 @@ type AgentLike = { id: string; role: string };
 
 export const DEFAULT_LANES: TaskLane[] = [
   { status: "ready", label: "Backlog", color: "gray" },
-  { status: "assigned", label: "To Do", color: "blue" },
+  { status: "assigned", label: "To Do", color: "gray" },
   { status: "running", label: "In Progress", color: "yellow" },
-  { status: "review", label: "Review", color: "violet" },
+  { status: "review", label: "Review", color: "gray" },
   { status: "done", label: "Done", color: "green" },
 ];
 
 const statusColors: Record<string, string> = {
-  ready: "gray", assigned: "blue", running: "yellow", review: "violet",
+  ready: "gray", assigned: "gray", running: "yellow", review: "gray",
   blocked: "orange", done: "green", cancelled: "gray", failed: "red",
 };
 
 function ownerLabel(task: Task, agents?: AgentLike[]): string {
   if (!task.ownerAgentId) return "Unassigned";
   const agent = agents?.find((candidate) => candidate.id === task.ownerAgentId);
-  if (agent) return agent.role.toUpperCase();
-  return task.ownerAgentId.split(":").at(-1)?.replace(/-\d+$/, "").toUpperCase() ?? task.ownerAgentId;
+  if (agent) return agent.role.replaceAll("_", " ");
+  return task.ownerAgentId.split(":").at(-1)?.replace(/-\d+$/, "").replaceAll("_", " ") ?? task.ownerAgentId;
 }
 
 function TaskDetail({ task, agents }: { task: Task; agents?: AgentLike[] }) {
   return (
     <Stack gap="md">
       <div>
-        <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Task</Text>
+        <Text size="xs" c="dimmed" fw={500}>Task</Text>
         <Title order={3}>{displayTaskTitle(task.title)}</Title>
       </div>
       <Group gap="xs">
@@ -56,7 +56,7 @@ function TaskDetail({ task, agents }: { task: Task; agents?: AgentLike[] }) {
         <Badge variant="light">Owner · {ownerLabel(task, agents)}</Badge>
       </Group>
       <div>
-        <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Acceptance criteria</Text>
+        <Text size="xs" c="dimmed" fw={500}>Acceptance criteria</Text>
         {task.acceptanceCriteria.length ? (
           <List size="sm" mt="xs" spacing="xs" icon={<IconCheck size={14} />}>
             {task.acceptanceCriteria.map((criterion) => <List.Item key={criterion}>{criterion}</List.Item>)}
@@ -65,11 +65,11 @@ function TaskDetail({ task, agents }: { task: Task; agents?: AgentLike[] }) {
       </div>
       <SimpleGrid cols={{ base: 1, sm: 2 }}>
         <div>
-          <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Dependencies</Text>
+          <Text size="xs" c="dimmed" fw={500}>Dependencies</Text>
           <Text size="sm" mt="xs">{task.dependencies.length ? task.dependencies.join(", ") : "None"}</Text>
         </div>
         <div>
-          <Text size="xs" tt="uppercase" c="dimmed" fw={700}>Evidence</Text>
+          <Text size="xs" c="dimmed" fw={500}>Evidence</Text>
           {task.evidence.length ? (
             <Group gap="xs" mt="xs">{task.evidence.map((evidence) => <Badge key={evidence} variant="light">{evidence}</Badge>)}</Group>
           ) : <Text size="sm" mt="xs" c="dimmed">No evidence attached yet</Text>}
@@ -100,7 +100,7 @@ export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: T
     <div className={embedded ? "cc-taskboard cc-taskboard-embedded" : "cc-panel cc-taskboard"}>
       {!embedded && (
         <Group justify="space-between" mb="md">
-          <Text fw={800}>Task board</Text>
+          <Text fw={600}>Task board</Text>
           <Badge variant="light">{tasks.length} tasks</Badge>
         </Group>
       )}
@@ -110,7 +110,7 @@ export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: T
             <div key={column.status} className="cc-kanban-lane">
               <div className="cc-kanban-lane-header">
                 <Badge color={column.color} variant="light" size="sm">{columnTasks.length}</Badge>
-                <Text fw={700} size="sm">{column.label}</Text>
+                <Text fw={500} size="sm">{column.label}</Text>
               </div>
               <div className="cc-kanban-lane-body">
                 {columnTasks.length === 0 && (
@@ -131,14 +131,14 @@ export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: T
                       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedTask(task); }
                     }}
                   >
-                    <Text fw={700} size="sm" className="cc-kanban-card-title">{displayTaskTitle(task.title)}</Text>
+                    <Text fw={500} size="sm" className="cc-kanban-card-title">{displayTaskTitle(task.title)}</Text>
                     <Group gap="xs" mt={6} wrap="wrap">
                       {taskKind(task.title) && (
-                        <Badge size="xs" variant="light" color="grape">
+                        <Badge size="xs" variant="light" color="gray">
                           {taskKind(task.title)}
                         </Badge>
                       )}
-                      <Badge size="xs" variant="light" color={task.ownerAgentId ? "blue" : "gray"}>
+                      <Badge size="xs" variant="light" color="gray">
                         {ownerLabel(task, agents)}
                       </Badge>
                       {task.status === "running" && <Badge size="xs" color="yellow" variant="filled">Running</Badge>}
@@ -153,12 +153,12 @@ export function TaskBoard({ tasks, lanes, agents, embedded = false }: { tasks: T
           <div className="cc-kanban-lane">
             <div className="cc-kanban-lane-header">
               <Badge color="gray" variant="light" size="sm">{overflow.length}</Badge>
-              <Text fw={700} size="sm">Other</Text>
+              <Text fw={500} size="sm">Other</Text>
             </div>
             <div className="cc-kanban-lane-body">
               {overflow.map((task) => (
                 <Card key={task.id} withBorder padding="sm" radius="md" className="cc-kanban-card" role="button" tabIndex={0} onClick={() => setSelectedTask(task)}>
-                  <Text fw={700} size="sm">{displayTaskTitle(task.title)}</Text>
+              <Text fw={500} size="sm">{displayTaskTitle(task.title)}</Text>
                   <Text size="xs" c="dimmed" mt={4}>{task.status}</Text>
                 </Card>
               ))}

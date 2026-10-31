@@ -1,4 +1,5 @@
 import { Group, Select, Text } from "@mantine/core";
+import { IconTarget } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 
 type WorkstreamOption = { id: string; goal: string; status: string; createdAt?: string };
@@ -22,10 +23,7 @@ function optionMeta(item: WorkstreamOption): string {
         minute: "2-digit",
       })
     : "";
-  // The leading bullet keeps this from ever being a bare status word —
-  // the page already has a status badge, and duplicate bare "completed"
-  // texts are ambiguous for users and assistive tech alike.
-  return `• ${[item.status.replaceAll("_", " "), when].filter(Boolean).join(" · ")}`;
+  return [item.status.replaceAll("_", " "), when].filter(Boolean).join(" · ");
 }
 
 /** Top banner: workstream goal, task progress, workstream switcher, controls. */
@@ -64,7 +62,7 @@ export function GoalBar({ goal, tasks, workstreams, selectedId, onSelect, contro
   return (
     <div className="cc-goalbar">
       <div className="cc-goalbar-inner">
-        <Text className="cc-kicker">◎ Workstream goal</Text>
+        <Text className="cc-kicker"><span className="cc-kicker-icon"><IconTarget size={16} stroke={1.5} /></span>Workstream goal</Text>
         <Text className="cc-goal-text" title={goal}>
           {goal}
         </Text>

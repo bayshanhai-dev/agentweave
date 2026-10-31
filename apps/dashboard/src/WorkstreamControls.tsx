@@ -313,7 +313,7 @@ export function WorkstreamControls({
             leftSection={<IconPlus size={16} />}
             onClick={() => setCreateModal(true)}
           >
-            New Workstream
+            New workstream
           </Button>
         )}
         {!hideCreate && <span className="cc-controls-sep" aria-hidden />}
@@ -323,7 +323,7 @@ export function WorkstreamControls({
             loading={busy === "start"}
             onClick={() => void start()}
           >
-            Start Workstream
+            Start workstream
           </Button>
         )}
         {commands
@@ -403,7 +403,7 @@ export function WorkstreamControls({
       <Modal
         opened={opened}
         onClose={() => setCreateModal(false)}
-        title="Create a Workstream"
+        title="Create a workstream"
         centered
       >
         <form onSubmit={form.onSubmit((values) => void create(values))}>

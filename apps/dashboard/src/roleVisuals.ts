@@ -1,20 +1,11 @@
-/**
- * Shared role visuals: every agent role gets a deterministic color (from its
- * template when available, otherwise a hash-based fallback) so avatars,
- * token charts, and badges stay consistent.
- */
-
-const PALETTE = [
-  "#818cf8", // indigo
-  "#22d3ee", // cyan
-  "#a78bfa", // violet
-  "#f472b6", // pink
-  "#34d399", // green
-  "#fbbf24", // amber
-  "#fb923c", // orange
-  "#e879f9", // fuchsia
-  "#4dabf7", // blue
-  "#a9e34b", // lime
+/** Shared role visuals use a restrained instrument-panel ramp. */
+const ROLE_TONES = [
+  "#b8c99c", // leading accent
+  "#a9afb0",
+  "#92999a",
+  "#c0b9a7",
+  "#7d8587",
+  "#a1a7a0",
 ];
 
 export function fallbackRoleColor(roleId: string): string {
@@ -22,7 +13,7 @@ export function fallbackRoleColor(roleId: string): string {
   for (let i = 0; i < roleId.length; i += 1) {
     hash = (hash * 31 + roleId.charCodeAt(i)) >>> 0;
   }
-  return PALETTE[hash % PALETTE.length];
+  return ROLE_TONES[hash % ROLE_TONES.length];
 }
 
 export type TemplateRoleVisual = {
@@ -33,7 +24,10 @@ export type TemplateRoleVisual = {
 };
 
 export function roleColor(roleId: string, templateRoles?: readonly TemplateRoleVisual[]): string {
-  return templateRoles?.find((role) => role.id === roleId)?.color ?? fallbackRoleColor(roleId);
+  // Template colors are data, but the dashboard chrome stays in one visual
+  // system so a user can read status rather than a rainbow of role colors.
+  const roleIndex = templateRoles?.findIndex((role) => role.id === roleId) ?? -1;
+  return ROLE_TONES[(roleIndex >= 0 ? roleIndex : Math.abs(roleId.length)) % ROLE_TONES.length];
 }
 
 export function roleIcon(roleId: string, templateRoles?: readonly TemplateRoleVisual[]): string | undefined {
@@ -41,7 +35,7 @@ export function roleIcon(roleId: string, templateRoles?: readonly TemplateRoleVi
 }
 
 export function roleLabel(roleId: string, templateRoles?: readonly TemplateRoleVisual[]): string {
-  return templateRoles?.find((role) => role.id === roleId)?.label ?? roleId.toUpperCase();
+  return templateRoles?.find((role) => role.id === roleId)?.label ?? roleId.replaceAll("_", " ");
 }
 
 /** Shade a #rrggbb hex color by percent (-100..100). */
