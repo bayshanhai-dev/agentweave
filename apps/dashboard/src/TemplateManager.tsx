@@ -43,16 +43,14 @@ export type WorkstreamTemplateInfo = {
   taskLanes: TemplateLane[];
 };
 
-/** Preset avatar colors for new template roles (dark-friendly, distinct). */
+/** Preset role tones stay inside the control-room neutral ramp. */
 export const ROLE_COLOR_PRESETS = [
-  "#818cf8",
-  "#22d3ee",
-  "#a78bfa",
-  "#f472b6",
-  "#34d399",
-  "#fbbf24",
-  "#fb923c",
-  "#e879f9",
+  "#b8c99c",
+  "#a9afb0",
+  "#92999a",
+  "#c0b9a7",
+  "#7d8587",
+  "#a1a7a0",
 ];
 
 const AUTHORITIES = [
@@ -63,9 +61,9 @@ const AUTHORITIES = [
 
 const DEFAULT_LANES: TemplateLane[] = [
   { status: "ready", label: "Backlog", color: "gray" },
-  { status: "assigned", label: "To Do", color: "blue" },
+  { status: "assigned", label: "To Do", color: "gray" },
   { status: "running", label: "In Progress", color: "yellow" },
-  { status: "review", label: "Review", color: "violet" },
+  { status: "review", label: "Review", color: "gray" },
   { status: "done", label: "Done", color: "green" },
 ];
 
@@ -227,14 +225,14 @@ export function TemplateManager({ api }: { api: string }) {
             <Card key={template.id} withBorder radius="md" padding="md">
               <Group justify="space-between" align="flex-start">
                 <div>
-                  <Text fw={700}>{template.name}</Text>
+                  <Text fw={500}>{template.name}</Text>
                   <Text size="xs" c="dimmed">{template.id}</Text>
                 </div>
                 {template.builtin ? (
                   <Badge color="gray" variant="light">Built-in</Badge>
                 ) : (
                   <Group gap="xs">
-                    <Badge color="teal" variant="light">Custom</Badge>
+                    <Badge color="gray" variant="light">Custom</Badge>
                     <ActionIcon
                       size="sm"
                       color="red"
@@ -318,14 +316,14 @@ export function TemplateManager({ api }: { api: string }) {
                     ))}
                   </Group>
                   <TextInput
-                    placeholder="🎙️"
-                    aria-label="Role icon (emoji)"
+                    placeholder="optional"
+                    aria-label="Role icon name"
                     value={role.icon ?? ""}
                     maxLength={8}
                     onChange={(e) => updateRole(index, { icon: e.currentTarget.value })}
                     style={{ width: 64 }}
                   />
-                  <Text size="xs" c="dimmed">icon</Text>
+                  <Text size="xs" c="dimmed">icon name</Text>
                 </Group>
               </Stack>
             ))}

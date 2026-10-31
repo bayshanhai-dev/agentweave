@@ -68,14 +68,14 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
     totalTokens: card.usage.totalTokens,
   }));
   return <Stack gap="md" className="agent-execution-panel">
-    <Group justify="space-between"><div><Text size="xs" c="dimmed" tt="uppercase" fw={700}>Live execution</Text><Title order={3}>Agent execution cards</Title><Text size="xs" c="dimmed">{projection?.headline ?? "Runtime projection is connecting"}</Text></div><Badge variant="light">{cards.filter((card) => card.status === "running").length} active</Badge></Group>
+    <Group justify="space-between"><div><Text size="xs" c="dimmed" fw={500}>Live execution</Text><Title order={3}>Agent execution cards</Title><Text size="xs" c="dimmed">{projection?.headline ?? "Runtime projection is connecting"}</Text></div><Badge variant="light">{cards.filter((card) => card.status === "running").length} active</Badge></Group>
     <Card withBorder radius="md" padding="md" className="agent-token-donut">
-      <Text size="xs" c="dimmed" tt="uppercase" fw={700} mb="sm">Token usage by agent</Text>
+      <Text size="xs" c="dimmed" fw={500} mb="sm">Token usage by agent</Text>
       <TokenDonutChart data={tokenData} />
     </Card>
     <SimpleGrid cols={{ base: 1, sm: 2, xl: 6 }} spacing="sm" className="agent-execution-grid">
       {cards.map(({ role, agent, status, latest, output, usage, projected }) => <Card key={agent.id} withBorder radius="md" padding="md" className={`agent-execution-card status-${status}`}>
-        <Group justify="space-between" align="flex-start"><div><Text fw={800}>{role.toUpperCase()}</Text><Text size="xs" c="dimmed">{agent?.id ?? "Not registered"}</Text></div><Badge size="sm" color={status === "failed" ? "red" : status === "running" ? "yellow" : "gray"}>{status}</Badge></Group>
+        <Group justify="space-between" align="flex-start"><div><Text fw={500}>{role.replaceAll("_", " ")}</Text><Text size="xs" c="dimmed">{agent?.id ?? "Not registered"}</Text></div><Badge size="sm" color={status === "failed" ? "red" : status === "running" ? "yellow" : "gray"}>{status}</Badge></Group>
         <Badge size="xs" color="gray" variant="outline" mt="xs">{agent.provider ? `${agent.provider}${agent.model ? ` · ${providerModelLabel(agent.model)}` : ""}` : "Worker default"}</Badge>
         <div className="agent-presence" aria-label={status === "running" ? "Agent is processing" : "Agent is listening for work"}>
           <span className="agent-presence-dot" />
@@ -84,8 +84,8 @@ export function AgentExecutionPanel({ agents, events, projection }: { agents: Ag
         </div>
         {usage.reported && (
           <Group gap="md" mt="sm" className="agent-token-usage">
-            <div><Text size="xs" c="dimmed">TOKENS</Text><Text size="sm" fw={800}>{usage.totalTokens.toLocaleString()}</Text></div>
-            <div><Text size="xs" c="dimmed">IN / OUT</Text><Text size="xs" fw={700}>{`${usage.inputTokens.toLocaleString()} / ${usage.outputTokens.toLocaleString()}`}</Text></div>
+            <div><Text size="xs" c="dimmed">Tokens</Text><Text size="sm" fw={500}>{usage.totalTokens.toLocaleString()}</Text></div>
+            <div><Text size="xs" c="dimmed">In / out</Text><Text size="xs" fw={500}>{`${usage.inputTokens.toLocaleString()} / ${usage.outputTokens.toLocaleString()}`}</Text></div>
           </Group>
         )}
         <Stack gap={4} mt="sm">

@@ -77,7 +77,7 @@ export function SteerComposer({ roles, onSubmit, error }: Props) {
                 key={chip}
                 size="sm"
                 variant="filled"
-                color="cyan"
+                color="gray"
                 rightSection={
                   <ActionIcon size="xs" variant="transparent" color="white" onClick={() => removeChip(chip)} aria-label={`Remove @${chip}`}>
                     <IconX size={10} />
@@ -93,7 +93,7 @@ export function SteerComposer({ roles, onSubmit, error }: Props) {
       <div className="cc-composer-field">
         <Textarea
           ref={inputRef}
-          placeholder="Type @ to tag agents, then write your steer…"
+          placeholder="Tag an agent, then write a steer"
           value={text}
           minRows={2}
           autosize
@@ -129,7 +129,7 @@ export function SteerComposer({ roles, onSubmit, error }: Props) {
                 onMouseDown={(event) => { event.preventDefault(); addChip(option.id); }}
                 onMouseEnter={() => setHighlight(index)}
               >
-                <Text size="sm" fw={700}>@{option.all ? "all" : option.id}</Text>
+                <Text size="sm" fw={500}>@{option.all ? "all" : option.id}</Text>
                 <Text size="xs" c="dimmed">{option.all ? "Tag every agent" : `Direct ${option.label}`}</Text>
               </div>
             ))}

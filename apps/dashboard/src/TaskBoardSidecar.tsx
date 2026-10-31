@@ -10,19 +10,19 @@ type AgentLike = { id: string; role: string };
 
 /** Mantine lane colour names to dot colours for the edge tab. */
 const LANE_DOT_COLORS: Record<string, string> = {
-  gray: "#868e96",
-  blue: "#4dabf7",
-  yellow: "#ffd43b",
-  violet: "#9775fa",
-  green: "#69db7c",
-  red: "#ff8787",
-  orange: "#ffa94d",
-  cyan: "#3bc9db",
-  grape: "#da77f2",
-  pink: "#faa2c1",
-  teal: "#38d9a9",
-  lime: "#a9e34b",
-  indigo: "#748ffc",
+  gray: "#92999a",
+  blue: "#92999a",
+  yellow: "#d3a45b",
+  violet: "#92999a",
+  green: "#62b48a",
+  red: "#d57b7e",
+  orange: "#d3a45b",
+  cyan: "#92999a",
+  grape: "#92999a",
+  pink: "#92999a",
+  teal: "#62b48a",
+  lime: "#b8c99c",
+  indigo: "#92999a",
 };
 
 /**

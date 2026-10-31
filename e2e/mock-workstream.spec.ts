@@ -120,13 +120,13 @@ test("completes and persists the deterministic Mock workstream", async ({
 
   await page.getByRole("button", { name: "Approve & complete" }).click();
   await expect(
-    page.getByText("completed", { exact: true }),
+    page.getByText("completed", { exact: true }).first(),
   ).toBeVisible();
 
   await page.reload();
   await expect(page.locator(".cc-goal-text", { hasText: demoGoal })).toBeVisible();
   await expect(
-    page.getByText("completed", { exact: true }),
+    page.getByText("completed", { exact: true }).first(),
   ).toBeVisible();
 
   const persisted = await snapshot(request, created.id);

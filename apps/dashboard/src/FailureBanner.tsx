@@ -19,7 +19,7 @@ export function FailureBanner({ reason, failedTasks }: Props) {
         <ThemeIcon size="sm" radius="xl" color="red" variant="light">
           <IconAlertOctagon size={13} />
         </ThemeIcon>
-        <Text fw={800} size="sm">
+        <Text fw={500} size="sm">
           This workstream failed
         </Text>
       </Group>

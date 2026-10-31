@@ -259,7 +259,7 @@ export function TriggersPanel({ api }: { api: string }) {
               {triggers.map((trigger) => (
                 <Table.Tr key={trigger.id}>
                   <Table.Td>
-                    <Text fw={700} size="sm">
+                    <Text fw={500} size="sm">
                       {trigger.name}
                     </Text>
                   </Table.Td>

@@ -161,7 +161,7 @@ function MessageList({
             if (!value) return "";
             const short =
               value.split(":").at(-1)?.replace(/-\d+$/, "") ?? value;
-            return (labels[short] ?? short).toUpperCase();
+            return (labels[short] ?? short).replaceAll("_", " ");
           };
           const from = displayNode(
             event.from ?? event.senderId ?? event.role ?? "system",
@@ -185,7 +185,7 @@ function MessageList({
                 <IconCircleDot size={10} />
               </ThemeIcon>
               <Box style={{ flex: 1 }}>
-                <Text size="xs" fw={700} c="teal">
+                <Text size="xs" fw={500} c="green">
                   {route}
                 </Text>
                 <Text size="sm" mt={3}>
@@ -232,7 +232,7 @@ function StatusBadge({ status }: { status: string }) {
             ? "yellow"
             : status === "failed"
               ? "red"
-              : "teal"
+              : "gray"
       }
     >
       {status.replaceAll("_", " ")}
@@ -444,7 +444,7 @@ function App() {
     <Stack h="100%" gap="lg">
       <Group px="xs" justify="space-between">
         <div>
-          <Text fw={800} size="lg">
+          <Text fw={600} size="lg">
             AgentWeave
           </Text>
           <Text size="xs" c="dimmed">
@@ -487,7 +487,7 @@ function App() {
               hiddenFrom="sm"
               size="sm"
             />
-            <Text fw={800}>
+            <Text fw={600}>
               AgentWeave
             </Text>
             {immersiveOverview && (
@@ -503,16 +503,16 @@ function App() {
               ) : selected?.status === "completed" ? (
                 <Badge size="xs" color="green" variant="light">Completed</Badge>
               ) : (
-                <Badge size="xs" color="teal" variant="light">System active</Badge>
+                <Badge size="xs" color="green" variant="light">System active</Badge>
               ))}
           </Group>
           <Group gap="sm">
             {/* The single New Workstream entry point, visible in both the
                 list view and a selected workstream's view. */}
             <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setCreateOpen(true)}>
-              New Workstream
+              New workstream
             </Button>
-            {immersiveOverview && <Text size="xs" fw={700}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : selected?.provider.tool ? `${selected.provider.tool}${selected.provider.model ? ` · ${providerModelLabel(selected.provider.model)}` : ""}` : "Worker default"}</Text>}
+            {immersiveOverview && <Text size="xs" fw={500}>Provider: {selected?.provider.tool === "mock" ? "Demo mode" : selected?.provider.tool ? `${selected.provider.tool}${selected.provider.model ? ` · ${providerModelLabel(selected.provider.model)}` : ""}` : "Worker default"}</Text>}
             <Tooltip
               label={colorScheme === "dark" ? "Light mode" : "Dark mode"}
             >
@@ -536,7 +536,7 @@ function App() {
         <Box maw={immersiveOverview ? "none" : 1400} mx="auto" className={immersiveOverview ? "immersive-workspace" : undefined}>
           {!immersiveOverview && <Group justify="space-between" mb="xl">
             <div>
-              <Text size="xs" tt="uppercase" c="dimmed" fw={700}>
+              <Text size="xs" c="dimmed" fw={500}>
                 {selected?.flavor ?? "Agent network"}
               </Text>
               <Title order={1}>{selected ? "Overview" : "Workstreams"}</Title>
@@ -550,7 +550,7 @@ function App() {
                 <ThemeIcon size={52} radius="md" variant="light">
                   <IconTopologyStar3 size={28} />
                 </ThemeIcon>
-                <Title order={2}>Operate your agent network.</Title>
+                <Title order={2}>Monitor and steer your agent team</Title>
                 <Text c="dimmed">
                   Select a Workstream to inspect durable tasks, live agent
                   messages, evidence, and runtime activity.
@@ -559,7 +559,7 @@ function App() {
                   leftSection={<IconPlus size={16} />}
                   onClick={() => setCreateOpen(true)}
                 >
-                  Create your first Workstream
+                  Create your first workstream
                 </Button>
                 <WorkstreamControls
                   api={api}
@@ -672,13 +672,13 @@ function App() {
                 agents={selected.agents}
               />
               <TriggersPanel api={api} />
-              <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
+              <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={600} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
                 <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
                 <ScrollArea h="65vh" type="auto">
                   <Box pr="md"><MessageList events={selected.events} paginated pageSize={10} /></Box>
                 </ScrollArea>
               </Modal>
-              <Modal opened={traceOpen} onClose={closeTrace} title={<Group gap="sm"><Text fw={800} size="lg">Trace Debugger</Text><Badge variant="light">correlationId chains</Badge></Group>} size="xl" centered>
+              <Modal opened={traceOpen} onClose={closeTrace} title={<Group gap="sm"><Text fw={600} size="lg">Trace debugger</Text><Badge variant="light">correlationId chains</Badge></Group>} size="xl" centered>
                 <Text size="sm" c="dimmed" mb="md">Follow a collaboration round end-to-end via correlationId. Click an event to expand its full JSON payload.</Text>
                 <ScrollArea h="65vh" type="auto">
                   <Box pr="md"><TraceDebugger workstreamId={selected.id} apiBase={api} /></Box>

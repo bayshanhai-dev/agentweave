@@ -9,7 +9,7 @@ import {
   Text,
   ThemeIcon,
 } from "@mantine/core";
-import { IconMessages } from "@tabler/icons-react";
+import { IconMessages, IconUser } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { roleColor, roleIcon, roleLabel, type TemplateRoleVisual } from "./roleVisuals";
@@ -87,7 +87,7 @@ function roleIdFor(authorId: string | undefined, agents: Agent[]): string | unde
 function eventTag(kind: string, category: string, isHuman: boolean): { label: string; tone: string } {
   if (isHuman) return { label: "Human steer", tone: "human" };
   if (kind === "insight") {
-    const label = category.toUpperCase();
+    const label = category.replaceAll("_", " ");
     const tone = category === "proposal" ? "proposal" : category === "critique" ? "critique" : category === "synthesis" ? "synthesis" : "insight";
     return { label, tone };
   }
@@ -148,8 +148,8 @@ function EventCard({
   const [open, setOpen] = useState(false);
   const isHuman = item.authorId === "human";
   const roleId = roleIdFor(item.authorId, agents);
-  const color = isHuman ? "#38bdf8" : roleColor(roleId ?? item.authorId ?? "system", templateRoles);
-  const icon = isHuman ? "🧑" : roleIcon(roleId ?? "", templateRoles);
+  const color = isHuman ? "#b8c99c" : roleColor(roleId ?? item.authorId ?? "system", templateRoles);
+  const icon = isHuman ? undefined : roleIcon(roleId ?? "", templateRoles);
   const label = isHuman ? "You" : roleLabel(roleId ?? item.authorId ?? "system", templateRoles);
   const tag = eventTag(item.kind, item.category, isHuman);
   const neighbors = item.kind === "insight" ? causalNeighbors(item.id, insights) : undefined;
@@ -173,10 +173,14 @@ function EventCard({
   return (
     <div id={id} className={`cc-event cc-event-tone-${tag.tone}${isHuman ? " cc-event-human" : ""}`}>
       <span className="cc-event-dot" aria-hidden />
-      <AgentAvatar color={color} icon={icon} state="idle" size={32} />
+      {isHuman ? (
+        <span className="cc-human-avatar" aria-hidden><IconUser size={16} stroke={1.5} /></span>
+      ) : (
+        <AgentAvatar color={color} icon={icon} state="idle" size={32} />
+      )}
       <div className="cc-event-body">
         <Group gap="xs" mb={4} wrap="wrap">
-          <Text size="sm" fw={800}>{label}</Text>
+          <Text size="sm" fw={500}>{label}</Text>
           <span className={`cc-tag cc-tag-${tag.tone}`}>{tag.label}</span>
           {item.kind === "message" && item.deliveryStatus && item.deliveryStatus !== "pending" && (
             <span className={`cc-tag cc-tag-delivery-${item.deliveryStatus}`}>{deliveryLabel(item.deliveryStatus)}</span>
@@ -232,7 +236,7 @@ export function LiveMessageBus({ messages, insights = [], agents, onSend, sendEr
   const agentOptions = [
     { value: "all", label: "All agents" },
     { value: "human", label: "Human" },
-    ...agents.map((agent) => ({ value: agent.id, label: agent.role.toUpperCase() })),
+    ...agents.map((agent) => ({ value: agent.id, label: agent.role.replaceAll("_", " ") })),
   ];
   const typeOptions = [
     { value: "all", label: "All event types" },
@@ -268,7 +272,7 @@ export function LiveMessageBus({ messages, insights = [], agents, onSend, sendEr
         <div>
           <Group gap="xs">
             <span className="cc-live-dot" aria-hidden />
-            <Text fw={800}>Live events</Text>
+            <Text fw={500}>Live events</Text>
           </Group>
           <Text size="xs" c="dimmed" mt={3}>Every proposal, critique, steer, and token burn — as it happens.</Text>
         </div>
@@ -276,7 +280,7 @@ export function LiveMessageBus({ messages, insights = [], agents, onSend, sendEr
           <Button size="compact-xs" variant="subtle" onClick={() => setFiltersOpen((o) => !o)}>
             {filtersOpen ? "Hide filters" : "Filters"}
           </Button>
-          <Badge variant="light" color="teal">{visible.length} events</Badge>
+          <Badge variant="light" color="gray">{visible.length} events</Badge>
         </Group>
       </Group>
       {filtersOpen && (
