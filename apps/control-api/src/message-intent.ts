@@ -16,3 +16,11 @@ export function classifyHumanMessage(rawContent: string, requestedIntent?: strin
   if (/^(do not|don't|never|must|always|make sure|不要|别|必须|务必|应该|不能)/i.test(value)) return { content, messageType: "directive" };
   return { content, messageType: "directive" };
 }
+
+export function shouldCreateHumanMessageTask(
+  messageType: HumanMessageType,
+  humanToLead: boolean,
+  taskId?: string,
+): boolean {
+  return !taskId && (messageType === "request" || humanToLead);
+}

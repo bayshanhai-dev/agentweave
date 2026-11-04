@@ -48,6 +48,19 @@ export class RuntimeRepository {
       limit 1`;
     return rows.length > 0;
   }
+  async hasMessageExecutionClaim(workstreamId: string, messageId: string, recipientId: string): Promise<boolean> {
+    const deliveryId = `${messageId}:${recipientId}`;
+    const rows = await this.sql`
+      select 1
+      from task_execution_claims
+      where workstream_id = ${workstreamId}
+        and (
+          message_id = ${deliveryId}
+          or left(message_id, length(${deliveryId}) + 1) = ${`${deliveryId}:`}
+        )
+      limit 1`;
+    return rows.length > 0;
+  }
   async markStaleWorkersOffline(): Promise<void> {
     await this
       .sql`update runtime_workers set status='offline', updated_at=now() where status='online' and last_heartbeat_at < now() - interval '45 seconds'`;

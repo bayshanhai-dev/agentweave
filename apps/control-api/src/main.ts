@@ -1,7 +1,7 @@
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
-import { classifyHumanMessage } from "./message-intent.js";
+import { classifyHumanMessage, shouldCreateHumanMessageTask } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
 import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
@@ -55,6 +55,7 @@ import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
 import { resolveDutyAssignee } from "./duty-assignment.js";
 import { evaluateDutyCompletion } from "./duty-completion.js";
 import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from "./observability-metrics.js";
+import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recovery.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -509,7 +510,8 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   if (!body?.content?.trim() || !recipients.length) return reply.code(400).send({ error: "recipient_and_content_required" });
   const resolvedRecipients = recipients.map((recipient) => recipient === "human" ? recipient : agentForRecipient(workstream.agents, recipient)?.id ?? recipient);
   const { content, messageType } = classifyHumanMessage(body.content, body.intent);
-  const humanToLead = body.from?.trim() === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === orchestrationPolicyFor(workstream).leadRole);
+  const senderId = body.from?.trim() || "human";
+  const humanToLead = senderId === "human" && resolvedRecipients.some((recipient) => workstream.agents.find((agent) => agent.id === recipient)?.role === orchestrationPolicyFor(workstream).leadRole);
   // A Human message to PM is an explicit resume signal while the Workstream is
   // waiting. Persist active before publishing the inbox message: otherwise the
   // Worker correctly sees waiting_for_human and acks the delivery without a turn.
@@ -524,7 +526,7 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
     await reconcileAfterActivation(workstream);
   }
   let taskId = body.taskId;
-  if (messageType === "request" && !taskId) {
+  if (shouldCreateHumanMessageTask(messageType, humanToLead, taskId)) {
     const now = new Date().toISOString();
     const pmOwner = humanToLead ? workstream.agents.find((agent) => agent.role === orchestrationPolicyFor(workstream).leadRole) : undefined;
     const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], qualityAttempts: 0, relatedTaskIds: [], createdAt: now, updatedAt: now };
@@ -533,7 +535,7 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
     emit(workstream, "task.created", `Human request queued: ${task.title}`);
     taskId = task.id;
   }
-  const message = await createMessage(workstream, body.from?.trim() || "human", resolvedRecipients, content, messageType, { ...body, ...(taskId ? { taskId } : {}) }, body.id);
+  const message = await createMessage(workstream, senderId, resolvedRecipients, content, messageType, { ...body, ...(taskId ? { taskId } : {}) }, body.id);
   return reply.code(201).send(message);
 });
 app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply) => {
@@ -726,10 +728,20 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
     emit(workstream, "orchestration.agent_directive_suppressed", `Agent-authored implementation directive suppressed for message ${message.id}`, senderRole);
     return message;
   }
+  await dispatchMessage(workstream, message);
+  return message;
+}
+
+async function dispatchMessage(
+  workstream: Workstream,
+  message: Message,
+  recipientIds: string[] = message.recipientIds,
+  attemptId?: string,
+): Promise<void> {
   const policy = orchestrationPolicyFor(workstream);
   const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
   const failedRecipients: Array<{ recipientId: string; error: unknown }> = [];
-  for (const recipientId of message.recipientIds) {
+  for (const recipientId of recipientIds) {
     if (recipientId !== "human" && !agentForRecipient(workstream.agents, recipientId)) {
       const error = new Error("message-recipient-unresolved");
       await messageRepository.updateDelivery(message.id, recipientId, "failed");
@@ -740,7 +752,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
     }
     try {
       await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipientId), {
-        id: `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
+        id: attemptId ? `${message.id}:${recipientId}:${attemptId}` : `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
         occurredAt: message.createdAt, correlationId: message.correlationId,
         ...(message.causationId ? { causationId: message.causationId } : {}),
         payload: stampProviderRoute(message, routeForRecipient(workstream, recipientId)),
@@ -760,12 +772,11 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
       await setAgentStatus(lead, "idle");
       await recoverDecomposition(workstream, lead, { id: message.id, correlationId: message.correlationId }, { reason: `inbox dispatch failed for message ${message.id}` });
     }
-    return message;
+    return;
   }
   message.deliveryStatus = "delivered";
   await messageRepository.markDelivered(message.id);
   emitMessage(workstream, "message.delivered", message);
-  return message;
 }
 
 function armDispatchWatchdogAfterPublish(workstream: Workstream, message: Message, recipientId: string, lead: Agent | undefined): void {
@@ -1202,7 +1213,19 @@ try {
 await eventBus.connect();
 await loadWorkstreams();
 for (const workstream of workstreams.values()) {
-  if (workstream.status === "active") await reconcileAfterActivation(workstream);
+  if (workstream.status !== "active") continue;
+  await reconcilePendingHumanMessagesOnBoot(workstream, {
+    hasExecutionClaim: (messageId, recipientId) =>
+      runtimeRepository.hasMessageExecutionClaim(workstream.id, messageId, recipientId),
+    dispatch: async (candidate, recipientIds) => {
+      const message = workstream.messages.find((item) => item.id === candidate.id);
+      if (!message) return false;
+      await dispatchMessage(workstream, message, recipientIds, `boot-${randomUUID()}`);
+      return message.deliveryStatus === "delivered";
+    },
+    emit: (type, message) => emit(workstream, type, message, "human"),
+  });
+  await reconcileAfterActivation(workstream);
 }
 await eventBus.consumer(subjects.events, async (message) => {
   const envelope = eventBus.decode(message) as { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string };

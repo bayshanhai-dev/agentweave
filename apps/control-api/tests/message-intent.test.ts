@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyHumanMessage } from "../src/message-intent.js";
+import {
+  classifyHumanMessage,
+  shouldCreateHumanMessageTask,
+} from "../src/message-intent.js";
 
 describe("human message intent classification", () => {
   it.each([
@@ -15,5 +18,31 @@ describe("human message intent classification", () => {
 
   it("removes an explicit slash override before delivery", () => {
     expect(classifyHumanMessage("/decision ship it")).toEqual({ content: "ship it", messageType: "decision" });
+  });
+
+  it("creates durable work for an implicit non-request sent to the lead", () => {
+    const classified = classifyHumanMessage(
+      "Review the production backlog and address anything stranded",
+    );
+
+    expect(classified.messageType).toBe("directive");
+    expect(
+      shouldCreateHumanMessageTask(classified.messageType, true),
+    ).toBe(true);
+  });
+
+  it("preserves explicit request task behavior", () => {
+    const classified = classifyHumanMessage("Ship the fix", "request");
+
+    expect(classified.messageType).toBe("request");
+    expect(
+      shouldCreateHumanMessageTask(classified.messageType, true),
+    ).toBe(true);
+    expect(
+      shouldCreateHumanMessageTask(classified.messageType, false),
+    ).toBe(true);
+    expect(
+      shouldCreateHumanMessageTask(classified.messageType, true, "task-1"),
+    ).toBe(false);
   });
 });
