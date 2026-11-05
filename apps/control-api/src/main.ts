@@ -56,6 +56,7 @@ import { resolveDutyAssignee } from "./duty-assignment.js";
 import { evaluateDutyCompletion } from "./duty-completion.js";
 import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from "./observability-metrics.js";
 import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recovery.js";
+import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -360,7 +361,51 @@ app.get("/api/workstreams/:id/events", async (request, reply) => {
   const after = Number((request.query as { after?: string } | undefined)?.after ?? 0);
   if (!Number.isInteger(after) || after < 0) return reply.code(400).send({ error: "invalid_sequence_cursor" });
   const rows = await workflowEventRepository.listAfter(id, after);
-  return rows.map((event) => ({ id: String(event.id), sequence: Number(event.sequence), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() }));
+  return rows.map((event) => ({ id: String(event.id), sequence: Number(event.sequence), type: String(event.type), message: String(event.message), ...(event.role ? { role: String(event.role) } : {}), ...(event.from_node ? { from: String(event.from_node) } : {}), ...(event.to_node ? { to: String(event.to_node) } : {}), ...(event.agent_id ? { agentId: String(event.agent_id) } : {}), ...(event.task_id ? { taskId: String(event.task_id) } : {}), ...(event.output ? { output: String(event.output) } : {}), occurredAt: new Date(String(event.occurred_at)).toISOString() }));
+});
+app.post("/api/workstreams/:id/delivery-reports", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const workstream = workstreams.get(id);
+  if (!workstream) return reply.code(404).send({ error: "workstream_not_found" });
+  let submission;
+  try {
+    submission = parseDeliveryReportSubmission(request.body, id);
+  } catch (error) {
+    return reply.code(400).send({
+      error: "invalid_delivery_report",
+      detail: error instanceof Error ? error.message : "invalid_delivery_report",
+    });
+  }
+  const report = submission.report;
+  const reportEvent: WorkflowEvent = {
+    id: randomUUID(),
+    type: report.event,
+    message: report.event === "delivery.succeeded"
+      ? `${report.task_id} delivered as ${String(report.pr_url)}`
+      : `${report.task_id} BLOCKED: ${String(report.reason)}`,
+    role: "worker",
+    taskId: report.task_id,
+    output: JSON.stringify(report),
+    occurredAt: new Date().toISOString(),
+  };
+  try {
+    await recordWorkflowEvent(workstream, reportEvent);
+    if (submission.route) {
+      await recordWorkflowEvent(workstream, {
+        id: randomUUID(),
+        type: "delivery.deputy_routed",
+        message: `${report.task_id} unchanged delivery handoff routed to human_deputy`,
+        role: "worker",
+        to: "human_deputy",
+        taskId: report.task_id,
+        output: JSON.stringify(submission.route.handoff),
+        occurredAt: new Date().toISOString(),
+      });
+    }
+  } catch {
+    return reply.code(503).send({ error: "delivery_report_persistence_failed" });
+  }
+  return reply.code(202).send({ accepted: true, eventId: reportEvent.id });
 });
 app.get("/api/workstreams/:id/messages", async (request, reply) => {
   const workstream = workstreams.get((request.params as { id: string }).id);
@@ -636,17 +681,18 @@ function emit(
   })();
 }
 
-function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void {
+function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): Promise<void> {
   // Sequence is allocated atomically by WorkflowEventRepository.append (SELECT ... FOR UPDATE
   // on the workstream row + MAX(sequence)+1 in one transaction). Never pre-compute it here:
   // concurrent emitters derive the same value from a stale in-memory list and violate the
   // (workstream_id, sequence) unique constraint, crashing the process (e2e red on #53).
   workstream.events.push(event);
-  void persistEvent(workstream.id, event).catch((error) => {
+  const persistence = Promise.all([
+    persistEvent(workstream.id, event),
+    persistWorkstreamStatus(workstream),
+  ]).then(() => undefined);
+  void persistence.catch((error) => {
     app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.event.persist_failed");
-  });
-  void persistWorkstreamStatus(workstream).catch((error) => {
-    app.log.error({ error, workstreamId: workstream.id, eventId: event.id, eventType: event.type }, "workflow.status.persist_failed");
   });
   metrics.eventsEmitted += 1;
   circuitBreaker.observe(workstream.id, event);
@@ -660,6 +706,7 @@ function recordWorkflowEvent(workstream: Workstream, event: WorkflowEvent): void
   app.log.info({ workstreamId: workstream.id, eventId: event.id, eventType: event.type, role: event.role }, "workflow.event");
   const payload = JSON.stringify({ workstreamId: workstream.id, ...event });
   for (const socket of sockets) socket.send(payload);
+  return persistence;
 }
 
 async function writeDutyStateAfterCompletion(
