@@ -43,7 +43,7 @@ import { displayTaskTitle } from "./unified-stream";
 import { isSystemInstruction } from "./unified-stream";
 import { SessionTotals } from "./SessionTotals";
 import { computeAgentCards } from "./agentCards";
-import { TaskBoard, type Task } from "./TaskBoard";
+import { type Task } from "./TaskBoard";
 import { TaskBoardSidecar } from "./TaskBoardSidecar";
 import { TraceDebugger } from "./TraceDebugger";
 import { WorkstreamControls } from "./WorkstreamControls";
@@ -661,11 +661,6 @@ function App() {
                   templateRoles={selected.template?.roles}
                 />
               </div>
-              <TaskBoard
-                tasks={selected.tasks}
-                lanes={selected.template?.taskLanes}
-                agents={selected.agents}
-              />
               <TaskBoardSidecar
                 tasks={selected.tasks}
                 lanes={selected.template?.taskLanes}
