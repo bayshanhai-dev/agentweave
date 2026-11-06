@@ -57,7 +57,7 @@ test("completes and persists the deterministic Mock workstream", async ({
   await expect(
     page.getByText("Agents now", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("Task board", { exact: true }).or(page.getByText("No tasks yet"))).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open task board" })).toBeVisible();
   await expect(
     page.getByText("Session totals", { exact: true }),
   ).toBeVisible();
@@ -80,9 +80,11 @@ test("completes and persists the deterministic Mock workstream", async ({
       { timeout: 15_000 },
     )
     .toBe(true);
+  await page.getByRole("button", { name: "Open task board" }).click();
   await expect
     .poll(() => page.locator(".cc-kanban-card").count())
     .toBeGreaterThanOrEqual(3);
+  await page.keyboard.press("Escape");
   await expect(page.locator(".cc-event")).not.toHaveCount(0);
 
   const awaitingApproval = await snapshot(request, created.id);
