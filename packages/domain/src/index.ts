@@ -14,6 +14,31 @@ export const workstreamStatuses = [
 
 export type WorkstreamStatus = (typeof workstreamStatuses)[number];
 
+export const agentStatuses = [
+  "idle",
+  "running",
+  "paused",
+  "stopped",
+  "failed",
+  "done",
+] as const;
+
+export type AgentStatus = (typeof agentStatuses)[number];
+
+/** The observe-only agent state machine used by every control-plane writer. */
+export const agentTransitions: Record<AgentStatus, readonly AgentStatus[]> = {
+  idle: ["running", "paused", "failed", "done", "stopped"],
+  running: ["idle", "paused", "failed", "stopped"],
+  paused: ["idle", "stopped", "done"],
+  failed: ["idle", "paused", "stopped"],
+  done: [],
+  stopped: [],
+};
+
+export function canAgentTransition(from: AgentStatus, to: AgentStatus): boolean {
+  return agentTransitions[from].includes(to);
+}
+
 /**
  * A template describes the agents and task views for one kind of workstream.
  * The runtime treats role ids as data; only a template's orchestration policy

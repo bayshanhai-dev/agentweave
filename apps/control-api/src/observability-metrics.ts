@@ -15,13 +15,15 @@ const HELP: Record<string, string> = {
   agentweave_outbox_dead_letter_total: "Durable count of dead-lettered event outbox rows.",
   agentweave_replay_gap_total: "Durable count of detected non-contiguous replay sequences.",
   agentweave_redelivery_total: "Durable count of redelivered runtime messages.",
+  agentweave_agent_transition_total: "Applied agent status transitions by source and target status.",
+  agentweave_agent_transition_rejected_total: "Invalid agent status transition attempts by source and target status.",
   agentweave_requests_total: "HTTP requests received by the control API.", agentweave_workstreams_created_total: "Workstreams created by the control API.",
   agentweave_runs_started_total: "Workflow runs started by the control API.", agentweave_events_emitted_total: "Workflow events emitted by the control API.",
   agentweave_workflow_failures_total: "Workflow failures observed by the control API.", agentweave_provider_input_tokens_total: "Provider input tokens observed by the control API.",
   agentweave_provider_output_tokens_total: "Provider output tokens observed by the control API.", agentweave_provider_total_tokens_total: "Provider total tokens observed by the control API.",
   agentweave_provider_cost_usd: "Estimated provider cost in US dollars.",
 };
-const COUNTERS = new Set(["agentweave_turns_total", "agentweave_duty_runs_total", "agentweave_outbox_delivered_total", "agentweave_outbox_retry_total", "agentweave_outbox_dead_letter_total", "agentweave_replay_gap_total", "agentweave_redelivery_total", "agentweave_requests_total", "agentweave_workstreams_created_total", "agentweave_runs_started_total", "agentweave_events_emitted_total", "agentweave_workflow_failures_total", "agentweave_provider_input_tokens_total", "agentweave_provider_output_tokens_total", "agentweave_provider_total_tokens_total"]);
+const COUNTERS = new Set(["agentweave_turns_total", "agentweave_duty_runs_total", "agentweave_outbox_delivered_total", "agentweave_outbox_retry_total", "agentweave_outbox_dead_letter_total", "agentweave_replay_gap_total", "agentweave_redelivery_total", "agentweave_agent_transition_total", "agentweave_agent_transition_rejected_total", "agentweave_requests_total", "agentweave_workstreams_created_total", "agentweave_runs_started_total", "agentweave_events_emitted_total", "agentweave_workflow_failures_total", "agentweave_provider_input_tokens_total", "agentweave_provider_output_tokens_total", "agentweave_provider_total_tokens_total"]);
 
 const boundedLabel = (value: unknown): string => String(value ?? "unknown").slice(0, 128);
 
@@ -60,7 +62,7 @@ export async function collectObservabilityMetrics(
     }
   };
 
-  const [turns, silence, stuck, duties, outbox, durableCounters] = await Promise.all([
+  const [turns, silence, stuck, duties, outbox, durableCounters, agentTransitions] = await Promise.all([
     queryGroup("turns", () => sql`select s.workstream_id, coalesce(s.role, t.role, 'unknown') as role, coalesce(s.provider, t.provider, 'unknown') as provider,
           case t.type when 'task.completed' then 'success' when 'task.failed' then 'failure' when 'task.gated' then 'gated' end as outcome, count(*)::double precision as count
         from workflow_events s join lateral (select e.type, e.role, e.provider from workflow_events e
@@ -80,6 +82,7 @@ export async function collectObservabilityMetrics(
       const [row] = await sql`select (select coalesce(value,0) from runtime_metric_counters where name='replay_gap')::double precision as replay_gaps, (select coalesce(value,0) from runtime_metric_counters where name='redelivery')::double precision as redeliveries`;
       return row;
     }),
+    queryGroup("agent transitions", () => sql`select type, coalesce(from_node, 'unknown') as from_status, coalesce(to_node, 'unknown') as to_status, count(*)::double precision as count from workflow_events where type in ('agent.status_changed', 'agent.transition_rejected') group by type, from_node, to_node`),
   ]);
   const samples: MetricSample[] = [];
   if (turns) for (const row of turns) if (row.outcome) samples.push({ name: "agentweave_turns_total", labels: { outcome: boundedLabel(row.outcome), workstream_id: boundedLabel(row.workstream_id), role: boundedLabel(row.role), provider: boundedLabel(row.provider) }, value: Math.max(0, Number(row.count)) });
@@ -88,5 +91,10 @@ export async function collectObservabilityMetrics(
   if (duties) for (const row of duties) if (row.enabled) { const due = Math.max(0, Number(row.due)), fulfilled = Math.max(0, Number(row.fulfilled)), failed = Math.max(0, Number(row.failed)), skipped = Math.max(0, Number(row.skipped)), coalesced = Math.max(0, Number(row.coalesced)); const overdue = Math.max(0, due - fulfilled - failed - skipped - coalesced); samples.push({ name: "agentweave_duty_fulfillment_ratio", labels: { trigger_id: boundedLabel(row.trigger_id) }, value: due ? Math.min(1, fulfilled / due) : 0 }); for (const [outcome, value] of [["fulfilled", fulfilled], ["failed", failed], ["skipped", skipped], ["coalesced", coalesced], ["overdue", overdue]] as const) samples.push({ name: "agentweave_duty_runs_total", labels: { trigger_id: boundedLabel(row.trigger_id), outcome }, value }); }
   if (outbox) { const durable = outbox[0] ?? {}; samples.push({ name: "agentweave_outbox_backlog", value: Number(durable.backlog ?? 0) }, { name: "agentweave_outbox_delivered_total", value: Number(durable.delivered ?? 0) }, { name: "agentweave_outbox_retry_total", value: Number(durable.retries ?? 0) }, { name: "agentweave_outbox_dead_letter_total", value: Number(durable.dead_letters ?? 0) }); }
   if (durableCounters) samples.push({ name: "agentweave_replay_gap_total", value: Number(durableCounters.replay_gaps ?? 0) }, { name: "agentweave_redelivery_total", value: Number(durableCounters.redeliveries ?? 0) });
+  if (agentTransitions) for (const row of agentTransitions) samples.push({
+    name: row.type === "agent.transition_rejected" ? "agentweave_agent_transition_rejected_total" : "agentweave_agent_transition_total",
+    labels: { from: boundedLabel(row.from_status), to: boundedLabel(row.to_status) },
+    value: Math.max(0, Number(row.count)),
+  });
   return samples;
 }
