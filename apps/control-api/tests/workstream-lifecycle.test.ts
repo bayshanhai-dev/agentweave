@@ -104,4 +104,17 @@ describe("WorkstreamLifecycleCommandHandler", () => {
       }),
     );
   });
+
+  it("leaves no agent paused after the pause/resume approval path", async () => {
+    const store = repository();
+    const handler = new WorkstreamLifecycleCommandHandler(store);
+    const state = workstream();
+    await handler.execute(state, "waiting-for-human", { commandId: "pause-1" }, vi.fn());
+    expect(state.agents.every((agent) => agent.status === "paused")).toBe(true);
+
+    await handler.approve(state, { commandId: "resume-1", decision: "resume" }, vi.fn());
+
+    expect(state.status).toBe("active");
+    expect(state.agents.some((agent) => agent.status === "paused")).toBe(false);
+  });
 });

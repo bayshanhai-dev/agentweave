@@ -1,17 +1,23 @@
 import type { Sql } from "postgres";
+import type { AgentStatus } from "@agentweave/domain";
 import {
   InvalidStructuredTurn,
   type StructuredTurnPlan,
 } from "../structured-turn.js";
+import { transitionAgentStatus, type AgentStatusEvent } from "../agent-status.js";
 import { TaskRepository } from "./task-repository.js";
 import { InsightRepository } from "./insight-repository.js";
 
 /** Persist validated effects and a retry receipt before publishing messages. */
 export class StructuredTurnRepository {
-  constructor(private readonly sql: Sql) {}
+  constructor(
+    private readonly sql: Sql,
+    private readonly onAgentStatusEvent?: (event: AgentStatusEvent, workstreamId: string) => Promise<void> | void,
+  ) {}
 
   async apply(plan: StructuredTurnPlan): Promise<StructuredTurnPlan> {
-    return this.sql.begin(async (tx) => {
+    const statusEvents: AgentStatusEvent[] = [];
+    const result = await this.sql.begin(async (tx) => {
       const rows =
         await tx`select status from workstreams where id = ${plan.workstreamId} for update`;
       const previous =
@@ -54,11 +60,28 @@ export class StructuredTurnRepository {
       }
       if (plan.sourceTaskId)
         await tx`update tasks set status = ${plan.blocked ? "blocked" : "done"}, evidence = ${JSON.stringify(plan.sourceEvidenceIds)}, updated_at = ${plan.createdAt} where id = ${plan.sourceTaskId}`;
-      await tx`update agents set status = 'idle' where id = ${plan.agentId} and workstream_id = ${plan.workstreamId}`;
+      const agentRows = await tx`select id, status from agents where id = ${plan.agentId} and workstream_id = ${plan.workstreamId} for update`;
+      if (agentRows[0]) {
+        const agent = { id: String(agentRows[0].id), status: String(agentRows[0].status) as AgentStatus };
+        await transitionAgentStatus(agent, "idle", {
+          reason: "structured_turn_applied",
+          ...(plan.sourceTaskId ? { taskId: plan.sourceTaskId } : {}),
+          turnId: plan.id,
+          actor: "structured-turn-repository",
+        }, {
+          persist: async (agentId, status) => {
+            await tx`update agents set status = ${status} where id = ${agentId} and workstream_id = ${plan.workstreamId}`;
+          },
+          emit: (event) => { statusEvents.push(event); },
+        });
+      }
       if (plan.waitingForHuman)
         await tx`update workstreams set status = 'waiting_for_human', updated_at = ${plan.createdAt} where id = ${plan.workstreamId}`;
       await tx`insert into structured_turns (id, workstream_id, fingerprint, plan) values (${plan.id}, ${plan.workstreamId}, ${plan.fingerprint}, ${JSON.stringify(plan)})`;
       return plan;
     });
+    for (const event of statusEvents)
+      await this.onAgentStatusEvent?.(event, plan.workstreamId);
+    return result;
   }
 }

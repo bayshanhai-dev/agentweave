@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { canTransition, type WorkstreamStatus } from "@agentweave/domain";
+import { canTransition, type AgentStatus, type WorkstreamStatus } from "@agentweave/domain";
+import { transitionAgentStatus, type AgentStatusTransitionContext } from "../agent-status.js";
 
 type LifecycleAgent = {
   id: string;
-  status: "idle" | "running" | "paused" | "stopped" | "failed" | "done";
+  status: AgentStatus;
 };
 type LifecycleWorkstream = {
   id: string;
@@ -18,6 +19,11 @@ type CommandBody = {
   decision?: "resume" | "complete" | "reject";
 };
 type EmitLifecycleEvent = (type: string, message: string) => void;
+type TransitionLifecycleAgent = (
+  agent: LifecycleAgent,
+  to: AgentStatus,
+  context: AgentStatusTransitionContext,
+) => Promise<void>;
 type CommandRepository = {
   findResponse(
     workstreamId: string,
@@ -43,7 +49,25 @@ export class WorkstreamCommandError extends Error {
 }
 
 export class WorkstreamLifecycleCommandHandler {
-  constructor(private readonly repository: CommandRepository) {}
+  constructor(
+    private readonly repository: CommandRepository,
+    private readonly transitionAgent: TransitionLifecycleAgent = async (agent, to, context) => {
+      await transitionAgentStatus(agent, to, context, { persist: async () => undefined });
+    },
+  ) {}
+
+  private async transitionAgents(
+    workstream: LifecycleWorkstream,
+    to: AgentStatus,
+    reason: string,
+  ): Promise<void> {
+    for (const agent of workstream.agents) {
+      // Terminal states have no outgoing edges. Do not turn an observe-only
+      // audit request into a terminal-state rewrite during lifecycle commands.
+      if (agent.status === "done" || agent.status === "stopped") continue;
+      await this.transitionAgent(agent, to, { reason, actor: "workstream-lifecycle" });
+    }
+  }
 
   async execute(
     workstream: LifecycleWorkstream,
@@ -109,23 +133,13 @@ export class WorkstreamLifecycleCommandHandler {
       workstream.status = "completed";
     } else workstream.status = target;
     if (command === "pause" || command === "waiting-for-human")
-      workstream.agents.forEach((agent) => {
-        if (agent.status === "running" || agent.status === "idle")
-          agent.status = "paused";
-      });
+      await this.transitionAgents(workstream, "paused", `workstream_${command}`);
     if (command === "emergency-stop")
-      workstream.agents.forEach((agent) => {
-        if (agent.status !== "done") agent.status = "stopped";
-      });
+      await this.transitionAgents(workstream, "stopped", "workstream_emergency_stop");
     if (command === "complete")
-      workstream.agents.forEach((agent) => {
-        agent.status = "done";
-      });
+      await this.transitionAgents(workstream, "done", "workstream_complete");
     if (target === "active")
-      workstream.agents.forEach((agent) => {
-        if (agent.status !== "done" && agent.status !== "stopped")
-          agent.status = "idle";
-      });
+      await this.transitionAgents(workstream, "idle", command === "resume" ? "workstream_resume" : "approval_resume");
     emit(
       command === "emergency-stop"
         ? "workstream.emergency_stopped"
@@ -201,10 +215,7 @@ export class WorkstreamLifecycleCommandHandler {
       workstream.status = "paused";
     } else {
       workstream.status = target;
-      workstream.agents.forEach((agent) => {
-        if (agent.status !== "done" && agent.status !== "stopped")
-          agent.status = "idle";
-      });
+      await this.transitionAgents(workstream, "idle", "human_gate_resume");
       emit(
         `approval.${body.decision}`,
         body.reason?.trim() || `Human approval: ${body.decision}`,
