@@ -9,6 +9,12 @@ import { executionKeyForDelivery } from "./runtime/execution-key.js";
 import { reportDelivery } from "./delivery-report.js";
 import { inboxStatusGateDecision, isGatedWorkstreamStatus } from "./inbox-status-gate.js";
 import { ExecutionGatedError } from "./runtime/execution-control.js";
+import {
+  createProductionDeliveryRunner,
+  processDeliveryHandoffIfPresent,
+  readDeliveryConfig,
+  type DeliveryIntakeDependencies,
+} from "./delivery-intake.js";
 
 const workerId = process.env.WORKER_ID ?? "worker-local-1";
 const providers = createProviderRegistryFromEnv();
@@ -26,6 +32,14 @@ const inFlightTasks = new Set<string>();
 const bus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: `${workerId}-inbox-v2`, maxConcurrentHandlers: Number(process.env.WORKER_MAX_CONCURRENCY ?? 8) });
 
 const controlApiUrl = process.env.CONTROL_API_URL ?? "http://control-api:3000";
+const deliveryConfig = readDeliveryConfig();
+const deliveryIntake: DeliveryIntakeDependencies = deliveryConfig.enabled
+  ? {
+      config: deliveryConfig,
+      createExecutor: (context) =>
+        createProductionDeliveryRunner(deliveryConfig, context),
+    }
+  : { config: deliveryConfig };
 async function registerWorker(): Promise<void> { const payload = JSON.stringify({ workerId, provider: provider.name, roles: (process.env.WORKER_ROLES ?? "").split(",").map((role) => role.trim()).filter(Boolean), capabilities: ["streaming", "checkpoint", "resume", "cancellation"] }); for (;;) { try { const response = await fetch(`${controlApiUrl}/api/runtime/workers/register`, { method: "POST", headers: { "content-type": "application/json" }, body: payload }); if (response.ok) return; } catch { /* Control Plane may still be starting. */ } await new Promise((resolve) => setTimeout(resolve, 1000)); } }
 async function heartbeat(): Promise<void> { try { await fetch(`${controlApiUrl}/api/runtime/workers/${encodeURIComponent(workerId)}/heartbeat`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); } catch { /* Control Plane may restart; the next heartbeat retries. */ } }
 
@@ -88,13 +102,21 @@ await bus.consumer(subjects.inbox, async (message) => {
       // The LLM receives the trigger content and returns structured actions (messages,
       // tasks, etc.) or nothing if no action is needed.
       const isProbe = payload.messageType === "agent.probe";
+      const workspacePath = payload.workspacePath ?? workstream.workspaceRoot;
       const prompt = isProbe
         ? `[agentweave autonomy probe]\nYou are ${targetAgentId}. Review the context below and decide what to do.\nYou may: send messages to other agents, propose tasks, or take no action.\nReturn a JSON object with schemaVersion 1, summary, insights, tasks, and messages.\nIf no action is needed, return empty arrays.\n\nContext:\n${payload.content}`
         : payload.content;
       console.log(JSON.stringify({ event: "worker.task.dispatched", workerId, agentId: targetAgentId, taskId: payload.taskId ?? envelope.id, messageType: payload.messageType, autonomous: isProbe, occurredAt: new Date().toISOString() }));
       try {
-        await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt, ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(payload.workspacePath || workstream.workspaceRoot ? { workspacePath: payload.workspacePath ?? workstream.workspaceRoot } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
-        await executor.finishTask(executionKey, "completed");
+      await runtime.dispatch({ taskId: payload.taskId ?? executionKey, executionKey, agentId: targetAgentId, workstreamId: envelope.workstreamId, ...(payload.sessionId ? { sessionId: payload.sessionId } : {}), prompt, ...(payload.provider ? { provider: payload.provider } : {}), ...(payload.model ? { model: payload.model } : {}), ...(workspacePath ? { workspacePath } : {}), ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}), idempotencyKey: envelope.id, collectEvidence: Boolean(payload.taskId) });
+      await executor.finishTask(executionKey, "completed");
+      if (!isProbe && payload.taskId && workspacePath && deliveryConfig.enabled) {
+        await processDeliveryHandoffIfPresent(deliveryIntake, {
+          workspacePath,
+          workstreamId: envelope.workstreamId,
+          taskId: payload.taskId,
+        });
+      }
       } catch (error) {
         await executor.finishTask(executionKey, "failed");
         if (error instanceof ExecutionGatedError) {
