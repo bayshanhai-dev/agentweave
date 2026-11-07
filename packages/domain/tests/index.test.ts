@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { canTransition, getWorkstreamTemplate, workstreamTemplates } from "../src/index.js";
+import { agentTransitions, canAgentTransition, canTransition, getWorkstreamTemplate, workstreamTemplates } from "../src/index.js";
+
+describe("agent transitions", () => {
+  it("allows every edge in the approved table", () => {
+    for (const [from, targets] of Object.entries(agentTransitions)) {
+      for (const to of targets) expect(canAgentTransition(from as never, to)).toBe(true);
+    }
+  });
+
+  it("rejects illegal transitions, including every terminal outgoing attempt", () => {
+    for (const from of ["done", "stopped"] as const) {
+      for (const to of ["idle", "running", "paused", "failed", "done", "stopped"] as const)
+        expect(canAgentTransition(from, to)).toBe(false);
+    }
+    for (const [from, to] of [
+      ["paused", "running"],
+      ["idle", "idle"],
+      ["running", "done"],
+      ["failed", "done"],
+    ] as const) expect(canAgentTransition(from, to)).toBe(false);
+  });
+});
 
 describe("workstream transitions", () => {
   it("allows active workstreams to pause", () => {

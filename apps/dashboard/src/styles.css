@@ -677,14 +677,14 @@ html[data-mantine-color-scheme="dark"] .mantine-AppShell-header {
 }
 .cc-kanban-lane-body { display: grid; gap: 8px; }
 .cc-kanban-card {
-  background: rgba(23, 23, 33, 0.9) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: rgba(23, 23, 33, 0.9);
+  border-color: rgba(255, 255, 255, 0.08);
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 .cc-kanban-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(129, 140, 248, 0.45) !important;
+  border-color: rgba(129, 140, 248, 0.45);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
 }
 .cc-kanban-card-title {

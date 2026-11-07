@@ -1,4 +1,5 @@
 import type { Sql } from "postgres";
+import type { AgentStatus } from "@agentweave/domain";
 import type { PersistedWorkstream } from "./types.js";
 
 export class WorkstreamRepository {
@@ -20,12 +21,11 @@ export class WorkstreamRepository {
   ): Promise<void> {
     await this.sql.begin(async (transaction) => {
       await transaction`update workstreams set status = ${workstream.status}, updated_at = now() where id = ${workstream.id}`;
-      for (const agent of workstream.agents)
-        await transaction`update agents set status = ${agent.status} where id = ${agent.id}`;
+      // Agent statuses are persisted only through transitionAgentStatus.
     });
   }
 
-  async saveAgentStatus(agentId: string, status: string): Promise<void> {
+  async persistAgentStatus(agentId: string, status: AgentStatus): Promise<void> {
     await this.sql`update agents set status = ${status} where id = ${agentId}`;
   }
 

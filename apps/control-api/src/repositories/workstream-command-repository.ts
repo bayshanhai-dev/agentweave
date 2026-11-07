@@ -1,6 +1,7 @@
 import type { Sql } from "postgres";
+import type { AgentStatus } from "@agentweave/domain";
 
-type AgentStatus = { id: string; status: string };
+type AgentStatusUpdate = { id: string; status: AgentStatus };
 
 export class WorkstreamCommandRepository {
   constructor(private readonly sql: Sql) {}
@@ -19,7 +20,7 @@ export class WorkstreamCommandRepository {
     commandId: string;
     command: string;
     status: string;
-    agents: AgentStatus[];
+    agents: AgentStatusUpdate[];
     response: unknown;
   }): Promise<void> {
     await this.sql.begin(async (transaction) => {
@@ -28,9 +29,9 @@ export class WorkstreamCommandRepository {
         set status = ${input.status}, updated_at = now()
         where id = ${input.workstreamId}
       `;
-      for (const agent of input.agents) {
-        await transaction`update agents set status = ${agent.status} where id = ${agent.id}`;
-      }
+      // Agent rows are persisted by transitionAgentStatus before this command
+      // receipt is committed. Keeping this boundary focused on the workstream
+      // and idempotency receipt prevents a second unguarded status writer.
       await transaction`
         insert into workstream_commands (workstream_id, command_id, command, response)
         values (${input.workstreamId}, ${input.commandId}, ${input.command}, ${JSON.stringify(input.response)})

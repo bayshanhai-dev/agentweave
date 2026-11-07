@@ -64,6 +64,7 @@ export type PersistedWorkflowEvent = {
   provider?: string;
   model?: string;
   usage?: unknown;
+  payload?: unknown;
   occurredAt: string;
 };
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";

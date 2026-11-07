@@ -15,6 +15,8 @@ describe("observability metrics exposition", () => {
       { name: "agentweave_outbox_dead_letter_total", value: 0 },
       { name: "agentweave_replay_gap_total", value: 0 },
       { name: "agentweave_redelivery_total", value: 0 },
+      { name: "agentweave_agent_transition_total", labels: { from: "idle", to: "running" }, value: 2 },
+      { name: "agentweave_agent_transition_rejected_total", labels: { from: "paused", to: "running" }, value: 1 },
     ];
     const exposition = renderPrometheus(samples);
     for (const name of [...new Set(samples.map((sample) => sample.name))]) {
@@ -24,6 +26,8 @@ describe("observability metrics exposition", () => {
     expect(exposition).not.toMatch(/NaN|Infinity|-Infinity/);
     expect(exposition).toContain("# TYPE agentweave_stuck_delivered_messages_total gauge");
     expect(exposition).toContain("# TYPE agentweave_outbox_delivered_total counter");
+    expect(exposition).toContain('agentweave_agent_transition_total{from="idle",to="running"} 2');
+    expect(exposition).toContain('agentweave_agent_transition_rejected_total{from="paused",to="running"} 1');
   });
 
   it("escapes labels and converts non-finite samples to zero", () => {
