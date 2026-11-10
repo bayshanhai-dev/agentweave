@@ -59,6 +59,7 @@ import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recove
 import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
 import { shouldPublishMessage } from "./message-idempotency.js";
+import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -95,7 +96,9 @@ const gatedDecisionTransitions = new Map<string, Promise<boolean>>();
 const collaborationRoundTransitions = new Map<string, Promise<string[]>>();
 const decompositionFailureTransitions = new Map<string, Promise<boolean>>();
 const stalledEpisodes = new Map<string, string>();
+const activeTurns = new Map<string, TrackedTurn>();
 const maxDecompositionReprompts = 2;
+const turnStallTimeoutMs = Number(process.env.AGENTWEAVE_TURN_STALL_TIMEOUT_MS ?? 120_000);
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const commandRepository = new WorkstreamCommandRepository(sql);
@@ -1034,6 +1037,57 @@ function recordAgentStatusEvent(workstream: Workstream, event: AgentStatusEvent)
   });
 }
 
+function trackTurnSignal(workstreamId: string, payload: { agentId?: string; taskId?: string; turnId?: string; correlationId?: string }): void {
+  if (!payload.agentId) return;
+  const key = turnKey({ workstreamId, ...payload });
+  const existing = activeTurns.get(key);
+  activeTurns.set(key, {
+    key,
+    agentId: payload.agentId,
+    ...(payload.taskId ? { taskId: payload.taskId } : existing?.taskId ? { taskId: existing.taskId } : {}),
+    lastSignalAt: Date.now(),
+  });
+}
+
+function clearTurnSignals(workstreamId: string, payload: { agentId?: string; taskId?: string; turnId?: string; correlationId?: string }): void {
+  if (payload.agentId) activeTurns.delete(turnKey({ workstreamId, ...payload }));
+  if (payload.taskId) for (const [key, turn] of activeTurns) if (key.startsWith(`${workstreamId}:`) && turn.taskId === payload.taskId) activeTurns.delete(key);
+}
+
+async function failStaleTurn(workstream: Workstream, turn: TrackedTurn, reason: string): Promise<void> {
+  activeTurns.delete(turn.key);
+  const agent = workstream.agents.find((candidate) => candidate.id === turn.agentId);
+  const task = turn.taskId ? workstream.tasks.find((candidate) => candidate.id === turn.taskId) : undefined;
+  if (task && !["done", "failed", "cancelled"].includes(task.status)) {
+    task.status = "failed";
+    task.updatedAt = new Date().toISOString();
+    await persistTask(task);
+  }
+  if (agent) await setAgentStatus(agent, "idle", "turn_stalled", { taskId: turn.taskId });
+  recordWorkflowEvent(workstream, {
+    id: randomUUID(),
+    type: "turn.failed",
+    message: reason,
+    occurredAt: new Date().toISOString(),
+    ...(agent?.id ? { agentId: agent.id } : {}),
+    ...(agent?.role ? { role: agent.role } : {}),
+    ...(turn.taskId ? { taskId: turn.taskId } : {}),
+    payload: { reason, watchdog: true },
+  });
+  if (task) await reconcileTaskDispatches(workstream);
+}
+
+async function reconcileTurnWatchdogs(now = Date.now()): Promise<void> {
+  for (const [workstreamId, workstream] of workstreams) {
+    const stale = staleTurns([...activeTurns.values()].filter((turn) => turn.key.startsWith(`${workstreamId}:`)), now, turnStallTimeoutMs);
+    for (const turn of stale) await failStaleTurn(workstream, turn, `Turn stalled without heartbeat or delta for ${Math.round(turnStallTimeoutMs / 60_000)} minutes`);
+    const liveAgentIds = new Set([...activeTurns.values()].filter((turn) => turn.key.startsWith(`${workstreamId}:`)).map((turn) => turn.agentId));
+    for (const agent of orphanedRunningAgents(workstream.agents, liveAgentIds)) {
+      await failStaleTurn(workstream, { key: `${workstreamId}:${agent.id}:orphan`, agentId: agent.id }, "Agent was running without a live turn and was released by reconciliation");
+    }
+  }
+}
+
 async function setAgentStatus(
   agent: Agent,
   status: AgentStatus,
@@ -1310,6 +1364,16 @@ try {
 await eventBus.connect();
 await loadWorkstreams();
 for (const workstream of workstreams.values()) {
+  for (const event of [...workstream.events].reverse()) {
+    if (!event.agentId || !["run.started", "run.heartbeat", "turn.started", "turn.delta"].includes(event.type)) continue;
+    const terminal = workstream.events.some((candidate) => candidate.agentId === event.agentId && ["turn.completed", "turn.failed", "task.completed", "task.failed"].includes(candidate.type) && Date.parse(candidate.occurredAt) >= Date.parse(event.occurredAt));
+    if (terminal) continue;
+    const key = turnKey({ workstreamId: workstream.id, agentId: event.agentId, correlationId: event.correlationId, taskId: event.taskId });
+    activeTurns.set(key, { key, agentId: event.agentId, ...(event.taskId ? { taskId: event.taskId } : {}), lastSignalAt: Date.parse(event.occurredAt) });
+    break;
+  }
+}
+for (const workstream of workstreams.values()) {
   if (workstream.status !== "active") continue;
   await reconcilePendingHumanMessagesOnBoot(workstream, {
     hasExecutionClaim: (messageId, recipientId) =>
@@ -1324,6 +1388,7 @@ for (const workstream of workstreams.values()) {
   });
   await reconcileAfterActivation(workstream);
 }
+await reconcileTurnWatchdogs();
 await eventBus.consumer(subjects.events, async (message) => {
   const envelope = eventBus.decode(message) as { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string };
   if (envelope.id) {
@@ -1341,6 +1406,7 @@ await eventBus.consumer(subjects.events, async (message) => {
   return "ack";
 });
 setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000);
+setInterval(() => { void reconcileTurnWatchdogs().catch((error) => app.log.error({ error }, "turn watchdog reconciliation failed")); }, 15_000).unref();
 let triggerTickRunning = false;
 const runTriggerTick = async (): Promise<void> => {
   if (triggerTickRunning) return;
@@ -1538,6 +1604,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     if (!message) return;
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     const isActiveTurn = ["turn.started", "turn.delta", "tool.started", "tool.completed"].includes(envelope.type);
+    if (isActiveTurn) trackTurnSignal(workstream.id, { agentId: payload.agentId, taskId: payload.taskId, turnId: payload.turnId, correlationId: envelope.correlationId ?? payload.correlationId });
+    if (["turn.completed", "turn.failed"].includes(envelope.type)) clearTurnSignals(workstream.id, { agentId: payload.agentId, taskId: payload.taskId, turnId: payload.turnId, correlationId: envelope.correlationId ?? payload.correlationId });
     if (agent && isActiveTurn) await setAgentStatus(agent, "running", "turn_started", { taskId: payload.taskId, turnId: payload.turnId });
     if (agent && envelope.type === "turn.failed") await setAgentStatus(agent, "idle", "turn_failed", { taskId: payload.taskId, turnId: payload.turnId });
     if (task && isActiveTurn && !["done", "failed", "cancelled"].includes(task.status)) {
@@ -1554,6 +1622,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const role = payload.agentId ? workstream.agents.find((agent) => agent.id === payload.agentId)?.role : undefined;
     const agent = payload.agentId ? workstream.agents.find((candidate) => candidate.id === payload.agentId) : undefined;
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    trackTurnSignal(workstream.id, { agentId: payload.agentId, taskId: payload.taskId, correlationId: envelope.correlationId });
     if (agent) await setAgentStatus(agent, "running", envelope.type === "run.heartbeat" ? "run_heartbeat" : "dispatch", { taskId: payload.taskId });
     if (task && !["done", "failed", "cancelled"].includes(task.status)) {
       task.status = "running";
@@ -1566,6 +1635,10 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed" && envelope.type !== "task.gated") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
+  if (["task.completed", "task.failed", "task.gated"].includes(envelope.type)) {
+    const terminal = envelope.payload as { agentId?: string; taskId?: string };
+    clearTurnSignals(workstream.id, { agentId: terminal.agentId, taskId: terminal.taskId, correlationId: envelope.correlationId });
+  }
   dispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId);
   // The API can restart while a durable Worker turn is still in flight. Rebuild
   // the lightweight orchestration state from the persisted Workstream instead
