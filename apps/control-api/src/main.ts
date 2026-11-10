@@ -1,7 +1,7 @@
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
-import { classifyHumanMessage, shouldCreateHumanMessageTask } from "./message-intent.js";
+import { classifyHumanMessage, ownerAgentForHumanRequest, shouldCreateHumanMessageTask } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
 import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, getOrCreateOrchestrator, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
@@ -592,8 +592,9 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   let taskId = body.taskId;
   if (shouldCreateHumanMessageTask(messageType, humanToLead, taskId)) {
     const now = new Date().toISOString();
-    const pmOwner = humanToLead ? workstream.agents.find((agent) => agent.role === orchestrationPolicyFor(workstream).leadRole) : undefined;
-    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], qualityAttempts: 0, relatedTaskIds: [], createdAt: now, updatedAt: now };
+    const leadRole = orchestrationPolicyFor(workstream).leadRole;
+    const ownerAgentId = ownerAgentForHumanRequest(workstream.agents, resolvedRecipients, leadRole, humanToLead);
+    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: ownerAgentId ? "assigned" : "ready", ...(ownerAgentId ? { ownerAgentId } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], qualityAttempts: 0, relatedTaskIds: [], createdAt: now, updatedAt: now };
     workstream.tasks.push(task);
     await persistTask(task);
     emit(workstream, "task.created", `Human request queued: ${task.title}`);
