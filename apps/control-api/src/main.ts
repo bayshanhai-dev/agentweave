@@ -55,6 +55,7 @@ import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
 import { resolveDutyAssignee } from "./duty-assignment.js";
 import { evaluateDutyCompletion } from "./duty-completion.js";
 import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from "./observability-metrics.js";
+import { AsyncResultCache } from "./metrics-cache.js";
 import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recovery.js";
 import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
@@ -140,6 +141,7 @@ const circuitBreaker = new CircuitBreakerTracker(circuitBreakerConfig);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
+const observabilityMetricsCache = new AsyncResultCache<MetricSample[]>(15_000);
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
 const templateRepository = new TemplateRepository(sql);
 // Custom templates are persisted in PostgreSQL and mirrored in memory so the
@@ -251,7 +253,7 @@ app.get("/metrics", async (_request, reply) => {
       name: `agentweave_${name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}${name === "providerCostUsd" ? "" : "_total"}`,
       value,
     }));
-    const samples = [...await collectObservabilityMetrics(sql), ...runtimeSamples];
+    const samples = [...await observabilityMetricsCache.get(() => collectObservabilityMetrics(sql)), ...runtimeSamples];
     reply.type("text/plain; version=0.0.4");
     return renderPrometheus(samples);
   } catch (error) {
