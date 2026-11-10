@@ -285,6 +285,7 @@ const workflowEventTypes = [
   "duty.state_rejected",
   "duty.state_updated",
   "message.dispatch_failed",
+  "message.provider_route_failed",
   "message.dispatch_reconciled",
   "message.gate_released",
   "message.recipient_unresolved",

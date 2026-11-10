@@ -30,6 +30,7 @@ describe("scaling contracts", () => {
   it("registers control-api orchestration and dispatch events", () => {
     for (const type of [
       "message.dispatch_failed",
+      "message.provider_route_failed",
       "message.dispatch_reconciled",
       "message.gate_released",
       "orchestration.agent_directive_suppressed",
