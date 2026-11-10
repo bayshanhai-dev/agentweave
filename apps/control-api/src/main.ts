@@ -60,7 +60,7 @@ import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recove
 import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
 import { shouldPublishMessage } from "./message-idempotency.js";
-import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
+import { orphanedRunningAgents, reconstructLiveTurn, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
 import { displayProviderForAgent, displayProviderForWorkstream } from "./provider-runtime.js";
 import { isEmptyProviderTurn, providerRouteMismatch } from "./provider-route-integrity.js";
 import { workstreamSummary } from "./workstream-summary.js";
@@ -1405,15 +1405,8 @@ try {
 await eventBus.connect();
 await loadWorkstreams();
 for (const workstream of workstreams.values()) {
-  for (const event of [...workstream.events].reverse()) {
-    if (!event.agentId || !["run.started", "run.heartbeat", "turn.started", "turn.delta"].includes(event.type)) continue;
-    const terminal = workstream.events.some((candidate) => candidate.agentId === event.agentId && ["turn.completed", "turn.failed", "task.completed", "task.failed"].includes(candidate.type) && Date.parse(candidate.occurredAt) >= Date.parse(event.occurredAt));
-    if (terminal) continue;
-    const agentId = event.agentId;
-    const key = turnKey({ workstreamId: workstream.id, agentId, correlationId: event.correlationId, taskId: event.taskId });
-    activeTurns.set(key, { key, agentId, ...(event.taskId ? { taskId: event.taskId } : {}), lastSignalAt: Date.parse(event.occurredAt) });
-    break;
-  }
+  const live = reconstructLiveTurn(workstream.id, workstream.events);
+  if (live) activeTurns.set(live.key, live);
 }
 for (const workstream of workstreams.values()) {
   if (workstream.status !== "active") continue;
