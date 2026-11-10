@@ -140,7 +140,7 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
   },
   {
     id: "debate",
-    name: "双语辩论（中文）",
+    name: "结构化辩论（中文）",
     description: "由主持人裁判协调正方与反方，按固定顺序完成一场中文结构化辩论。",
     goalPrompt: "辩题：{{topic}}\n\n辩论流程必须严格按以下顺序：开场 → 正方开篇 → 反方开篇 → 正方反驳 → 反方反驳 → 正方自由交锋 → 反方自由交锋 → 裁决。主持人必须把每一次发言作为任务派发给对应辩手，等待结构化结果后再进入下一步。",
     roles: [

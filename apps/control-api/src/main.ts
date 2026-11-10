@@ -41,7 +41,7 @@ import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayl
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
 import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
-import { agentForRecipient, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
+import { agentForRecipient, agentsWithEffectiveProviders, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
@@ -61,7 +61,7 @@ import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
 import { shouldPublishMessage } from "./message-idempotency.js";
 import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
-import { actualProviderForAgent, actualProviderForWorkstream } from "./provider-runtime.js";
+import { displayProviderForAgent, displayProviderForWorkstream } from "./provider-runtime.js";
 import { isEmptyProviderTurn, providerRouteMismatch } from "./provider-route-integrity.js";
 import { workstreamSummary } from "./workstream-summary.js";
 import { validateDismissal } from "./terminal-disposition.js";
@@ -156,8 +156,12 @@ const resolveTemplate = (templateId: string): WorkstreamTemplate | undefined =>
 const allTemplates = (): WorkstreamTemplate[] => [...workstreamTemplates, ...customTemplates];
 const workstreamResponse = (workstream: Workstream) => {
   const template = resolveTemplate(workstream.flavor);
-  const agents = workstream.agents.map((agent) => ({ ...agent, ...actualProviderForAgent(workstream.events, agent.id) }));
-  return { ...workstream, provider: actualProviderForWorkstream(workstream.events), agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
+  const provider = displayProviderForWorkstream(workstream.events, workstream.provider);
+  const agents = agentsWithEffectiveProviders(workstream.agents, workstream.provider, workstream.roleProviders).map((agent) => ({
+    ...agent,
+    ...displayProviderForAgent(workstream.events, agent.id, { ...(agent.provider ? { provider: agent.provider } : {}), ...(agent.model ? { model: agent.model } : {}) }),
+  }));
+  return { ...workstream, provider, agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
 };
 const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => {
   const template = resolveTemplate(workstream.flavor);
