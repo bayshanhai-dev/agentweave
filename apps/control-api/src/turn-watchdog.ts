@@ -7,8 +7,8 @@ export type TrackedTurn = {
 
 export type WatchdogAgent = { id: string; status: string };
 
-export function turnKey(input: { workstreamId: string; agentId: string; correlationId?: string; turnId?: string; taskId?: string }): string {
-  return [input.workstreamId, input.agentId, input.correlationId ?? input.turnId ?? input.taskId ?? "unknown"].join(":");
+export function turnKey(input: { workstreamId: string; agentId?: string | undefined; correlationId?: string | undefined; turnId?: string | undefined; taskId?: string | undefined }): string {
+  return [input.workstreamId, input.agentId ?? "unknown", input.correlationId ?? input.turnId ?? input.taskId ?? "unknown"].join(":");
 }
 
 export function staleTurns(turns: Iterable<TrackedTurn>, now: number, timeoutMs: number): TrackedTurn[] {

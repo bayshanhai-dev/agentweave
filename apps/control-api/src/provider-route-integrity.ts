@@ -2,7 +2,7 @@ import type { EffectiveProvider } from "./provider-routing.js";
 
 export function providerRouteMismatch(
   recipient: { role: string } | undefined,
-  configured: Record<string, { tool?: string }> | undefined,
+  configured: Record<string, { tool?: string | undefined }> | undefined,
   route: EffectiveProvider,
 ): string | undefined {
   const expected = recipient ? configured?.[recipient.role]?.tool : undefined;

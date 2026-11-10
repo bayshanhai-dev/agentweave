@@ -183,6 +183,14 @@ describe("trigger decision core", () => {
     expect(decideFire(capped, nextLocalDay, fires, { slotKey: "new-slot", overlap: false })).toEqual({ action: "fire" });
   });
 
+  it("reports a per-trigger daily-cap skip through the visibility hook", async () => {
+    const store = new FakeStore([trigger({ maxRunsPerDay: 1 })]);
+    store.fires = [fire({ firedAt: now.toISOString(), slotKey: "previous-slot" })];
+    const skipped: string[] = [];
+    await scheduler(store, [], { onSkipped: (_trigger, reason) => skipped.push(reason) }).tick();
+    expect(skipped).toEqual(["daily-cap"]);
+  });
+
   it("skips as busy when the target already holds maxOpenTasks open tasks", () => {
     const gated = trigger({ maxOpenTasks: 3 });
     expect(

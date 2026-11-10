@@ -567,7 +567,7 @@ app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => 
   const { id, agentId } = request.params as { id: string; agentId: string };
   if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
   const rows = await messageRepository.listInboxRows(id, agentId);
-  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status), ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), terminalAt: m.terminal_at ? new Date(String(m.terminal_at)).toISOString() : undefined } : {}) }));
+  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status), ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), ...(m.terminal_at ? { terminalAt: new Date(String(m.terminal_at)).toISOString() } : {}) } : {}) }));
 });
 app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
   const { id, taskId } = request.params as { id: string; taskId: string }; const workstream = workstreams.get(id);
@@ -808,7 +808,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   if (requestedId) {
     const row = await messageRepository.findRow(workstream.id, requestedId);
     if (row) {
-      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"], ...(row.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(row.terminal_reason), terminalAt: row.terminal_at ? new Date(String(row.terminal_at)).toISOString() : undefined } : {}) };
+      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"], ...(row.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(row.terminal_reason), ...(row.terminal_at ? { terminalAt: new Date(String(row.terminal_at)).toISOString() } : {}) } : {}) };
       workstream.messages.push(restored);
       return restored;
     }
@@ -1074,7 +1074,7 @@ function recordAgentStatusEvent(workstream: Workstream, event: AgentStatusEvent)
   });
 }
 
-function trackTurnSignal(workstreamId: string, payload: { agentId?: string; taskId?: string; turnId?: string; correlationId?: string }): void {
+function trackTurnSignal(workstreamId: string, payload: { agentId?: string | undefined; taskId?: string | undefined; turnId?: string | undefined; correlationId?: string | undefined }): void {
   if (!payload.agentId) return;
   const key = turnKey({ workstreamId, ...payload });
   const existing = activeTurns.get(key);
@@ -1086,7 +1086,7 @@ function trackTurnSignal(workstreamId: string, payload: { agentId?: string; task
   });
 }
 
-function clearTurnSignals(workstreamId: string, payload: { agentId?: string; taskId?: string; turnId?: string; correlationId?: string }): void {
+function clearTurnSignals(workstreamId: string, payload: { agentId?: string | undefined; taskId?: string | undefined; turnId?: string | undefined; correlationId?: string | undefined }): void {
   if (payload.agentId) activeTurns.delete(turnKey({ workstreamId, ...payload }));
   if (payload.taskId) for (const [key, turn] of activeTurns) if (key.startsWith(`${workstreamId}:`) && turn.taskId === payload.taskId) activeTurns.delete(key);
 }
@@ -1120,7 +1120,7 @@ async function reconcileTurnWatchdogs(now = Date.now()): Promise<void> {
     for (const turn of stale) await failStaleTurn(workstream, turn, `Turn stalled without heartbeat or delta for ${Math.round(turnStallTimeoutMs / 60_000)} minutes`);
     const liveAgentIds = new Set([...activeTurns.values()].filter((turn) => turn.key.startsWith(`${workstreamId}:`)).map((turn) => turn.agentId));
     for (const agent of orphanedRunningAgents(workstream.agents, liveAgentIds)) {
-      await failStaleTurn(workstream, { key: `${workstreamId}:${agent.id}:orphan`, agentId: agent.id }, "Agent was running without a live turn and was released by reconciliation");
+      await failStaleTurn(workstream, { key: `${workstreamId}:${agent.id}:orphan`, agentId: agent.id, lastSignalAt: 0 }, "Agent was running without a live turn and was released by reconciliation");
     }
   }
 }
@@ -1384,7 +1384,7 @@ async function loadWorkstreams(): Promise<void> {
     });
     if (normalizedStatus !== String(row.status)) await workstreamRepository.updateStatus(String(row.id), normalizedStatus);
     const messages = await messageRepository.listRows(String(row.id));
-    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"], ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), terminalAt: m.terminal_at ? new Date(String(m.terminal_at)).toISOString() : undefined } : {}) }));
+    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"], ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), ...(m.terminal_at ? { terminalAt: new Date(String(m.terminal_at)).toISOString() } : {}) } : {}) }));
   }
   app.log.info({ workstreamCount: workstreams.size }, "workstreams.loaded");
 }
@@ -1405,8 +1405,9 @@ for (const workstream of workstreams.values()) {
     if (!event.agentId || !["run.started", "run.heartbeat", "turn.started", "turn.delta"].includes(event.type)) continue;
     const terminal = workstream.events.some((candidate) => candidate.agentId === event.agentId && ["turn.completed", "turn.failed", "task.completed", "task.failed"].includes(candidate.type) && Date.parse(candidate.occurredAt) >= Date.parse(event.occurredAt));
     if (terminal) continue;
-    const key = turnKey({ workstreamId: workstream.id, agentId: event.agentId, correlationId: event.correlationId, taskId: event.taskId });
-    activeTurns.set(key, { key, agentId: event.agentId, ...(event.taskId ? { taskId: event.taskId } : {}), lastSignalAt: Date.parse(event.occurredAt) });
+    const agentId = event.agentId;
+    const key = turnKey({ workstreamId: workstream.id, agentId, correlationId: event.correlationId, taskId: event.taskId });
+    activeTurns.set(key, { key, agentId, ...(event.taskId ? { taskId: event.taskId } : {}), lastSignalAt: Date.parse(event.occurredAt) });
     break;
   }
 }
