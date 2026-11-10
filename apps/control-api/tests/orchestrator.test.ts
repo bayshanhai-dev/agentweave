@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, orchestrationDecisionLead, reviewedTaskFor, selectPlannedTask, sliceFromDecompositionMarker, taskSpecsForDecision, taskWasDispatchedToAgent, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, getOrCreateOrchestrator, orchestrationDecisionLead, reviewedTaskFor, selectPlannedTask, sliceFromDecompositionMarker, taskSpecsForDecision, taskWasDispatchedToAgent, WorkstreamOrchestrator, type OrchestrationPolicy } from "../src/orchestrator.js";
 
 describe("sliceFromDecompositionMarker", () => {
   it("slices from a marker at the start of the reply", () => {
@@ -24,6 +24,14 @@ describe("sliceFromDecompositionMarker", () => {
 });
 
 describe("WorkstreamOrchestrator", () => {
+  it("rebuilds an empty orchestration map on demand", () => {
+    const map = new Map<string, WorkstreamOrchestrator>();
+    const policy: OrchestrationPolicy = { templateId: "software-development", leadRole: "pm", planningRole: "pe", executionRoles: ["backend"], reviewRole: "qa" };
+    const orchestrator = getOrCreateOrchestrator(map, { id: "ws-1", goal: "ship it" }, policy);
+    expect(map.get("ws-1")).toBe(orchestrator);
+    expect(orchestrator.validateDecision({ action: "wait", reason: "still working" })).toEqual({ action: "wait", reason: "still working" });
+  });
+
   it("routes the software-development policy through its declared responsibilities", () => {
     const flow = new WorkstreamOrchestrator("ws-1", "process the paper");
     const leadAction = flow.start();

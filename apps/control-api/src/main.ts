@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { classifyHumanMessage, shouldCreateHumanMessageTask } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, getOrCreateOrchestrator, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -486,8 +486,8 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   if (!authorization.accepted) return reply.code(authorization.statusCode).send({ error: authorization.error });
   const lead = authorization.lead;
   if (["paused", "completed", "emergency_stopped", "archived"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_runnable", status: workstream.status });
-  const orchestrator = orchestrators.get(id);
-  if (!orchestrator || !body) return reply.code(400).send({ error: "decision_required" });
+  if (!body) return reply.code(400).send({ error: "decision_required" });
+  const orchestrator = getOrCreateOrchestrator(orchestrators, workstream, policy);
   let decision: OrchestrationDecision;
   try { decision = orchestrator.validateDecision(body); } catch (error) { return reply.code(400).send({ error: "invalid_orchestration_decision", detail: String(error).replace(/^Error: /, "") }); }
   if (decision.action === "complete") {
@@ -1643,11 +1643,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   // The API can restart while a durable Worker turn is still in flight. Rebuild
   // the lightweight orchestration state from the persisted Workstream instead
   // of silently dropping that result.
-  let orchestrator = orchestrators.get(envelope.workstreamId);
-  if (!orchestrator) {
-    orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream));
-    orchestrators.set(workstream.id, orchestrator);
-  }
+  const orchestrator = getOrCreateOrchestrator(orchestrators, workstream, orchestrationPolicyFor(workstream));
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
   const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string; correlationId?: string };
   const submittedDutyState = payload.structuredResult && typeof payload.structuredResult === "object"
