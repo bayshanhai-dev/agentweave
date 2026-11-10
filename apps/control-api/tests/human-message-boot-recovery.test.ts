@@ -9,6 +9,7 @@ const humanMessage = (
     deliveryStatus: string;
     taskId: string;
     correlationId: string;
+    terminalStatus: string;
   }> = {},
 ) => ({
   id,
@@ -112,5 +113,17 @@ describe("boot-time Human message recovery", () => {
         "trigger traffic 1, dispatched turn 3, no Agent recipient 1",
       ),
     );
+  });
+
+  it("never re-drives a message with a terminal disposition", async () => {
+    const dispatch = vi.fn(async () => true);
+    const result = await reconcilePendingHumanMessagesOnBoot({
+      id: "ws-1",
+      status: "active",
+      agents: [{ id: "lead-1" }],
+      messages: [humanMessage("dismissed", { terminalStatus: "dismissed" })],
+    }, { hasExecutionClaim: async () => false, dispatch, emit: vi.fn() });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(result.scanned).toBe(0);
   });
 });

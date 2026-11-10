@@ -43,7 +43,7 @@ describe("workstream templates", () => {
 
   it("does not return a template for an unknown id", () => {
     expect(getWorkstreamTemplate("research")).toBeUndefined();
-    expect(workstreamTemplates.map((template) => template.id)).toEqual(["software-development", "research-synthesis", "short-video-creator"]);
+    expect(workstreamTemplates.map((template) => template.id)).toEqual(["software-development", "research-synthesis", "short-video-creator", "debate", "debate-en"]);
   });
 
   it("defines a short-video creator workflow with a publish-ready lane", () => {

@@ -53,6 +53,7 @@ export function resolveTaskDependencies(
   return resolveTaskDependencyPlan(specs, taskIds).dependencies;
 }
 export type OrchestrationPolicy = { templateId: string; leadRole: string; planningRole: string; executionRoles: readonly string[]; reviewRole: string };
+export type OrchestratorState = { id: string; goal: string };
 export type OrchestratorAction = { stage: Exclude<OrchestratorStage, "completed">; recipientRole: string | "human"; messageType: "request" | "decision"; content: string; attempt: number; taskSpecs?: TaskSpec[] };
 export type OrchestrationDecision = {
   action: "create_task" | "message_agent" | "wait" | "ask_human" | "complete";
@@ -62,6 +63,19 @@ export type OrchestrationDecision = {
   tasks?: TaskSpec[];
   reason: string;
 };
+
+/** Rehydrate the lightweight state machine after a control-api restart. */
+export function getOrCreateOrchestrator(
+  orchestrators: Map<string, WorkstreamOrchestrator>,
+  workstream: OrchestratorState,
+  policy: OrchestrationPolicy,
+): WorkstreamOrchestrator {
+  const existing = orchestrators.get(workstream.id);
+  if (existing) return existing;
+  const created = new WorkstreamOrchestrator(workstream.id, workstream.goal, policy);
+  orchestrators.set(workstream.id, created);
+  return created;
+}
 
 type OrchestrationDecisionAgent = { id: string; role: string };
 

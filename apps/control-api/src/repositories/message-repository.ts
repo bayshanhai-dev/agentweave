@@ -60,13 +60,13 @@ export class MessageRepository {
 
   async findRow(workstreamId: string, messageId: string) {
     const rows = await this
-      .sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where id = ${messageId} and workstream_id = ${workstreamId}`;
+      .sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status, terminal_status, terminal_reason, terminal_at from messages where id = ${messageId} and workstream_id = ${workstreamId}`;
     return rows[0];
   }
 
   async listRows(workstreamId: string) {
     return this
-      .sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status from messages where workstream_id = ${workstreamId} order by created_at asc`;
+      .sql`select id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status, terminal_status, terminal_reason, terminal_at from messages where workstream_id = ${workstreamId} order by created_at asc`;
   }
 
   async listRowsAfter(after: string) {
@@ -81,10 +81,15 @@ export class MessageRepository {
 
   async create(message: PersistedMessage): Promise<void> {
     await this.sql.begin(async (transaction) => {
-      await transaction`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
-        values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, ${message.deliveryStatus})`;
+      await transaction`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status, terminal_status, terminal_reason, terminal_at)
+        values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, ${message.deliveryStatus}, ${message.terminalStatus ?? null}, ${message.terminalReason ?? null}, ${message.terminalAt ?? null})`;
       await transaction`insert into message_deliveries ${transaction(message.recipientIds.map((recipientId) => ({ message_id: message.id, recipient_id: recipientId, delivery_status: "pending" })))} on conflict do nothing`;
     });
+  }
+
+  async dismiss(messageId: string, reason: string): Promise<boolean> {
+    const rows = await this.sql`update messages set terminal_status = 'dismissed', terminal_reason = ${reason}, terminal_at = now() where id = ${messageId} and sender_id = 'human' and terminal_status is null returning id`;
+    return rows.length > 0;
   }
 
   async markDelivered(messageId: string): Promise<void> {

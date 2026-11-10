@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyHumanMessage,
+  ownerAgentForHumanRequest,
   shouldCreateHumanMessageTask,
 } from "../src/message-intent.js";
 
@@ -44,5 +45,14 @@ describe("human message intent classification", () => {
     expect(
       shouldCreateHumanMessageTask(classified.messageType, true, "task-1"),
     ).toBe(false);
+  });
+
+  it("assigns a request sent to one non-lead agent to that agent", () => {
+    expect(ownerAgentForHumanRequest(
+      [{ id: "pm-1", role: "pm" }, { id: "backend-1", role: "backend" }],
+      ["backend-1"],
+      "pm",
+      false,
+    )).toBe("backend-1");
   });
 });

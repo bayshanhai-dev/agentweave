@@ -46,6 +46,9 @@ export type PersistedMessage = {
   evidenceIds: string[];
   createdAt: string;
   deliveryStatus: string;
+  terminalStatus?: "dismissed";
+  terminalReason?: string;
+  terminalAt?: string;
 };
 
 export type PersistedWorkflowEvent = {

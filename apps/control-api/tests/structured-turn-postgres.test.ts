@@ -76,7 +76,11 @@ describe.skipIf(!databaseUrl)("structured turn PostgreSQL transactions", () => {
   });
   it("rolls back all effects and the receipt when a later insert fails", async () => {
     const proposed = plan("rollback");
-    proposed.messages.push(proposed.messages[0]); // force a constraint error after tasks and insights were inserted
+    // A null message body violates the NOT NULL insert after tasks and
+    // insights were already written in the same transaction. (The old
+    // duplicate-message trick no longer fails: message inserts are
+    // idempotent by design, so a replayed message is a no-op.)
+    proposed.messages.push({ ...proposed.messages[0], content: null as unknown as string });
     await expect(repository.apply(proposed)).rejects.toThrow();
     expect(
       await sql`select id from tasks where id = ${proposed.tasks[0].id}`,

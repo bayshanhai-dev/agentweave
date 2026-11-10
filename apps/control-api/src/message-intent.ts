@@ -24,3 +24,14 @@ export function shouldCreateHumanMessageTask(
 ): boolean {
   return !taskId && (messageType === "request" || humanToLead);
 }
+
+export function ownerAgentForHumanRequest(
+  agents: readonly { id: string; role: string }[],
+  recipientIds: readonly string[],
+  leadRole: string,
+  humanToLead: boolean,
+): string | undefined {
+  if (humanToLead) return agents.find((agent) => agent.role === leadRole)?.id;
+  const targets = agents.filter((agent) => recipientIds.includes(agent.id));
+  return targets.length === 1 ? targets[0]!.id : undefined;
+}

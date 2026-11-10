@@ -1,10 +1,10 @@
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
-import { classifyHumanMessage, shouldCreateHumanMessageTask } from "./message-intent.js";
+import { classifyHumanMessage, ownerAgentForHumanRequest, shouldCreateHumanMessageTask } from "./message-intent.js";
 import postgres from "postgres";
 import { DeliverPolicy } from "nats";
-import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
+import { authorizeOrchestrationDecision, completedTaskIdsForPhaseResult, deriveHandoffTitle, extractTaskSpecs, getOrCreateOrchestrator, selectPlannedTask, taskSpecsForDecision, WorkstreamOrchestrator, type OrchestrationDecision, type OrchestrationPolicy, type TaskSpec } from "./orchestrator.js";
 import { JetStreamEventBus, subjects } from "@agentweave/protocol/jetstream";
 import { runMigrations } from "./migrations.js";
 import { WorkstreamCommandRepository } from "./repositories/workstream-command-repository.js";
@@ -55,22 +55,30 @@ import { applyDutyStateWriteback, dutyPromptForFire } from "./duty-memory.js";
 import { resolveDutyAssignee } from "./duty-assignment.js";
 import { evaluateDutyCompletion } from "./duty-completion.js";
 import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from "./observability-metrics.js";
+import { AsyncResultCache } from "./metrics-cache.js";
 import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recovery.js";
 import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
+import { shouldPublishMessage } from "./message-idempotency.js";
+import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
+import { displayProviderForAgent, displayProviderForWorkstream } from "./provider-runtime.js";
+import { isEmptyProviderTurn, providerRouteMismatch } from "./provider-route-integrity.js";
+import { workstreamSummary } from "./workstream-summary.js";
+import { validateDismissal } from "./terminal-disposition.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
 type WorkflowEvent = { id: string; sequence?: number; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; payload?: unknown; occurredAt: string };
-type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "gated" | "claimed" | "acknowledged" | "failed" };
+type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "gated" | "claimed" | "acknowledged" | "failed"; terminalStatus?: "dismissed"; terminalReason?: string; terminalAt?: string };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: AgentStatus; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
-type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
-type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes"> & { builtin: boolean };
+type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[]; createdAt?: string; updatedAt?: string };
+type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "goalPrompt" | "roles" | "taskLanes"> & { builtin: boolean };
 const templateSummary = (template: WorkstreamTemplate, builtin: boolean): WorkstreamTemplateSummary => ({
   id: template.id,
   name: template.name,
   description: template.description,
+  ...(template.goalPrompt ? { goalPrompt: template.goalPrompt } : {}),
   roles: template.roles,
   taskLanes: template.taskLanes,
   builtin,
@@ -94,7 +102,9 @@ const gatedDecisionTransitions = new Map<string, Promise<boolean>>();
 const collaborationRoundTransitions = new Map<string, Promise<string[]>>();
 const decompositionFailureTransitions = new Map<string, Promise<boolean>>();
 const stalledEpisodes = new Map<string, string>();
+const activeTurns = new Map<string, TrackedTurn>();
 const maxDecompositionReprompts = 2;
+const turnStallTimeoutMs = Number(process.env.AGENTWEAVE_TURN_STALL_TIMEOUT_MS ?? 120_000);
 const dispatchWatchdog = new TriggerDispatchWatchdog();
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://agentweave:agentweave@localhost:5432/agentweave", { max: 5, connect_timeout: 10 });
 const commandRepository = new WorkstreamCommandRepository(sql);
@@ -133,6 +143,7 @@ const circuitBreaker = new CircuitBreakerTracker(circuitBreakerConfig);
 const eventBus = new JetStreamEventBus({ url: process.env.NATS_URL ?? "nats://localhost:4222", durableName: "control-api-events-v4", deliverPolicy: DeliverPolicy.New });
 const sockets = new Set<{ send: (data: string) => void }>();
 const metrics = { requests: 0, workstreamsCreated: 0, runsStarted: 0, eventsEmitted: 0, workflowFailures: 0, providerInputTokens: 0, providerOutputTokens: 0, providerTotalTokens: 0, providerCostUsd: 0 };
+const observabilityMetricsCache = new AsyncResultCache<MetricSample[]>(15_000);
 type CommandBody = { commandId?: string; reason?: string; decision?: "resume" | "complete" | "reject" };
 const templateRepository = new TemplateRepository(sql);
 // Custom templates are persisted in PostgreSQL and mirrored in memory so the
@@ -145,8 +156,12 @@ const resolveTemplate = (templateId: string): WorkstreamTemplate | undefined =>
 const allTemplates = (): WorkstreamTemplate[] => [...workstreamTemplates, ...customTemplates];
 const workstreamResponse = (workstream: Workstream) => {
   const template = resolveTemplate(workstream.flavor);
-  const agents = agentsWithEffectiveProviders(workstream.agents, workstream.provider, workstream.roleProviders);
-  return { ...workstream, agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
+  const provider = displayProviderForWorkstream(workstream.events, workstream.provider);
+  const agents = agentsWithEffectiveProviders(workstream.agents, workstream.provider, workstream.roleProviders).map((agent) => ({
+    ...agent,
+    ...displayProviderForAgent(workstream.events, agent.id, { ...(agent.provider ? { provider: agent.provider } : {}), ...(agent.model ? { model: agent.model } : {}) }),
+  }));
+  return { ...workstream, provider, agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
 };
 const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => {
   const template = resolveTemplate(workstream.flavor);
@@ -221,7 +236,7 @@ const triggerScheduler = new TriggerScheduler(
     globalDailyMax: Number(process.env.AGENTWEAVE_TRIGGER_GLOBAL_DAILY_MAX ?? 200),
     stormMax10Min: Number(process.env.AGENTWEAVE_TRIGGER_STORM_MAX_10MIN ?? 20),
     onSkipped: (trigger, reason) => {
-      if (reason === "global-daily-cap" || reason === "storm-breaker") return;
+      app.log.warn({ triggerId: trigger.id, triggerName: trigger.name, reason, targetMode: trigger.targetMode }, "trigger.skipped");
       if (trigger.targetMode !== "workstream") return;
       const workstream = workstreams.get(trigger.targetWorkstreamId ?? "");
       if (workstream) emit(workstream, "trigger.skipped", `Trigger skipped (${reason}): ${trigger.name}`);
@@ -244,7 +259,7 @@ app.get("/metrics", async (_request, reply) => {
       name: `agentweave_${name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}${name === "providerCostUsd" ? "" : "_total"}`,
       value,
     }));
-    const samples = [...await collectObservabilityMetrics(sql), ...runtimeSamples];
+    const samples = [...await observabilityMetricsCache.get(() => collectObservabilityMetrics(sql)), ...runtimeSamples];
     reply.type("text/plain; version=0.0.4");
     return renderPrometheus(samples);
   } catch (error) {
@@ -343,7 +358,13 @@ app.post("/api/triggers/:id/fire", async (request, reply) => {
   });
   return reply.code(201).send(fire);
 });
-app.get("/api/workstreams", async () => [...workstreams.values()].map(workstreamResponse));
+app.get("/api/workstreams", async (request, reply) => {
+  const query = request.query as { limit?: string; offset?: string } | undefined;
+  const limit = query?.limit === undefined ? 100 : Number(query.limit);
+  const offset = query?.offset === undefined ? 0 : Number(query.offset);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200 || !Number.isInteger(offset) || offset < 0) return reply.code(400).send({ error: "invalid_pagination" });
+  return [...workstreams.values()].slice(offset, offset + limit).map((workstream) => workstreamSummary(workstreamResponse(workstream)));
+});
 app.get("/api/workstreams/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
@@ -482,8 +503,8 @@ app.post("/api/workstreams/:id/orchestration/decisions", async (request, reply) 
   if (!authorization.accepted) return reply.code(authorization.statusCode).send({ error: authorization.error });
   const lead = authorization.lead;
   if (["paused", "completed", "emergency_stopped", "archived"].includes(workstream.status)) return reply.code(409).send({ error: "workstream_not_runnable", status: workstream.status });
-  const orchestrator = orchestrators.get(id);
-  if (!orchestrator || !body) return reply.code(400).send({ error: "decision_required" });
+  if (!body) return reply.code(400).send({ error: "decision_required" });
+  const orchestrator = getOrCreateOrchestrator(orchestrators, workstream, policy);
   let decision: OrchestrationDecision;
   try { decision = orchestrator.validateDecision(body); } catch (error) { return reply.code(400).send({ error: "invalid_orchestration_decision", detail: String(error).replace(/^Error: /, "") }); }
   if (decision.action === "complete") {
@@ -550,7 +571,7 @@ app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => 
   const { id, agentId } = request.params as { id: string; agentId: string };
   if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
   const rows = await messageRepository.listInboxRows(id, agentId);
-  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status) }));
+  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status), ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), ...(m.terminal_at ? { terminalAt: new Date(String(m.terminal_at)).toISOString() } : {}) } : {}) }));
 });
 app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
   const { id, taskId } = request.params as { id: string; taskId: string }; const workstream = workstreams.get(id);
@@ -588,8 +609,9 @@ app.post("/api/workstreams/:id/messages", async (request, reply) => {
   let taskId = body.taskId;
   if (shouldCreateHumanMessageTask(messageType, humanToLead, taskId)) {
     const now = new Date().toISOString();
-    const pmOwner = humanToLead ? workstream.agents.find((agent) => agent.role === orchestrationPolicyFor(workstream).leadRole) : undefined;
-    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: pmOwner ? "assigned" : "ready", ...(pmOwner ? { ownerAgentId: pmOwner.id } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], qualityAttempts: 0, relatedTaskIds: [], createdAt: now, updatedAt: now };
+    const leadRole = orchestrationPolicyFor(workstream).leadRole;
+    const ownerAgentId = ownerAgentForHumanRequest(workstream.agents, resolvedRecipients, leadRole, humanToLead);
+    const task: Task = { id: `${workstream.id}:human-${randomUUID()}`, workstreamId: workstream.id, title: content, status: ownerAgentId ? "assigned" : "ready", ...(ownerAgentId ? { ownerAgentId } : {}), acceptanceCriteria: ["Human request is addressed and evidence is attached"], dependencies: [], evidence: [], qualityAttempts: 0, relatedTaskIds: [], createdAt: now, updatedAt: now };
     workstream.tasks.push(task);
     await persistTask(task);
     emit(workstream, "task.created", `Human request queued: ${task.title}`);
@@ -607,6 +629,20 @@ app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply
   const created = await createMessage(workstream, body.from.trim(), [original.senderId], body.content.trim(), "reply", { correlationId: original.correlationId, causationId: original.id });
   emitMessage(workstream, "message.reply.created", created);
   return reply.code(201).send(created);
+});
+app.post("/api/workstreams/:id/messages/:messageId/dismiss", async (request, reply) => {
+  const { id, messageId } = request.params as { id: string; messageId: string };
+  const workstream = workstreams.get(id);
+  const message = workstream?.messages.find((candidate) => candidate.id === messageId);
+  if (!workstream || !message) return reply.code(404).send({ error: "message_not_found" });
+  const validation = validateDismissal(message, (request.body as { reason?: unknown } | undefined)?.reason);
+  if (!validation.ok) return reply.code(400).send({ error: validation.error });
+  if (!await messageRepository.dismiss(message.id, validation.reason)) return reply.code(409).send({ error: "message_already_terminal" });
+  message.terminalStatus = "dismissed";
+  message.terminalReason = validation.reason;
+  message.terminalAt = new Date().toISOString();
+  emitMessage(workstream, "message.dismissed", message);
+  return message;
 });
 app.post("/api/workstreams/:id/messages/:messageId/ack", async (request, reply) => updateDelivery(request, reply, "acknowledged"));
 app.post("/api/workstreams/:id/messages/:messageId/fail", async (request, reply) => updateDelivery(request, reply, "failed"));
@@ -776,7 +812,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   if (requestedId) {
     const row = await messageRepository.findRow(workstream.id, requestedId);
     if (row) {
-      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
+      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"], ...(row.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(row.terminal_reason), ...(row.terminal_at ? { terminalAt: new Date(String(row.terminal_at)).toISOString() } : {}) } : {}) };
       workstream.messages.push(restored);
       return restored;
     }
@@ -812,12 +848,21 @@ async function dispatchMessage(
       app.log.error({ error, workstreamId: workstream.id, recipientId, messageId: message.id }, "message.recipient_unresolved");
       continue;
     }
+    const recipient = recipientId === "human" ? undefined : agentForRecipient(workstream.agents, recipientId);
+    const route = routeForRecipient(workstream, recipientId);
+    const routeError = providerRouteMismatch(recipient, workstream.roleProviders, route);
+    if (routeError) {
+      await messageRepository.updateDelivery(message.id, recipientId, "failed");
+      failedRecipients.push({ recipientId, error: new Error(routeError) });
+      emit(workstream, "message.provider_route_failed", routeError, recipient?.role, { to: recipientId });
+      continue;
+    }
     try {
       await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipientId), {
         id: attemptId ? `${message.id}:${recipientId}:${attemptId}` : `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
         occurredAt: message.createdAt, correlationId: message.correlationId,
         ...(message.causationId ? { causationId: message.causationId } : {}),
-        payload: stampProviderRoute(message, routeForRecipient(workstream, recipientId)),
+        payload: stampProviderRoute(message, route),
       }));
       armDispatchWatchdogAfterPublish(workstream, message, recipientId, lead);
     } catch (error) {
@@ -955,7 +1000,7 @@ async function createPersistedWorkstream(input: {
 }): Promise<Workstream> {
   const id = randomUUID();
   const workstream: Workstream = {
-    id, goal: input.goal.trim(), flavor: input.flavor, status: "draft",
+    id, goal: input.goal.trim(), flavor: input.flavor, status: "draft", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     provider: input.provider, roleProviders: input.roleProviders, workspaceRoot: input.workspaceRoot,
     tasks: [], events: [], messages: [],
     agents: input.template.roles.map((role, index) => ({
@@ -1031,6 +1076,57 @@ function recordAgentStatusEvent(workstream: Workstream, event: AgentStatusEvent)
     ...(payload.taskId ? { taskId: payload.taskId } : {}),
     payload,
   });
+}
+
+function trackTurnSignal(workstreamId: string, payload: { agentId?: string | undefined; taskId?: string | undefined; turnId?: string | undefined; correlationId?: string | undefined }): void {
+  if (!payload.agentId) return;
+  const key = turnKey({ workstreamId, ...payload });
+  const existing = activeTurns.get(key);
+  activeTurns.set(key, {
+    key,
+    agentId: payload.agentId,
+    ...(payload.taskId ? { taskId: payload.taskId } : existing?.taskId ? { taskId: existing.taskId } : {}),
+    lastSignalAt: Date.now(),
+  });
+}
+
+function clearTurnSignals(workstreamId: string, payload: { agentId?: string | undefined; taskId?: string | undefined; turnId?: string | undefined; correlationId?: string | undefined }): void {
+  if (payload.agentId) activeTurns.delete(turnKey({ workstreamId, ...payload }));
+  if (payload.taskId) for (const [key, turn] of activeTurns) if (key.startsWith(`${workstreamId}:`) && turn.taskId === payload.taskId) activeTurns.delete(key);
+}
+
+async function failStaleTurn(workstream: Workstream, turn: TrackedTurn, reason: string): Promise<void> {
+  activeTurns.delete(turn.key);
+  const agent = workstream.agents.find((candidate) => candidate.id === turn.agentId);
+  const task = turn.taskId ? workstream.tasks.find((candidate) => candidate.id === turn.taskId) : undefined;
+  if (task && !["done", "failed", "cancelled"].includes(task.status)) {
+    task.status = "failed";
+    task.updatedAt = new Date().toISOString();
+    await persistTask(task);
+  }
+  if (agent) await setAgentStatus(agent, "idle", "turn_stalled", { taskId: turn.taskId });
+  recordWorkflowEvent(workstream, {
+    id: randomUUID(),
+    type: "turn.failed",
+    message: reason,
+    occurredAt: new Date().toISOString(),
+    ...(agent?.id ? { agentId: agent.id } : {}),
+    ...(agent?.role ? { role: agent.role } : {}),
+    ...(turn.taskId ? { taskId: turn.taskId } : {}),
+    payload: { reason, watchdog: true },
+  });
+  if (task) await reconcileTaskDispatches(workstream);
+}
+
+async function reconcileTurnWatchdogs(now = Date.now()): Promise<void> {
+  for (const [workstreamId, workstream] of workstreams) {
+    const stale = staleTurns([...activeTurns.values()].filter((turn) => turn.key.startsWith(`${workstreamId}:`)), now, turnStallTimeoutMs);
+    for (const turn of stale) await failStaleTurn(workstream, turn, `Turn stalled without heartbeat or delta for ${Math.round(turnStallTimeoutMs / 60_000)} minutes`);
+    const liveAgentIds = new Set([...activeTurns.values()].filter((turn) => turn.key.startsWith(`${workstreamId}:`)).map((turn) => turn.agentId));
+    for (const agent of orphanedRunningAgents(workstream.agents, liveAgentIds)) {
+      await failStaleTurn(workstream, { key: `${workstreamId}:${agent.id}:orphan`, agentId: agent.id, lastSignalAt: 0 }, "Agent was running without a live turn and was released by reconciliation");
+    }
+  }
 }
 
 async function setAgentStatus(
@@ -1278,7 +1374,7 @@ async function loadWorkstreams(): Promise<void> {
     const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), ...(task.created_by_agent_id ? { createdByAgentId: String(task.created_by_agent_id) } : {}), ...(task.parent_task_id ? { parentTaskId: String(task.parent_task_id) } : {}), relatedTaskIds: jsonArray(task.related_task_ids), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), qualityAttempts: Number(task.quality_attempts ?? 0), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
     const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
-      id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus,
+      id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus, createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
       provider: {
         ...(row.tool ? { tool: String(row.tool) as ProviderSelection["tool"] } : {}),
         ...(row.model ? { model: String(row.model) } : {}),
@@ -1292,7 +1388,7 @@ async function loadWorkstreams(): Promise<void> {
     });
     if (normalizedStatus !== String(row.status)) await workstreamRepository.updateStatus(String(row.id), normalizedStatus);
     const messages = await messageRepository.listRows(String(row.id));
-    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"] }));
+    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"], ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), ...(m.terminal_at ? { terminalAt: new Date(String(m.terminal_at)).toISOString() } : {}) } : {}) }));
   }
   app.log.info({ workstreamCount: workstreams.size }, "workstreams.loaded");
 }
@@ -1309,6 +1405,17 @@ try {
 await eventBus.connect();
 await loadWorkstreams();
 for (const workstream of workstreams.values()) {
+  for (const event of [...workstream.events].reverse()) {
+    if (!event.agentId || !["run.started", "run.heartbeat", "turn.started", "turn.delta"].includes(event.type)) continue;
+    const terminal = workstream.events.some((candidate) => candidate.agentId === event.agentId && ["turn.completed", "turn.failed", "task.completed", "task.failed"].includes(candidate.type) && Date.parse(candidate.occurredAt) >= Date.parse(event.occurredAt));
+    if (terminal) continue;
+    const agentId = event.agentId;
+    const key = turnKey({ workstreamId: workstream.id, agentId, correlationId: event.correlationId, taskId: event.taskId });
+    activeTurns.set(key, { key, agentId, ...(event.taskId ? { taskId: event.taskId } : {}), lastSignalAt: Date.parse(event.occurredAt) });
+    break;
+  }
+}
+for (const workstream of workstreams.values()) {
   if (workstream.status !== "active") continue;
   await reconcilePendingHumanMessagesOnBoot(workstream, {
     hasExecutionClaim: (messageId, recipientId) =>
@@ -1323,6 +1430,7 @@ for (const workstream of workstreams.values()) {
   });
   await reconcileAfterActivation(workstream);
 }
+await reconcileTurnWatchdogs();
 await eventBus.consumer(subjects.events, async (message) => {
   const envelope = eventBus.decode(message) as { id?: string; type: string; workstreamId: string; payload: unknown; correlationId?: string };
   if (envelope.id) {
@@ -1340,6 +1448,7 @@ await eventBus.consumer(subjects.events, async (message) => {
   return "ack";
 });
 setInterval(() => { void runtimeRepository.markStaleWorkersOffline(); }, 15_000);
+setInterval(() => { void reconcileTurnWatchdogs().catch((error) => app.log.error({ error }, "turn watchdog reconciliation failed")); }, 15_000).unref();
 let triggerTickRunning = false;
 const runTriggerTick = async (): Promise<void> => {
   if (triggerTickRunning) return;
@@ -1537,6 +1646,8 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     if (!message) return;
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     const isActiveTurn = ["turn.started", "turn.delta", "tool.started", "tool.completed"].includes(envelope.type);
+    if (isActiveTurn) trackTurnSignal(workstream.id, { agentId: payload.agentId, taskId: payload.taskId, turnId: payload.turnId, correlationId: envelope.correlationId ?? payload.correlationId });
+    if (["turn.completed", "turn.failed"].includes(envelope.type)) clearTurnSignals(workstream.id, { agentId: payload.agentId, taskId: payload.taskId, turnId: payload.turnId, correlationId: envelope.correlationId ?? payload.correlationId });
     if (agent && isActiveTurn) await setAgentStatus(agent, "running", "turn_started", { taskId: payload.taskId, turnId: payload.turnId });
     if (agent && envelope.type === "turn.failed") await setAgentStatus(agent, "idle", "turn_failed", { taskId: payload.taskId, turnId: payload.turnId });
     if (task && isActiveTurn && !["done", "failed", "cancelled"].includes(task.status)) {
@@ -1553,6 +1664,7 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const role = payload.agentId ? workstream.agents.find((agent) => agent.id === payload.agentId)?.role : undefined;
     const agent = payload.agentId ? workstream.agents.find((candidate) => candidate.id === payload.agentId) : undefined;
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
+    trackTurnSignal(workstream.id, { agentId: payload.agentId, taskId: payload.taskId, correlationId: envelope.correlationId });
     if (agent) await setAgentStatus(agent, "running", envelope.type === "run.heartbeat" ? "run_heartbeat" : "dispatch", { taskId: payload.taskId });
     if (task && !["done", "failed", "cancelled"].includes(task.status)) {
       task.status = "running";
@@ -1565,15 +1677,15 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
   if (envelope.type !== "agent.turn.completed" && envelope.type !== "task.completed" && envelope.type !== "task.failed" && envelope.type !== "task.gated") return;
   app.log.info({ event: "worker.result.received", type: envelope.type, workstreamId: envelope.workstreamId, correlationId: envelope.correlationId }, "worker result received");
   const workstream = workstreams.get(envelope.workstreamId); if (!workstream) return;
+  if (["task.completed", "task.failed", "task.gated"].includes(envelope.type)) {
+    const terminal = envelope.payload as { agentId?: string; taskId?: string };
+    clearTurnSignals(workstream.id, { agentId: terminal.agentId, taskId: terminal.taskId, correlationId: envelope.correlationId });
+  }
   dispatchWatchdog.clearForCorrelation(workstream.id, envelope.correlationId);
   // The API can restart while a durable Worker turn is still in flight. Rebuild
   // the lightweight orchestration state from the persisted Workstream instead
   // of silently dropping that result.
-  let orchestrator = orchestrators.get(envelope.workstreamId);
-  if (!orchestrator) {
-    orchestrator = new WorkstreamOrchestrator(workstream.id, workstream.goal, orchestrationPolicyFor(workstream));
-    orchestrators.set(workstream.id, orchestrator);
-  }
+  const orchestrator = getOrCreateOrchestrator(orchestrators, workstream, orchestrationPolicyFor(workstream));
   const raw = envelope.payload as { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage; result?: { agentId?: string; taskId?: string; text?: string; error?: string; errorCategory?: string; errorCode?: string; errorRetry?: string; evidenceIds?: string[]; provider?: string; model?: string; usage?: ProviderUsage } };
   const payload = (raw.result ?? raw) as (typeof raw) & { structuredResult?: unknown; turnId?: string; correlationId?: string };
   const submittedDutyState = payload.structuredResult && typeof payload.structuredResult === "object"
@@ -1876,7 +1988,10 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
           }
         }
         for (const message of plan.messages) {
-          if (!workstream.messages.some((item) => item.id === message.id)) workstream.messages.push(message as Message);
+          const knownMessageIds = new Set(workstream.messages.map((item) => item.id));
+          const isNewMessage = shouldPublishMessage(message.id, knownMessageIds);
+          if (isNewMessage) workstream.messages.push(message as Message);
+          if (!isNewMessage) continue;
           if (!shouldDispatchMessage(message.senderId, message.content)) {
             emit(workstream, "orchestration.agent_directive_suppressed", `Agent-authored implementation directive suppressed for message ${message.id}`, sender.role);
             const notification = JSON.stringify({ workstreamId: workstream.id, type: "message.created", message, occurredAt: message.createdAt });
@@ -1885,10 +2000,14 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
           }
           // A retry republishes stable message IDs; receiver execution keys suppress duplicates.
           for (const recipient of message.recipientIds) {
+            const recipientAgent = recipient === "human" ? undefined : agentForRecipient(workstream.agents, recipient);
+            const route = routeForRecipient(workstream, recipient);
+            const routeError = providerRouteMismatch(recipientAgent, workstream.roleProviders, route);
+            if (routeError) throw new InvalidStructuredTurn(routeError);
             try {
               await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipient), {
                 id: `${message.id}:${recipient}`, type: "message.created", workstreamId: workstream.id,
-                correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: message,
+                correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: stampProviderRoute(message, route),
               }));
               const policy = orchestrationPolicyFor(workstream);
               const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
@@ -1951,7 +2070,9 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "failed", "turn_empty_failed", { taskId: payload.taskId, turnId: payload.turnId });
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role, ...(task ? { taskId: task.id } : {}) });
+    const emptyReason = isEmptyProviderTurn(resultText, payload.usage) ? "provider returned empty output and zero usage" : "provider returned no text summary";
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${emptyReason}`, occurredAt: new Date().toISOString(), role: sender.role, ...(task ? { taskId: task.id } : {}) });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "turn.failed", message: `${task?.title ?? sender.role} → ${emptyReason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(task ? { taskId: task.id } : {}), payload: { reason: "empty_provider_output" } });
     if (task) await reconcileTaskDispatches(workstream);
     await reconcileCompletion(workstream);
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
