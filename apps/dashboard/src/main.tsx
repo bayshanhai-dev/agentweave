@@ -262,7 +262,7 @@ function App() {
   useEffect(() => {
     if (!selected) return;
     const selectedId = selected.id;
-    let lastSequence = Math.max(0, ...selected.events.map((event) => event.sequence ?? 0));
+    let lastSequence = Math.max(0, ...(selected.events ?? []).map((event) => event.sequence ?? 0));
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
     let reconnectDelay = 500;
@@ -331,12 +331,12 @@ function App() {
   }, [selected?.id]);
   const messages =
     selected?.messages ??
-    selected?.events.filter((event) => event.type?.startsWith("message.")) ??
+    selected?.events?.filter((event) => event.type?.startsWith("message.")) ??
     [];
   const agentCards = useMemo(
     () =>
       selected
-        ? computeAgentCards(selected.agents, selected.events, selected.runtime, selected.tasks)
+        ? computeAgentCards(selected.agents, selected.events ?? [], selected.runtime, selected.tasks ?? [])
         : [],
     [selected],
   );
@@ -582,7 +582,7 @@ function App() {
             <Stack gap="lg" className="cc-workspace">
               <GoalBar
                 goal={selected.goal}
-                tasks={selected.tasks}
+                tasks={selected.tasks ?? []}
                 workstreams={items.map((item) => ({
                   id: item.id,
                   goal: item.goal,
@@ -619,11 +619,11 @@ function App() {
               />
               {selected.status === "failed" && (
                 <FailureBanner
-                  reason={[...selected.events]
+                  reason={[...(selected.events ?? [])]
                     .reverse()
                     .find((event) => (event.type ?? "").includes("fail"))
                     ?.message?.slice(0, 400)}
-                  failedTasks={selected.tasks
+                  failedTasks={(selected.tasks ?? [])
                     .filter((task) => task.status === "failed")
                     .map((task) => displayTaskTitle(task.title))}
                 />
@@ -632,8 +632,8 @@ function App() {
                 <ApprovalBanner
                   api={api}
                   workstreamId={selected.id}
-                  tasks={selected.tasks}
-                  events={selected.events}
+                  tasks={selected.tasks ?? []}
+                  events={selected.events ?? []}
                   insights={selected.insights}
                   onStatus={(status) =>
                     setSelected((current) =>
@@ -662,15 +662,15 @@ function App() {
                 />
               </div>
               <TaskBoardSidecar
-                tasks={selected.tasks}
+                tasks={selected.tasks ?? []}
                 lanes={selected.template?.taskLanes}
                 agents={selected.agents}
               />
               <TriggersPanel api={api} />
-              <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{selected.events.length} events</Badge></Group>} size="xl" centered>
+              <Modal opened={auditOpen} onClose={closeAudit} title={<Group gap="sm"><Text fw={800} size="lg">Audit log</Text><Badge variant="light">{(selected.events ?? []).length} events</Badge></Group>} size="xl" centered>
                 <Text size="sm" c="dimmed" mb="md">System lifecycle, task, tool, retry, and Human-control events.</Text>
                 <ScrollArea h="65vh" type="auto">
-                  <Box pr="md"><MessageList events={selected.events} paginated pageSize={10} /></Box>
+                  <Box pr="md"><MessageList events={selected.events ?? []} paginated pageSize={10} /></Box>
                 </ScrollArea>
               </Modal>
               <Modal opened={traceOpen} onClose={closeTrace} title={<Group gap="sm"><Text fw={800} size="lg">Trace Debugger</Text><Badge variant="light">correlationId chains</Badge></Group>} size="xl" centered>
