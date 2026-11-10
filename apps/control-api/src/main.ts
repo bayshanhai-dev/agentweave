@@ -41,7 +41,7 @@ import { reconcileGatedLeadDecisionAfterActivation, recoverGatedLeadDecisionPayl
 import { parkFailedCollaborationTurn, reconcileCollaborationRoundAfterActivation } from "./collaboration-round-reconciliation.js";
 import { parkTerminalDecompositionFailure, reconcileDecompositionFailureAfterActivation } from "./decomposition-failure-reconciliation.js";
 import { arbitrateLateDecompositionResult, decompositionFailureReasonForCorrelation, decompositionRejectionFeedback } from "./decomposition-result-reliability.js";
-import { agentForRecipient, agentsWithEffectiveProviders, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
+import { agentForRecipient, normalizeRoleProviders, parseProviderConfig, routeForRecipient, stampProviderRoute } from "./provider-routing.js";
 import type { ProviderSelection, RoleProviders } from "@agentweave/protocol";
 import { createTasksWithOwnerFallback, type OwnedTask } from "./task-ownership.js";
 import { detectWorkstreamStall } from "./stall-detection.js";
@@ -60,6 +60,7 @@ import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
 import { shouldPublishMessage } from "./message-idempotency.js";
 import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
+import { actualProviderForAgent, actualProviderForWorkstream } from "./provider-runtime.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -149,8 +150,8 @@ const resolveTemplate = (templateId: string): WorkstreamTemplate | undefined =>
 const allTemplates = (): WorkstreamTemplate[] => [...workstreamTemplates, ...customTemplates];
 const workstreamResponse = (workstream: Workstream) => {
   const template = resolveTemplate(workstream.flavor);
-  const agents = agentsWithEffectiveProviders(workstream.agents, workstream.provider, workstream.roleProviders);
-  return { ...workstream, agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
+  const agents = workstream.agents.map((agent) => ({ ...agent, ...actualProviderForAgent(workstream.events, agent.id) }));
+  return { ...workstream, provider: actualProviderForWorkstream(workstream.events), agents, ...(template ? { template: templateSummary(template, isBuiltinTemplate(template.id)) } : {}) };
 };
 const orchestrationPolicyFor = (workstream: Workstream): OrchestrationPolicy => {
   const template = resolveTemplate(workstream.flavor);
