@@ -230,7 +230,7 @@ const triggerScheduler = new TriggerScheduler(
     globalDailyMax: Number(process.env.AGENTWEAVE_TRIGGER_GLOBAL_DAILY_MAX ?? 200),
     stormMax10Min: Number(process.env.AGENTWEAVE_TRIGGER_STORM_MAX_10MIN ?? 20),
     onSkipped: (trigger, reason) => {
-      if (reason === "global-daily-cap" || reason === "storm-breaker") return;
+      app.log.warn({ triggerId: trigger.id, triggerName: trigger.name, reason, targetMode: trigger.targetMode }, "trigger.skipped");
       if (trigger.targetMode !== "workstream") return;
       const workstream = workstreams.get(trigger.targetWorkstreamId ?? "");
       if (workstream) emit(workstream, "trigger.skipped", `Trigger skipped (${reason}): ${trigger.name}`);

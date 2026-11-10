@@ -174,6 +174,15 @@ describe("trigger decision core", () => {
     ).toEqual({ action: "skip", reason: "daily-cap" });
   });
 
+  it("does not let a prior local evening consume the next local day", () => {
+    const capped = trigger({ maxRunsPerDay: 1 });
+    const priorLocalEvening = new Date("2026-01-15T04:59:00.000Z"); // Jan 14 20:59 in New York
+    const nextLocalDay = new Date("2026-01-15T05:01:00.000Z"); // Jan 15 00:01 in New York
+    const fires = [fire({ firedAt: priorLocalEvening.toISOString() })];
+    expect(runsToday(fires, capped, nextLocalDay)).toBe(0);
+    expect(decideFire(capped, nextLocalDay, fires, { slotKey: "new-slot", overlap: false })).toEqual({ action: "fire" });
+  });
+
   it("skips as busy when the target already holds maxOpenTasks open tasks", () => {
     const gated = trigger({ maxOpenTasks: 3 });
     expect(
