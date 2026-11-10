@@ -5,6 +5,7 @@ export type RecoverableHumanMessage = {
   deliveryStatus: string;
   taskId?: string;
   correlationId?: string;
+  terminalStatus?: string;
 };
 
 export type HumanMessageBootRecoveryWorkstream = {
@@ -66,6 +67,7 @@ export async function reconcilePendingHumanMessagesOnBoot(
   const candidates = workstream.messages.filter(
     (message) =>
       message.senderId === "human" &&
+      !message.terminalStatus &&
       openDeliveryStatuses.has(message.deliveryStatus),
   );
   summary.scanned = candidates.length;

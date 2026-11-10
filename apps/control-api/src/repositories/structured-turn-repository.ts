@@ -53,8 +53,8 @@ export class StructuredTurnRepository {
       for (const task of plan.tasks) await tasks.save(task);
       for (const insight of plan.insights) await insights.saveInsight(insight);
       for (const message of plan.messages) {
-        await tx`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
-          values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, 'pending')
+        await tx`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status, terminal_status, terminal_reason, terminal_at)
+          values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, 'pending', ${message.terminalStatus ?? null}, ${message.terminalReason ?? null}, ${message.terminalAt ?? null})
           on conflict (id) do nothing`;
         for (const recipient of message.recipientIds)
           await tx`insert into message_deliveries (message_id, recipient_id, delivery_status) values (${message.id}, ${recipient}, 'pending') on conflict do nothing`;

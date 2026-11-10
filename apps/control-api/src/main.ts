@@ -64,11 +64,12 @@ import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./
 import { actualProviderForAgent, actualProviderForWorkstream } from "./provider-runtime.js";
 import { isEmptyProviderTurn, providerRouteMismatch } from "./provider-route-integrity.js";
 import { workstreamSummary } from "./workstream-summary.js";
+import { validateDismissal } from "./terminal-disposition.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
 type WorkflowEvent = { id: string; sequence?: number; type: string; message: string; role?: Role; from?: string; to?: string; agentId?: string; taskId?: string; toolName?: string; output?: string; elapsedMs?: number; correlationId?: string; provider?: string; model?: string; usage?: ProviderUsage; payload?: unknown; occurredAt: string };
-type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "gated" | "claimed" | "acknowledged" | "failed" };
+type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "gated" | "claimed" | "acknowledged" | "failed"; terminalStatus?: "dismissed"; terminalReason?: string; terminalAt?: string };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: AgentStatus; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[]; createdAt?: string; updatedAt?: string };
@@ -565,7 +566,7 @@ app.get("/api/workstreams/:id/agents/:agentId/inbox", async (request, reply) => 
   const { id, agentId } = request.params as { id: string; agentId: string };
   if (!workstreams.has(id)) return reply.code(404).send({ error: "workstream_not_found" });
   const rows = await messageRepository.listInboxRows(id, agentId);
-  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status) }));
+  return rows.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), taskId: m.task_id ? String(m.task_id) : undefined, correlationId: String(m.correlation_id), causationId: m.causation_id ? String(m.causation_id) : undefined, evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.recipient_delivery_status), ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), terminalAt: m.terminal_at ? new Date(String(m.terminal_at)).toISOString() : undefined } : {}) }));
 });
 app.patch("/api/workstreams/:id/tasks/:taskId", async (request, reply) => {
   const { id, taskId } = request.params as { id: string; taskId: string }; const workstream = workstreams.get(id);
@@ -623,6 +624,20 @@ app.post("/api/workstreams/:id/messages/:messageId/reply", async (request, reply
   const created = await createMessage(workstream, body.from.trim(), [original.senderId], body.content.trim(), "reply", { correlationId: original.correlationId, causationId: original.id });
   emitMessage(workstream, "message.reply.created", created);
   return reply.code(201).send(created);
+});
+app.post("/api/workstreams/:id/messages/:messageId/dismiss", async (request, reply) => {
+  const { id, messageId } = request.params as { id: string; messageId: string };
+  const workstream = workstreams.get(id);
+  const message = workstream?.messages.find((candidate) => candidate.id === messageId);
+  if (!workstream || !message) return reply.code(404).send({ error: "message_not_found" });
+  const validation = validateDismissal(message, (request.body as { reason?: unknown } | undefined)?.reason);
+  if (!validation.ok) return reply.code(400).send({ error: validation.error });
+  if (!await messageRepository.dismiss(message.id, validation.reason)) return reply.code(409).send({ error: "message_already_terminal" });
+  message.terminalStatus = "dismissed";
+  message.terminalReason = validation.reason;
+  message.terminalAt = new Date().toISOString();
+  emitMessage(workstream, "message.dismissed", message);
+  return message;
 });
 app.post("/api/workstreams/:id/messages/:messageId/ack", async (request, reply) => updateDelivery(request, reply, "acknowledged"));
 app.post("/api/workstreams/:id/messages/:messageId/fail", async (request, reply) => updateDelivery(request, reply, "failed"));
@@ -792,7 +807,7 @@ async function createMessage(workstream: Workstream, senderId: string, recipient
   if (requestedId) {
     const row = await messageRepository.findRow(workstream.id, requestedId);
     if (row) {
-      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"] };
+      const restored: Message = { id: String(row.id), workstreamId: String(row.workstream_id), senderId: String(row.sender_id), recipientIds: row.recipient_ids as string[], messageType: String(row.message_type), content: String(row.content), ...(row.task_id ? { taskId: String(row.task_id) } : {}), correlationId: String(row.correlation_id), ...(row.causation_id ? { causationId: String(row.causation_id) } : {}), evidenceIds: row.evidence_ids as string[], createdAt: new Date(String(row.created_at)).toISOString(), deliveryStatus: String(row.delivery_status) as Message["deliveryStatus"], ...(row.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(row.terminal_reason), terminalAt: row.terminal_at ? new Date(String(row.terminal_at)).toISOString() : undefined } : {}) };
       workstream.messages.push(restored);
       return restored;
     }
@@ -1368,7 +1383,7 @@ async function loadWorkstreams(): Promise<void> {
     });
     if (normalizedStatus !== String(row.status)) await workstreamRepository.updateStatus(String(row.id), normalizedStatus);
     const messages = await messageRepository.listRows(String(row.id));
-    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"] }));
+    workstreams.get(String(row.id))!.messages = messages.map((m) => ({ id: String(m.id), workstreamId: String(m.workstream_id), senderId: String(m.sender_id), recipientIds: m.recipient_ids as string[], messageType: String(m.message_type), content: String(m.content), ...(m.task_id ? { taskId: String(m.task_id) } : {}), correlationId: String(m.correlation_id), ...(m.causation_id ? { causationId: String(m.causation_id) } : {}), evidenceIds: m.evidence_ids as string[], createdAt: new Date(String(m.created_at)).toISOString(), deliveryStatus: String(m.delivery_status) as Message["deliveryStatus"], ...(m.terminal_status ? { terminalStatus: "dismissed" as const, terminalReason: String(m.terminal_reason), terminalAt: m.terminal_at ? new Date(String(m.terminal_at)).toISOString() : undefined } : {}) }));
   }
   app.log.info({ workstreamCount: workstreams.size }, "workstreams.loaded");
 }
