@@ -61,6 +61,7 @@ import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitio
 import { shouldPublishMessage } from "./message-idempotency.js";
 import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
 import { actualProviderForAgent, actualProviderForWorkstream } from "./provider-runtime.js";
+import { isEmptyProviderTurn, providerRouteMismatch } from "./provider-route-integrity.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -818,12 +819,21 @@ async function dispatchMessage(
       app.log.error({ error, workstreamId: workstream.id, recipientId, messageId: message.id }, "message.recipient_unresolved");
       continue;
     }
+    const recipient = recipientId === "human" ? undefined : agentForRecipient(workstream.agents, recipientId);
+    const route = routeForRecipient(workstream, recipientId);
+    const routeError = providerRouteMismatch(recipient, workstream.roleProviders, route);
+    if (routeError) {
+      await messageRepository.updateDelivery(message.id, recipientId, "failed");
+      failedRecipients.push({ recipientId, error: new Error(routeError) });
+      emit(workstream, "message.provider_route_failed", routeError, recipient?.role, { to: recipientId });
+      continue;
+    }
     try {
       await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipientId), {
         id: attemptId ? `${message.id}:${recipientId}:${attemptId}` : `${message.id}:${recipientId}`, type: "message.created", workstreamId: workstream.id,
         occurredAt: message.createdAt, correlationId: message.correlationId,
         ...(message.causationId ? { causationId: message.causationId } : {}),
-        payload: stampProviderRoute(message, routeForRecipient(workstream, recipientId)),
+        payload: stampProviderRoute(message, route),
       }));
       armDispatchWatchdogAfterPublish(workstream, message, recipientId, lead);
     } catch (error) {
@@ -1960,10 +1970,14 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
           }
           // A retry republishes stable message IDs; receiver execution keys suppress duplicates.
           for (const recipient of message.recipientIds) {
+            const recipientAgent = recipient === "human" ? undefined : agentForRecipient(workstream.agents, recipient);
+            const route = routeForRecipient(workstream, recipient);
+            const routeError = providerRouteMismatch(recipientAgent, workstream.roleProviders, route);
+            if (routeError) throw new InvalidStructuredTurn(routeError);
             try {
               await publishWithRetry(() => eventBus.publish(subjects.inbox.replace("*", recipient), {
                 id: `${message.id}:${recipient}`, type: "message.created", workstreamId: workstream.id,
-                correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: message,
+                correlationId: message.correlationId, causationId: plan.id, occurredAt: message.createdAt, payload: stampProviderRoute(message, route),
               }));
               const policy = orchestrationPolicyFor(workstream);
               const lead = workstream.agents.find((agent) => agent.role === policy.leadRole);
@@ -2026,7 +2040,9 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
     const task = payload.taskId ? workstream.tasks.find((candidate) => candidate.id === payload.taskId) : undefined;
     if (task) { task.status = "failed"; task.updatedAt = new Date().toISOString(); await persistTask(task); }
     await setAgentStatus(sender, "failed", "turn_empty_failed", { taskId: payload.taskId, turnId: payload.turnId });
-    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → provider returned no text summary`, occurredAt: new Date().toISOString(), role: sender.role, ...(task ? { taskId: task.id } : {}) });
+    const emptyReason = isEmptyProviderTurn(resultText, payload.usage) ? "provider returned empty output and zero usage" : "provider returned no text summary";
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "task.failed", message: `${task?.title ?? sender.role} → ${emptyReason}`, occurredAt: new Date().toISOString(), role: sender.role, ...(task ? { taskId: task.id } : {}) });
+    recordWorkflowEvent(workstream, { id: randomUUID(), type: "turn.failed", message: `${task?.title ?? sender.role} → ${emptyReason}`, occurredAt: new Date().toISOString(), role: sender.role, agentId: sender.id, ...(task ? { taskId: task.id } : {}), payload: { reason: "empty_provider_output" } });
     if (task) await reconcileTaskDispatches(workstream);
     await reconcileCompletion(workstream);
     app.log.warn({ workstreamId: envelope.workstreamId, agentId: sender.id, taskId: payload.taskId }, "provider returned empty result");
