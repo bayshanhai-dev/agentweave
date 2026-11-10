@@ -73,11 +73,12 @@ type Message = { id: string; workstreamId: string; senderId: string; recipientId
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: AgentStatus; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
 type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[]; createdAt?: string; updatedAt?: string };
-type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes"> & { builtin: boolean };
+type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "goalPrompt" | "roles" | "taskLanes"> & { builtin: boolean };
 const templateSummary = (template: WorkstreamTemplate, builtin: boolean): WorkstreamTemplateSummary => ({
   id: template.id,
   name: template.name,
   description: template.description,
+  ...(template.goalPrompt ? { goalPrompt: template.goalPrompt } : {}),
   roles: template.roles,
   taskLanes: template.taskLanes,
   builtin,

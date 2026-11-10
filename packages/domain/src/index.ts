@@ -65,6 +65,7 @@ export type WorkstreamTemplate = {
   id: string;
   name: string;
   description: string;
+  goalPrompt?: string;
   roles: readonly WorkstreamTemplateRole[];
   taskLanes: readonly WorkstreamTaskLane[];
   orchestration: {
@@ -137,6 +138,32 @@ export const workstreamTemplates: readonly WorkstreamTemplate[] = [
     ],
     orchestration: { leadRole: "creator-lead", planningRole: "trend-researcher", executionRoles: ["video-producer"], reviewRole: "audience-reviewer" },
   },
+  {
+    id: "debate",
+    name: "双语辩论（中文）",
+    description: "由主持人裁判协调正方与反方，按固定顺序完成一场中文结构化辩论。",
+    goalPrompt: "辩题：{{topic}}\n\n辩论流程必须严格按以下顺序：开场 → 正方开篇 → 反方开篇 → 正方反驳 → 反方反驳 → 正方自由交锋 → 反方自由交锋 → 裁决。主持人必须把每一次发言作为任务派发给对应辩手，等待结构化结果后再进入下一步。",
+    roles: [
+      { id: "moderator", label: "主持人／裁判", authority: "lead", description: "协调流程、必须把每次发言作为任务派发给对应辩手，并在收到结果后才进入下一步。主持人绝不代写任何辩手论点，未派发或未收到结果前绝不声称发言已派发；消息中不得提及文件、文件写入或工具。辩手必须以结构化 JSON turn-result contract 返回，完整发言放在 messages[0].content，且每次发言不超过 500 字。裁决第一行必须完全是“裁决：正方获胜”或“裁决：反方获胜”，随后给出理由。", color: "#818cf8", icon: "⚖️" },
+      { id: "pro", label: "正方", authority: "executor", description: "代表正方完成被派发的开篇、反驳和自由交锋发言。" , color: "#22d3ee", icon: "＋" },
+      { id: "con", label: "反方", authority: "executor", description: "代表反方完成被派发的开篇、反驳和自由交锋发言。", color: "#f472b6", icon: "－" },
+    ],
+    taskLanes: standardTaskLanes,
+    orchestration: { leadRole: "moderator", planningRole: "moderator", executionRoles: ["pro", "con"], reviewRole: "moderator" },
+  },
+  {
+    id: "debate-en",
+    name: "Structured debate (English)",
+    description: "A moderator-judge coordinates the affirmative and negative sides through a fixed structured English debate.",
+    goalPrompt: "Topic: {{topic}}\n\nThe debate MUST follow this exact flow: opening → pro opening → con opening → pro rebuttal → con rebuttal → pro free exchange → con free exchange → verdict. The moderator must dispatch every speech as a task to the correct debater and wait for the structured result before moving on.",
+    roles: [
+      { id: "moderator", label: "Moderator / Judge", authority: "lead", description: "Coordinates the flow, MUST dispatch every speech as a task to the correct debater, and wait for the result before moving on. The moderator MUST never write a debater's argument or claim a speech was dispatched before it was; moderator messages must never mention files, file writes, or tools. Debaters MUST return the structured JSON turn-result contract with the full speech in messages[0].content, within 500 words. The verdict's first line MUST be exactly \"Verdict: Affirmative wins\" or \"Verdict: Negative wins\", followed by reasons.", color: "#818cf8", icon: "⚖️" },
+      { id: "pro", label: "Affirmative / Pro", authority: "executor", description: "Delivers the assigned opening, rebuttal, and free-exchange speeches for the affirmative side.", color: "#22d3ee", icon: "＋" },
+      { id: "con", label: "Negative / Con", authority: "executor", description: "Delivers the assigned opening, rebuttal, and free-exchange speeches for the negative side.", color: "#f472b6", icon: "－" },
+    ],
+    taskLanes: standardTaskLanes,
+    orchestration: { leadRole: "moderator", planningRole: "moderator", executionRoles: ["pro", "con"], reviewRole: "moderator" },
+  },
 ];
 
 export function getWorkstreamTemplate(templateId: string, customTemplates: readonly WorkstreamTemplate[] = []): WorkstreamTemplate | undefined {
@@ -179,6 +206,7 @@ export function validateWorkstreamTemplate(input: unknown): TemplateValidationRe
   const name = typeof value.name === "string" ? value.name.trim() : "";
   if (!name) errors.push("name is required");
   const description = typeof value.description === "string" ? value.description : "";
+  const goalPrompt = typeof value.goalPrompt === "string" && value.goalPrompt.trim() ? value.goalPrompt : undefined;
 
   const roles: WorkstreamTemplateRole[] = [];
   if (!Array.isArray(value.roles) || value.roles.length < 2) {
@@ -292,6 +320,7 @@ export function validateWorkstreamTemplate(input: unknown): TemplateValidationRe
       id,
       name,
       description,
+      ...(goalPrompt ? { goalPrompt } : {}),
       roles,
       taskLanes,
       orchestration: { leadRole, planningRole, executionRoles, reviewRole },
