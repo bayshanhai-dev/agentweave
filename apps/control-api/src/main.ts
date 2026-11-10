@@ -62,6 +62,7 @@ import { shouldPublishMessage } from "./message-idempotency.js";
 import { orphanedRunningAgents, staleTurns, turnKey, type TrackedTurn } from "./turn-watchdog.js";
 import { actualProviderForAgent, actualProviderForWorkstream } from "./provider-runtime.js";
 import { isEmptyProviderTurn, providerRouteMismatch } from "./provider-route-integrity.js";
+import { workstreamSummary } from "./workstream-summary.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -69,7 +70,7 @@ type WorkflowEvent = { id: string; sequence?: number; type: string; message: str
 type Message = { id: string; workstreamId: string; senderId: string; recipientIds: string[]; messageType: string; content: string; taskId?: string; correlationId: string; causationId?: string; evidenceIds: string[]; createdAt: string; deliveryStatus: "pending" | "delivered" | "gated" | "claimed" | "acknowledged" | "failed" };
 type Agent = { id: string; role: Role; authority: "lead" | "reviewer" | "executor"; status: AgentStatus; orchestrator?: boolean };
 type Task = { id: string; workstreamId: string; title: string; status: "ready" | "assigned" | "running" | "review" | "blocked" | "done" | "failed" | "cancelled"; ownerAgentId?: string; createdByAgentId?: string; parentTaskId?: string; relatedTaskIds: string[]; acceptanceCriteria: string[]; dependencies: string[]; evidence: string[]; qualityAttempts: number; createdAt: string; updatedAt: string };
-type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[] };
+type Workstream = { id: string; goal: string; flavor: string; status: string; provider: ProviderSelection; roleProviders: RoleProviders; workspaceRoot: string; agents: Agent[]; tasks: Task[]; events: WorkflowEvent[]; messages: Message[]; createdAt?: string; updatedAt?: string };
 type WorkstreamTemplateSummary = Pick<WorkstreamTemplate, "id" | "name" | "description" | "roles" | "taskLanes"> & { builtin: boolean };
 const templateSummary = (template: WorkstreamTemplate, builtin: boolean): WorkstreamTemplateSummary => ({
   id: template.id,
@@ -349,7 +350,13 @@ app.post("/api/triggers/:id/fire", async (request, reply) => {
   });
   return reply.code(201).send(fire);
 });
-app.get("/api/workstreams", async () => [...workstreams.values()].map(workstreamResponse));
+app.get("/api/workstreams", async (request, reply) => {
+  const query = request.query as { limit?: string; offset?: string } | undefined;
+  const limit = query?.limit === undefined ? 100 : Number(query.limit);
+  const offset = query?.offset === undefined ? 0 : Number(query.offset);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200 || !Number.isInteger(offset) || offset < 0) return reply.code(400).send({ error: "invalid_pagination" });
+  return [...workstreams.values()].slice(offset, offset + limit).map((workstream) => workstreamSummary(workstreamResponse(workstream)));
+});
 app.get("/api/workstreams/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const workstream = workstreams.get(id);
@@ -971,7 +978,7 @@ async function createPersistedWorkstream(input: {
 }): Promise<Workstream> {
   const id = randomUUID();
   const workstream: Workstream = {
-    id, goal: input.goal.trim(), flavor: input.flavor, status: "draft",
+    id, goal: input.goal.trim(), flavor: input.flavor, status: "draft", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     provider: input.provider, roleProviders: input.roleProviders, workspaceRoot: input.workspaceRoot,
     tasks: [], events: [], messages: [],
     agents: input.template.roles.map((role, index) => ({
@@ -1345,7 +1352,7 @@ async function loadWorkstreams(): Promise<void> {
     const loadedTasks = tasks.map((task) => ({ id: String(task.id), workstreamId: String(task.workstream_id), title: String(task.title), status: String(task.status) as Task["status"], ...(task.owner_agent_id ? { ownerAgentId: String(task.owner_agent_id) } : {}), ...(task.created_by_agent_id ? { createdByAgentId: String(task.created_by_agent_id) } : {}), ...(task.parent_task_id ? { parentTaskId: String(task.parent_task_id) } : {}), relatedTaskIds: jsonArray(task.related_task_ids), acceptanceCriteria: jsonArray(task.acceptance_criteria), dependencies: jsonArray(task.dependencies), evidence: jsonArray(task.evidence), qualityAttempts: Number(task.quality_attempts ?? 0), createdAt: new Date(String(task.created_at)).toISOString(), updatedAt: new Date(String(task.updated_at)).toISOString() }));
     const normalizedStatus = normalizeLoadedStatus(String(row.status), events.map((event) => ({ type: event.type })));
     workstreams.set(String(row.id), {
-      id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus,
+      id: String(row.id), goal: String(row.goal), flavor: String(row.flavor), status: normalizedStatus, createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
       provider: {
         ...(row.tool ? { tool: String(row.tool) as ProviderSelection["tool"] } : {}),
         ...(row.model ? { model: String(row.model) } : {}),

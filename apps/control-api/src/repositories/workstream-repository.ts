@@ -36,7 +36,7 @@ export class WorkstreamRepository {
 
   async listRows() {
     return this
-      .sql`select id, goal, flavor, status, tool, model, role_providers, workspace_root from workstreams order by created_at desc`;
+      .sql`select id, goal, flavor, status, tool, model, role_providers, workspace_root, created_at, updated_at from workstreams order by created_at desc`;
   }
   async listAgentRows(workstreamId: string) {
     return this
