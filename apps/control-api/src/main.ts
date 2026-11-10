@@ -58,6 +58,7 @@ import { collectObservabilityMetrics, renderPrometheus, type MetricSample } from
 import { reconcilePendingHumanMessagesOnBoot } from "./human-message-boot-recovery.js";
 import { parseDeliveryReportSubmission } from "./delivery-report-ingestion.js";
 import { transitionAgentStatus, type AgentStatusEvent, type AgentStatusTransitionContext } from "./agent-status.js";
+import { shouldPublishMessage } from "./message-idempotency.js";
 
 type Role = string;
 type ProviderUsage = { source: "provider" | "estimated" | "unknown"; inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
@@ -1876,7 +1877,10 @@ async function handleWorkerResult(envelope: { id?: string; type: string; workstr
           }
         }
         for (const message of plan.messages) {
-          if (!workstream.messages.some((item) => item.id === message.id)) workstream.messages.push(message as Message);
+          const knownMessageIds = new Set(workstream.messages.map((item) => item.id));
+          const isNewMessage = shouldPublishMessage(message.id, knownMessageIds);
+          if (isNewMessage) workstream.messages.push(message as Message);
+          if (!isNewMessage) continue;
           if (!shouldDispatchMessage(message.senderId, message.content)) {
             emit(workstream, "orchestration.agent_directive_suppressed", `Agent-authored implementation directive suppressed for message ${message.id}`, sender.role);
             const notification = JSON.stringify({ workstreamId: workstream.id, type: "message.created", message, occurredAt: message.createdAt });

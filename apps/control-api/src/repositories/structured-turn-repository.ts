@@ -54,9 +54,10 @@ export class StructuredTurnRepository {
       for (const insight of plan.insights) await insights.saveInsight(insight);
       for (const message of plan.messages) {
         await tx`insert into messages (id, workstream_id, sender_id, recipient_ids, message_type, content, task_id, correlation_id, causation_id, evidence_ids, created_at, delivery_status)
-          values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, 'pending')`;
+          values (${message.id}, ${message.workstreamId}, ${message.senderId}, ${message.recipientIds}, ${message.messageType}, ${message.content}, ${message.taskId ?? null}, ${message.correlationId}, ${message.causationId ?? null}, ${JSON.stringify(message.evidenceIds)}, ${message.createdAt}, 'pending')
+          on conflict (id) do nothing`;
         for (const recipient of message.recipientIds)
-          await tx`insert into message_deliveries (message_id, recipient_id, delivery_status) values (${message.id}, ${recipient}, 'pending')`;
+          await tx`insert into message_deliveries (message_id, recipient_id, delivery_status) values (${message.id}, ${recipient}, 'pending') on conflict do nothing`;
       }
       if (plan.sourceTaskId)
         await tx`update tasks set status = ${plan.blocked ? "blocked" : "done"}, evidence = ${JSON.stringify(plan.sourceEvidenceIds)}, updated_at = ${plan.createdAt} where id = ${plan.sourceTaskId}`;
